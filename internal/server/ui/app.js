@@ -1,6 +1,8 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const state = {token: WA.token(), draft: null, role: null, dirty: false, busy: false, editingRole: false, runtimes: [], agents: [], roles: [], session: null, poll: null};
+const loadModels=WAModels.catalogLoader(api);
+const modelControls={builder:WAModels.mount($('builder-model'),loadModels),agent:WAModels.mount($('agent-model'),loadModels)};
 function requestKey() { const bytes = new Uint8Array(16); crypto.getRandomValues(bytes); return Array.from(bytes, b=>b.toString(16).padStart(2,'0')).join(''); }
 const labels = {DRAFT:'草案', GENERATING:'AI 生成中', FAILED:'生成失败', PUBLISHED:'已发布'};
 function node(tag, text, className) { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; }
@@ -26,6 +28,8 @@ function updateControls() {
   for (const id of ['edit-role','save-role','cancel-role']) $(id).disabled = state.busy;
   for (const id of ['save','publish','send','message']) $(id).disabled = state.busy || !draft || generating || published;
   for (const id of ['builder-runtime','builder-model','builder-adapter']) $(id).disabled = state.busy || !!state.session || generating || published || !$('builder-manual')?.checked;
+  modelControls.builder.setDisabled($('builder-model').disabled);
+  modelControls.agent.setDisabled(state.busy);
   if($('builder-manual'))$('builder-manual').disabled=state.busy||!!state.session||generating||published;
   for (const id of ['connect','new','welcome-new','clone','stop']) $(id).disabled = state.busy;
   document.querySelectorAll('.nav-item,.chips button,#agent-form button').forEach(el => { el.disabled = state.busy || (el.matches('.chips button') && (generating || published)); });
@@ -72,6 +76,9 @@ function renderAgents() {
       if(type==='number'){input.min=1;input.max=32;} if(key==='name')input.required=true;
       fields[key]=input;wrap.append(input);form.append(wrap);
     }
+    fields.model_id.id='model-'+agent.agent_id;
+    const modelControl=WAModels.mount(fields.model_id,loadModels);
+    void modelControl.update({runtimeID:agent.runtime_id,adapterID:agent.adapter_id,runtimes:state.runtimes,agents:state.agents});
     const statusLabel=node('label','状态'),status=node('select');status.append(option('ACTIVE','启用'),option('DISABLED','停用（不打断当前运行）'));status.value=agent.state;statusLabel.append(status);form.append(statusLabel);
     const submit=node('button','保存 Agent');submit.type='submit';form.append(submit);
     form.onsubmit=event=>{event.preventDefault();action(async()=>{await api('/agents/'+agent.agent_id,'PUT',{name:fields.name.value,model_id:fields.model_id.value,max_concurrent:Number(fields.max_concurrent.value),state:status.value,expected_version:agent.version||0});await refreshLibrary();notice('Agent 已更新；已有 Session 继续使用原角色和模型。');});};settings.append(form);row.append(settings);
@@ -82,9 +89,11 @@ function option(value, label) { const el = node('option', label); el.value = val
 function suggestAdapter(prefix) {
   const field=$(prefix+'-adapter');
   field.value=WAAdapters.suggested(state.runtimes,$(prefix+'-runtime').value,field.value,field.dataset.edited==='true',prefix==='builder'&&!!state.session);
+  updateModels(prefix);
 }
+function updateModels(prefix){void modelControls[prefix].update({runtimeID:$(prefix+'-runtime').value,adapterID:$(prefix+'-adapter').value,runtimes:state.runtimes,agents:state.agents});}
 for(const prefix of ['builder','agent']) {
-  $(prefix+'-adapter').addEventListener('input',()=>{$(prefix+'-adapter').dataset.edited='true';});
+  $(prefix+'-adapter').addEventListener('input',()=>{$(prefix+'-adapter').dataset.edited='true';updateModels(prefix);});
   $(prefix+'-runtime').addEventListener('change',()=>suggestAdapter(prefix));
 }
 async function refreshLibrary() {
@@ -186,5 +195,5 @@ $('role-search').oninput=renderRoleOverview;
 $('back-to-roles').onclick=()=>{if(!permitSwitch())return;clearTimeout(state.poll);state.draft=null;state.role=null;state.dirty=false;state.editingRole=false;$('message').value='';$('studio').hidden=true;$('welcome').hidden=false;history.replaceState(null,'','/members');action(refreshLibrary);};
 window.addEventListener('hashchange',()=>{const id=location.hash.slice(1);if(!id||id===(state.role?.role_id||state.draft?.draft_id)||!permitSwitch())return;action(()=>id.startsWith('draft_')?loadDraft(id):openRole(id));});
 const builderManual=node('input');builderManual.type='checkbox';builderManual.id='builder-manual';const builderMode=node('label','本次草案手动指定运行环境（覆盖系统岗位）');builderMode.prepend(builderManual);$('builder-runtime').closest('details').querySelector('summary').after(builderMode);const builderNote=node('p','默认使用“系统岗位 → 角色设计”的成员；切换为手动时仅影响当前新草案。','muted small');builderMode.after(builderNote);
-builderManual.onchange=()=>{for(const id of ['builder-runtime','builder-model','builder-adapter'])$(id).disabled=!!state.session||!builderManual.checked;};
+builderManual.onchange=updateControls;
 action(async()=>{await refreshLibrary();const id=location.hash.slice(1);if(id&&id!=='system-agents')await(id.startsWith('draft_')?loadDraft(id):openRole(id));});

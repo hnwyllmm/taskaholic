@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>成员管理 · Work Assistant</title><link rel="stylesheet" href="/roles/style.css"><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/system-agents.js" defer></script><script src="/assets/adapters.js" defer></script><script src="/roles/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>成员管理 · Work Assistant</title><link rel="stylesheet" href="/roles/style.css"><link rel="stylesheet" href="/assets/shell.css"><link rel="stylesheet" href="/assets/models.css"><script src="/assets/shared.js" defer></script><script src="/assets/system-agents.js" defer></script><script src="/assets/adapters.js" defer></script><script src="/assets/models.js" defer></script><script src="/roles/app.js" defer></script></head>
 <body data-page="members">
 <header data-app-shell></header>
 <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -8,7 +8,7 @@
 <aside><div class="aside-title"><h2>我的角色</h2><button id="new" class="primary">＋ 新建</button></div><p class="muted small">先定义职责，再安排具体的 Agent。</p><h3>草案 <span id="draft-count">0</span></h3><div id="draft-list" class="nav-list"></div><h3>已发布 <span id="role-count">0</span></h3><div id="role-list" class="nav-list"></div><div class="aside-footer">本地 SQLite 持久化<br>草案 · 对话 · 角色 · 分配记录</div></aside>
 <main>
 <section id="system-agents" class="system-agents panel" aria-labelledby="system-agents-title">
-<div class="panel-head"><div><span class="eyebrow">SYSTEM RESPONSIBILITIES</span><h2 id="system-agents-title">系统岗位</h2><p class="muted small">聊天、角色设计、路由和升级，也由团队成员担任。各岗位可以独立更换成员。</p></div><button id="refresh-system-agents" type="button">刷新配置</button></div>
+<div class="panel-head"><div><span class="eyebrow">SYSTEM RESPONSIBILITIES</span><h2 id="system-agents-title">系统岗位</h2><p class="muted small">指定谁负责首页聊天、角色设计、任务路由和系统升级。这里从现有成员中选择，同一成员可以兼任；不是另一类角色或成员。</p></div><button id="refresh-system-agents" type="button">刷新配置</button></div>
 <div id="system-agent-cards" class="system-agent-grid"><p class="muted">正在读取岗位配置…</p></div>
 <p class="muted small">更换配置只影响新的对话、草案、路由决策或升级请求；正在运行的工作保持原成员、模型与 Session。不同机器和模型的可用性以实际执行为准。</p>
 </section>

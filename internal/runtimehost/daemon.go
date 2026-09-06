@@ -43,6 +43,8 @@ type Daemon struct {
 	activeWG     sync.WaitGroup
 	storageFault chan error
 	storageErr   error // protected by activeMu; fail closed until process restart
+	modelMu      sync.Mutex
+	modelCache   map[string]*modelCacheEntry
 }
 
 type activeRun struct {
@@ -206,6 +208,8 @@ func (d *Daemon) runConnection(ctx context.Context) error {
 
 func (d *Daemon) handleRequest(ctx context.Context, request rpcpeer.Request) (any, *rpcpeer.Error) {
 	switch request.Method {
+	case "models.list":
+		return d.handleListModels(ctx, request)
 	case "run.start":
 		return d.handleRunStart(ctx, request)
 	case "run.interrupt":
@@ -530,7 +534,12 @@ func (d *Daemon) capabilities() map[string]any {
 	}
 	adapterCaps := result["adapters"].(map[string]any)
 	for name, adapter := range d.adapters {
-		adapterCaps[name] = adapter.Capabilities()
+		caps := make(map[string]any)
+		for key, value := range adapter.Capabilities() {
+			caps[key] = value
+		}
+		_, caps["model_catalog"] = adapter.(agent.ModelProvider)
+		adapterCaps[name] = caps
 	}
 	return result
 }

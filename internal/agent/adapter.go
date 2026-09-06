@@ -32,3 +32,9 @@ type Adapter interface {
 	Capabilities() map[string]any
 	Run(context.Context, model.RunSpec, string, <-chan model.Directive, func(Event)) Result
 }
+
+// ModelProvider is optional: adapters without discovery still accept manually
+// configured model IDs. Implementations must honor cancellation and bound output.
+type ModelProvider interface {
+	ListModels(context.Context) ([]model.ModelOption, error)
+}

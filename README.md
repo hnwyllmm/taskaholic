@@ -35,6 +35,14 @@
 
 配置 API：`GET /api/v1/system/agents`；`PUT /api/v1/system/agents/{slot}`，请求 `{ "mode": "agent", "agent_id": "...", "expected_version": 1 }`。恢复默认时 `agent_id` 为空，路由 `mode=rules`、其它岗位 `mode=auto`。聊天显式接手：`POST /api/v1/home/chats/{chat_id}/executor`，必须提供 `expected_version` 与当前 `binding_version`。这些写入沿用 API Token 和同源校验。
 
+### 成员模型选择
+
+添加/修改成员，以及角色设计的手动执行环境，都支持“下拉选择”和“手动填写”。留空表示运行环境默认模型；手填模型 ID 不受下拉列表限制。模型列表按执行机器和 Adapter 分开，切换环境不会清空已填写的模型；历史成员的旧模型即使不在列表中也会保留。成员修改只影响新 Session。
+
+Cursor 列表来自对应 Runtime 上安装的 CLI 的 `agent models`，不硬编码产品型号，也不启动任务或原生 Session。查询通过 `GET /api/v1/runtimes/{runtime_id}/models?adapter_id=cursor-agent` 转为现有 WebSocket 上的只读 `models.list` RPC；Runtime 单次查询超时 8 秒、输出上限 256 KiB，相同 Adapter 的并发请求合并，成功缓存 5 分钟、失败缓存 30 秒。失败信息不回显 CLI stderr。列表只表示 CLI 返回的型号，不保证账户权限或剩余额度。
+
+其它 Adapter 可选实现 `agent.ModelProvider`，Runtime 自动声明 `model_catalog` 能力。当前只有 Cursor 实现动态查询；未实现的 Adapter、旧 Runtime 或离线机器仍支持默认模型、同机同 Adapter 已有成员配置及手工 ID。本次不增加数据库表，不改写已保存的成员、Session 或系统岗位绑定。
+
 ### 首页助理对话
 
 信息咨询只回答，不创建托管工作。首页对话独立复用原生 Agent Session；控制端保存展示记录，原生上下文和压缩仍由 Adapter 管理。首页只使用受大小限制的近期工作摘要、角色能力和运行状态，不是无限历史检索。达到 100 条消息后可新建对话，旧记录保留；目录显示最近 50 个对话。
@@ -411,10 +419,10 @@ CLI 的等价操作：
 | `POST/GET` | `/api/v1/agents` | 注册 / 列出具体 Agent |
 | `GET` | `/api/v1/agents/{id}` | Agent 配置、角色和当前负载 |
 
-runtime WebSocket 上目前有六个 JSON-RPC 方法：
+runtime WebSocket 上目前有七个 JSON-RPC 方法：
 
 - runtime → control：`runtime.hello`、`runtime.heartbeat`、`run.event`；
-- control → runtime：`run.start`、`run.interrupt`、`run.directive`。
+- control → runtime：`run.start`、`run.interrupt`、`run.directive`、`models.list`（只读能力查询，不进入可靠执行 outbox）。
 
 可靠性边界：
 

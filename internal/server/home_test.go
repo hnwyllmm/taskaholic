@@ -34,6 +34,8 @@ func TestHomePagesAndChatAPI(t *testing.T) {
 		"/system":             "数据保护",
 		"/assets/home.js":     "openDecision",
 		"/assets/adapters.js": "WAAdapters",
+		"/assets/models.js":   "WAModels",
+		"/assets/models.css":  "model-controls",
 		"/assets/shared.js":   "主导航",
 		"/assets/shell.css":   "home-grid",
 		"/assets/pages.js":    "renderProjects",

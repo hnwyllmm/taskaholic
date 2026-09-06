@@ -1,0 +1,12 @@
+.model-field{min-width:0;display:grid;gap:6px;font-size:12px;color:var(--muted)}
+.model-controls{display:grid;grid-template-columns:minmax(100px,.7fr) minmax(0,1.3fr);gap:8px;min-width:0}
+.model-controls input,.model-controls select{width:100%;min-width:0}
+.model-hint{font-size:11px;font-weight:400;line-height:1.6;overflow-wrap:anywhere}
+.agent-form{grid-template-columns:repeat(3,minmax(0,1fr));align-items:start}
+.agent-form>.model-field{grid-column:span 2}
+.agent-form>button{grid-column:1/-1;justify-self:end}
+.agent-row>details{flex-basis:100%;min-width:0}
+.agent-row>details>form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:12px;align-items:start}
+.agent-row .model-field{grid-column:1/-1;grid-row:2}
+.agent-row>details>form>button{align-self:end}
+@media(max-width:600px){.agent-form{grid-template-columns:repeat(2,minmax(0,1fr))}.agent-form>.model-field{grid-column:1/-1}.model-controls{grid-template-columns:110px minmax(0,1fr)}}

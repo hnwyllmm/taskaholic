@@ -97,6 +97,7 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	mux.Handle("GET /api/v1/sessions", server.apiAuth(http.HandlerFunc(server.handleListSessions)))
 	mux.Handle("GET /api/v1/sessions/{session_id}", server.apiAuth(http.HandlerFunc(server.handleGetSession)))
 	mux.Handle("GET /api/v1/runtimes", server.apiAuth(http.HandlerFunc(server.handleListRuntimes)))
+	mux.Handle("GET /api/v1/runtimes/{runtime_id}/models", server.apiAuth(http.HandlerFunc(server.handleListModels)))
 	mux.Handle("GET /api/v1/events/stream", server.apiAuth(http.HandlerFunc(server.handleEventStream)))
 	mux.Handle("GET /api/v1/admin/backup", server.apiAuth(http.HandlerFunc(server.handleBackup)))
 	mux.Handle("GET /api/v1/admin/backups", server.apiAuth(http.HandlerFunc(server.handleBackups)))

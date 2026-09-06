@@ -25,6 +25,10 @@ func (s *Server) handlePageUI(w http.ResponseWriter, r *http.Request) {
 		path, contentType = "system-agents.js", "text/javascript; charset=utf-8"
 	case "/assets/adapters.js":
 		path, contentType = "adapters.js", "text/javascript; charset=utf-8"
+	case "/assets/models.js":
+		path, contentType = "models.js", "text/javascript; charset=utf-8"
+	case "/assets/models.css":
+		path, contentType = "models.css", "text/css; charset=utf-8"
 	case "/assets/home.js":
 		path, contentType = "home.js", "text/javascript; charset=utf-8"
 	case "/assets/review-chat.js":
