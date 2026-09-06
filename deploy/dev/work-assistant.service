@@ -10,6 +10,7 @@ Type=simple
 WorkingDirectory=/data/wangyunlai.wyl/workspace/work-assistant
 EnvironmentFile=%h/.config/work-assistant/dev.env
 Environment=PATH=/home/wangyunlai.wyl/.local/bin:/home/wangyunlai.wyl/.n/bin:/home/wangyunlai.wyl/local/go/bin:/usr/local/obdev/git/bin:/usr/local/bin:/usr/bin:/bin
+Environment=GOMODCACHE=/home/wangyunlai.wyl/local/go/lib/pkg/mod
 ExecStart=/data/wangyunlai.wyl/workspace/work-assistant/bin/assistant-supervisor --root /data/wangyunlai.wyl/workspace/work-assistant --data /data/wangyunlai.wyl/workspace/work-assistant/data/dev --runtime-id dev-cursor --listen 0.0.0.0:17343 --allow-remote --no-api-auth --adapter cursor-agent --cursor-binary /home/wangyunlai.wyl/.local/bin/agent --model auto --go-binary /home/wangyunlai.wyl/local/go/lib/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/bin/go --node-binary /home/wangyunlai.wyl/.n/bin/node
 Restart=on-failure
 RestartSec=3

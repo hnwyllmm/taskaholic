@@ -157,6 +157,25 @@ func (m *Manager) CheckValidationSandbox(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("validation sandbox preflight: %w: %s", err, output)
 	}
+	// Check the compiler and offline dependency graph in the actual service
+	// environment. A login shell's GOPATH/cache may differ from systemd's.
+	for _, name := range []string{"go.mod", "go.sum"} {
+		path := filepath.Join(m.config.Root, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if err := copyFile(path, filepath.Join(directory, name), 0o600); err != nil {
+			return err
+		}
+	}
+	for _, args := range [][]string{{m.config.GoBinary, "version"}, {m.config.GoBinary, "list", "-mod=readonly", "-m", "all"}} {
+		output, err := m.runCommand(ctx, directory, args...)
+		if err != nil {
+			return fmt.Errorf("offline toolchain/cache preflight: %w: %s", err, output)
+		}
+	}
 	return nil
 }
 

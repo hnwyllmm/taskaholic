@@ -205,3 +205,15 @@ func TestRepositoryCandidateValidation(t *testing.T) {
 	}
 	t.Logf("full application candidate READY; sandbox=%s; Go tests/vet, JS syntax and all binaries passed", m.ValidationSandboxName())
 }
+
+func TestValidationPreflightRejectsMissingOfflineDependencies(t *testing.T) {
+	root, data := testProject(t)
+	writeTestFile(t, filepath.Join(root, "go.mod"), "module work-assistant\n\ngo 1.23\n\nrequire example.invalid/not-cached v1.0.0\n", 0o600)
+	m, err := New(testManagerConfig(root, data), fakeAdapter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CheckValidationSandbox(context.Background()); err == nil || !strings.Contains(err.Error(), "offline toolchain/cache preflight") {
+		t.Fatal("unusable offline cache advertised as ready", err)
+	}
+}

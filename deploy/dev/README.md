@@ -47,7 +47,7 @@ node deploy/dev/api.mjs /admin/backups POST '{}'
 
 ## 安装和维护
 
-需要 Linux amd64、Go 1.27.1、Node.js、bubblewrap 和已登录 Cursor Agent。此机验证的 Cursor 版本为 `2026.09.02-c22c1a3`，bubblewrap 为 0.4.0（可在 `NoNewPrivileges=yes` 下使用）。systemd 单元固定 Go 1.27.1 的绝对路径，验证器不继承 shell 的旧 `GOROOT`。依赖应提前从 Go 模块代理取得并按 go.sum/校验服务校验，候选构建禁止联网下载。
+需要 Linux amd64、Go 1.27.1、Node.js、bubblewrap 和已登录 Cursor Agent。此机验证的 Cursor 版本为 `2026.09.02-c22c1a3`，bubblewrap 为 0.4.0（可在 `NoNewPrivileges=yes` 下使用）。systemd 单元固定 Go 1.27.1 的绝对路径以及 `GOMODCACHE=/home/wangyunlai.wyl/local/go/lib/pkg/mod`，验证器不继承 shell 的旧 `GOROOT`，也不依赖 SSH 的 GOPATH。守护进程在实际后台环境中先检查沙箱、编译器及离线依赖图。依赖应提前从 Go 模块代理取得并按 go.sum/校验服务校验，候选构建禁止联网下载。
 
 ```bash
 cd /data/wangyunlai.wyl/workspace/work-assistant
