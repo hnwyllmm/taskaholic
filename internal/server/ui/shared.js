@@ -3,7 +3,9 @@ window.WA=(()=>{
   const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
   const token=()=>{try{return sessionStorage.getItem('wa.apiToken')||'';}catch{return '';}};
   const saveToken=value=>{try{if(value)sessionStorage.setItem('wa.apiToken',value);else sessionStorage.removeItem('wa.apiToken');}catch{throw Error('浏览器不允许保存标签页会话，请允许会话存储后再连接。');}};
-  const key=()=>crypto.randomUUID();
+  // getRandomValues also works on HTTP intranet origins; randomUUID requires
+  // a secure context. Keep 128 bits of randomness for idempotency keys.
+  const key=()=>{const bytes=new Uint8Array(16);crypto.getRandomValues(bytes);return Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');};
   const notice=(message,error=false)=>{const n=document.getElementById('notice');if(n){n.textContent=message;n.hidden=!message;n.className=error?'error':'';}};
   const api=async(path,method='GET',body)=>{const r=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json',...(token()?{Authorization:'Bearer '+token()}:{})},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(r.status===401?'请在右上角连接设置中填写 API Token。':value.error||`请求失败 (${r.status})`);return value;};
   const download=async(path,name)=>{const r=await fetch('/api/v1'+path,{headers:token()?{Authorization:'Bearer '+token()}:{}});if(!r.ok)throw Error('下载失败：'+r.status);const url=URL.createObjectURL(await r.blob()),a=el('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);};
