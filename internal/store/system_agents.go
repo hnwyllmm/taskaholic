@@ -77,8 +77,8 @@ func (s *Store) UpdateSystemBinding(ctx context.Context, b model.SystemBinding, 
 		if e != nil {
 			return b, e
 		}
-		if b.Slot == "upgrade_builder" && (localRuntimeID == "" || a.RuntimeID != localRuntimeID || a.AdapterID != "codex-agent") {
-			return b, fmt.Errorf("%w: 升级构建目前只支持升级守护进程所在机器的 codex-agent 成员", model.ErrValidation)
+		if b.Slot == "upgrade_builder" && (localRuntimeID == "" || a.RuntimeID != localRuntimeID || (a.AdapterID != "codex-agent" && a.AdapterID != "cursor-agent")) {
+			return b, fmt.Errorf("%w: 升级构建支持升级守护进程所在机器的 Codex 或 Cursor 成员", model.ErrValidation)
 		}
 	}
 	b.Version = current.Version + 1

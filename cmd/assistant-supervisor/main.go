@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"work-assistant/internal/id"
+	"work-assistant/internal/localconfig"
 	"work-assistant/internal/model"
 	"work-assistant/internal/store"
 	"work-assistant/internal/upgrade"
@@ -34,6 +35,10 @@ type options struct {
 	runtimeID         string
 	modelID           string
 	codexBinary       string
+	cursorBinary      string
+	adapterID         string
+	allowRemote       bool
+	noAPIAuth         bool
 	goBinary          string
 	nodeBinary        string
 	instanceID        string
@@ -55,6 +60,10 @@ func run() error {
 	flag.StringVar(&o.runtimeID, "runtime-id", "local", "stable local runtime ID")
 	flag.StringVar(&o.modelID, "model", "", "model for the local helper and upgrade agent")
 	flag.StringVar(&o.codexBinary, "codex-binary", "codex", "installed Codex CLI path")
+	flag.StringVar(&o.cursorBinary, "cursor-binary", "agent", "installed Cursor Agent CLI path")
+	flag.StringVar(&o.adapterID, "adapter", "codex-agent", "local helper and default upgrade adapter: codex-agent or cursor-agent")
+	flag.BoolVar(&o.allowRemote, "allow-remote", false, "explicitly allow non-loopback listening with runtime authentication")
+	flag.BoolVar(&o.noAPIAuth, "no-api-auth", false, "explicitly disable browser API authentication on a trusted network")
 	flag.StringVar(&o.goBinary, "go-binary", "", "Go compiler used to validate candidates")
 	flag.StringVar(&o.nodeBinary, "node-binary", "", "Node.js used to syntax-check browser code")
 	flag.Parse()
@@ -68,13 +77,8 @@ func run() error {
 	if o.root == string(filepath.Separator) || o.dataDir == string(filepath.Separator) {
 		return errors.New("root and data directory must not be the filesystem root")
 	}
-	host, _, err := net.SplitHostPort(o.listen)
-	if err != nil {
+	if _, err = localconfig.ControlURL(o.listen, o.allowRemote, o.noAPIAuth, os.Getenv("ASSISTANT_API_TOKEN"), os.Getenv("ASSISTANT_RUNTIME_TOKEN")); err != nil {
 		return err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return errors.New("assistant-supervisor accepts a loopback child address only")
 	}
 	if err := os.MkdirAll(o.dataDir, 0o700); err != nil {
 		return err
@@ -108,22 +112,46 @@ func run() error {
 		return err
 	}
 	defer state.Close()
-	manager, err := upgrade.New(upgrade.Config{RuntimeID: o.runtimeID, Root: o.root, DataDir: o.dataDir, GoBinary: o.goBinary, NodeBinary: o.nodeBinary, ModelID: o.modelID, CodexBinary: o.codexBinary}, nil)
+	manager, err := upgrade.New(upgrade.Config{RuntimeID: o.runtimeID, Root: o.root, DataDir: o.dataDir, GoBinary: o.goBinary, NodeBinary: o.nodeBinary, ModelID: o.modelID, CodexBinary: o.codexBinary, CursorBinary: o.cursorBinary, AdapterID: o.adapterID}, nil)
 	if err != nil {
 		return err
 	}
 	o.validationSandbox = manager.ValidationSandboxName()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	child := newChildController(o)
-	if err := child.Start(); err != nil {
+	if err := manager.CheckValidationSandbox(ctx); err != nil {
 		return err
 	}
+	child := newChildController(o)
 	defer func() {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer stopCancel()
 		_ = child.Stop(stopCtx)
 	}()
+	// An interrupted installation may have replaced only some files. Recover
+	// that durable transaction before exposing any potentially mixed release.
+	items, err := state.ListUpgrades(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range items {
+		if item.State != "INSTALLING" {
+			continue
+		}
+		if err := install(ctx, state, manager, child, item, o.listen); err != nil {
+			return err
+		}
+		current, err := state.GetUpgrade(ctx, item.ID)
+		if err != nil {
+			return err
+		}
+		if current.State != "SUCCEEDED" && current.State != "ROLLED_BACK" {
+			return fmt.Errorf("interrupted upgrade needs recovery before startup: %s: %s", item.ID, current.Error)
+		}
+	}
+	if err := child.Start(); err != nil {
+		return err
+	}
 	if err := waitHealthy(ctx, o.listen, o.instanceID, 12*time.Second); err != nil {
 		return fmt.Errorf("start local workspace: %w", err)
 	}
@@ -154,13 +182,17 @@ func run() error {
 				case "WAITING_IDLE":
 					installing, beginErr := state.BeginUpgradeInstall(ctx, item.ID)
 					if beginErr == nil {
-						install(ctx, state, manager, child, installing, o.listen)
+						if err := install(ctx, state, manager, child, installing, o.listen); err != nil {
+							return err
+						}
 					} else if !errors.Is(beginErr, model.ErrConflict) {
 						slog.Error("begin upgrade install", "upgrade_id", item.ID, "error", beginErr)
 					}
 					goto nextTick
 				case "INSTALLING":
-					install(ctx, state, manager, child, item, o.listen)
+					if err := install(ctx, state, manager, child, item, o.listen); err != nil {
+						return err
+					}
 					goto nextTick
 				}
 			}
@@ -208,21 +240,27 @@ func prepare(parent context.Context, state *store.Store, manager *upgrade.Manage
 	}
 }
 
-func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, child *childController, item model.Upgrade, listen string) {
+func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, child *childController, item model.Upgrade, listen string) error {
+	child.mu.Lock()
+	recovering := child.command == nil
+	child.mu.Unlock()
 	if err := manager.VerifyCandidate(item); err != nil {
-		_ = state.FinishUpgrade(ctx, item.ID, "FAILED", err.Error(), "")
-		return
+		if recovering {
+			return recordRecoveryFailure(state, item, err)
+		}
+		return state.FinishUpgrade(ctx, item.ID, "FAILED", err.Error(), "")
 	}
 	if manager.IsApplied(item) {
 		if err := child.Ensure(); err == nil && waitHealthy(ctx, listen, child.options.instanceID, 20*time.Second) == nil {
-			_ = state.FinishUpgrade(ctx, item.ID, "SUCCEEDED", "", manager.BackupPath(item.ID))
-			return
+			return state.FinishUpgrade(ctx, item.ID, "SUCCEEDED", "", manager.BackupPath(item.ID))
 		}
 	}
 	backup, err := manager.Backup(ctx, state, item)
 	if err != nil {
-		_ = state.FinishUpgrade(ctx, item.ID, "FAILED", "backup: "+err.Error(), "")
-		return
+		if recovering {
+			return recordRecoveryFailure(state, item, err)
+		}
+		return state.FinishUpgrade(ctx, item.ID, "FAILED", "backup: "+err.Error(), "")
 	}
 	stopCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	err = child.Stop(stopCtx)
@@ -240,10 +278,7 @@ func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, 
 		err = waitHealthy(ctx, listen, child.options.instanceID, 20*time.Second)
 	}
 	if err == nil {
-		if finishErr := state.FinishUpgrade(ctx, item.ID, "SUCCEEDED", "", backup); finishErr != nil {
-			slog.Error("record successful upgrade", "upgrade_id", item.ID, "error", finishErr)
-		}
-		return
+		return state.FinishUpgrade(ctx, item.ID, "SUCCEEDED", "", backup)
 	}
 	installErr := err
 	rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 12*time.Second)
@@ -259,15 +294,32 @@ func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, 
 		rollbackErr = waitHealthy(ctx, listen, child.options.instanceID, 20*time.Second)
 	}
 	if rollbackErr == nil {
-		_ = state.FinishUpgrade(ctx, item.ID, "ROLLED_BACK", installErr.Error(), backup)
-		return
+		return state.FinishUpgrade(ctx, item.ID, "ROLLED_BACK", installErr.Error(), backup)
 	}
-	_ = state.FinishUpgrade(ctx, item.ID, "FAILED", fmt.Sprintf("install: %v; rollback: %v", installErr, rollbackErr), backup)
+	return recordRecoveryFailure(state, item, fmt.Errorf("install: %v; rollback: %v", installErr, rollbackErr))
+}
+
+// Keep INSTALLING + maintenance durable when neither release is verified.
+// Marking it FAILED and clearing maintenance would let the next systemd restart
+// boot a mixed/broken tree as if there had never been an interrupted install.
+func recordRecoveryFailure(state *store.Store, item model.Upgrade, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	current, err := state.GetUpgrade(ctx, item.ID)
+	if err == nil {
+		current.Error = "升级恢复受阻；保留维护锁并停止服务：" + cause.Error()
+		_, err = state.ChangeUpgrade(ctx, current, current.Version, "UpgradeRecoveryBlocked")
+	}
+	return fmt.Errorf("upgrade %s requires recovery: %w (record: %v)", item.ID, cause, err)
 }
 
 func waitHealthy(ctx context.Context, listen, instanceID string, timeout time.Duration) error {
+	base, err := localconfig.HealthBaseURL(listen)
+	if err != nil {
+		return err
+	}
 	client := &http.Client{Timeout: time.Second}
-	return waitHealthyWithClient(ctx, client, "http://"+listen+"/health/ready", instanceID, timeout)
+	return waitHealthyWithClient(ctx, client, base+"/health/ready", instanceID, timeout)
 }
 
 func waitHealthyWithClient(ctx context.Context, client *http.Client, url, instanceID string, timeout time.Duration) error {
@@ -343,16 +395,25 @@ type childController struct {
 func newChildController(o options) *childController { return &childController{options: o} }
 
 func (c *childController) childArgs() []string {
-	return []string{
+	args := []string{
 		"--data", c.options.dataDir,
 		"--runtime-id", c.options.runtimeID,
 		"--listen", c.options.listen,
 		"--codex-binary", c.options.codexBinary,
+		"--cursor-binary", c.options.cursorBinary,
+		"--adapter", c.options.adapterID,
 		"--model", c.options.modelID,
 		"--supervisor-instance", c.options.instanceID,
 		"--upgrade-validation-sandbox", c.options.validationSandbox,
 		"--upgrade-enabled",
 	}
+	if c.options.allowRemote {
+		args = append(args, "--allow-remote")
+	}
+	if c.options.noAPIAuth {
+		args = append(args, "--no-api-auth")
+	}
+	return args
 }
 
 func (c *childController) startLocked() error {
@@ -375,6 +436,7 @@ wait "$child"`
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	} else {
 		command = exec.Command(binary, c.childArgs()...)
+		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 	command.Dir = c.options.root
 	command.Env = os.Environ()

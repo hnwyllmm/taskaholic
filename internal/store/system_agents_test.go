@@ -313,3 +313,24 @@ func TestUpgradeCapturesBuilderAndReservesCapacity(t *testing.T) {
 		t.Fatal("reservation leaked", fresh, err)
 	}
 }
+
+func TestUpgradeAcceptsLocalCursorBuilderOnly(t *testing.T) {
+	ctx := context.Background()
+	s, a, _ := workFixture(t)
+	err := s.RegisterRuntime(ctx, model.RuntimeHello{RuntimeID: "cursor-local", Epoch: "cursor-epoch", Capabilities: map[string]any{"adapters": map[string]any{"cursor-agent": map[string]any{"role_instructions": true, "structured_output": true, "read_only_runs": true}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err = s.CreateAgent(ctx, model.AgentProfile{Name: "Cursor builder", RoleID: a.RoleID, RuntimeID: "cursor-local", AdapterID: "cursor-agent", ModelID: "auto", MaxConcurrent: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := bindSystem(t, s, "upgrade_builder", a)
+	if _, err := s.UpdateSystemBinding(ctx, b, b.Version, "other-runtime"); !errors.Is(err, model.ErrValidation) {
+		t.Fatal("remote Cursor allowed", err)
+	}
+	u, err := s.CreateUpgrade(ctx, "Cursor upgrade", "small change")
+	if err != nil || u.Builder == nil || u.Builder.AdapterID != "cursor-agent" || u.Builder.ModelID != "auto" {
+		t.Fatal(u, err)
+	}
+}

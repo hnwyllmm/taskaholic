@@ -16,7 +16,7 @@
         const base=el('option',slot.default_mode==='rules'?'规则路由 · 按能力与负载选择':slot.slot==='upgrade_builder'?'自动 · 使用启动配置':'自动 · 选择在线空闲成员');base.value='';select.append(base);
         for(const a of agents){
           const rt=runtimes.find(r=>r.runtime_id===a.runtime_id),features=rt?.capabilities?.adapters?.[a.adapter_id];
-          const compatible=slot.slot==='upgrade_builder'?config.upgrade_enabled&&a.runtime_id===config.local_runtime_id&&a.adapter_id==='codex-agent':features?.role_instructions&&features?.structured_output&&features?.read_only_runs;
+          const compatible=slot.slot==='upgrade_builder'?config.upgrade_enabled&&a.runtime_id===config.local_runtime_id&&['codex-agent','cursor-agent'].includes(a.adapter_id):features?.role_instructions&&features?.structured_output&&features?.read_only_runs;
           const o=el('option',a.name+' · '+(a.model_id||'默认模型')+(a.state!=='ACTIVE'?' · 已停用':!compatible?' · 不兼容':''));o.value=a.agent_id;o.disabled=a.state!=='ACTIVE'||!compatible;select.append(o);
         }
         select.value=b.agent_id||'';label.append(select);form.append(label);

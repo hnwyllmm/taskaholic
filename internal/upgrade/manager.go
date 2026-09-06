@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -33,15 +34,17 @@ const maxSourceBytes = 32 << 20
 var sourceTargets = []string{"cmd", "internal", "go.mod", "go.sum", "README.md", "HOME-PAGES-VERIFICATION.md", "WORKBENCH-VERIFICATION.md"}
 
 type Config struct {
-	RuntimeID   string
-	Root        string
-	DataDir     string
-	GoBinary    string
-	NodeBinary  string
-	ModelID     string
-	CodexBinary string
+	RuntimeID    string
+	Root         string
+	DataDir      string
+	GoBinary     string
+	NodeBinary   string
+	ModelID      string
+	CodexBinary  string
+	CursorBinary string
+	AdapterID    string
 	// ValidationSandbox can be replaced by another OS/container executor. When
-	// nil, this release selects macOS Seatbelt and fails closed elsewhere.
+	// nil, select macOS Seatbelt or Linux bubblewrap; never run unconfined.
 	ValidationSandbox ValidationSandbox
 }
 
@@ -62,8 +65,11 @@ func New(config Config, adapter agent.Adapter) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	if config.AdapterID == "" {
+		config.AdapterID = "codex-agent"
+	}
 	if adapter == nil {
-		adapter, err = agent.NewCodexAdapter(config.CodexBinary, "workspace-write")
+		adapter, err = newBuilderAdapter(config, config.AdapterID)
 		if err != nil {
 			return nil, err
 		}
@@ -77,14 +83,47 @@ func New(config Config, adapter agent.Adapter) (*Manager, error) {
 	if config.NodeBinary == "" {
 		config.NodeBinary, _ = exec.LookPath("node")
 	}
-	if config.ValidationSandbox == nil {
-		config.ValidationSandbox = defaultValidationSandbox()
+	config.GoBinary, err = exec.LookPath(config.GoBinary)
+	if err != nil {
+		return nil, err
+	}
+	config.GoBinary, err = filepath.EvalSymlinks(config.GoBinary)
+	if err != nil {
+		return nil, err
+	}
+	if config.NodeBinary != "" {
+		config.NodeBinary, err = exec.LookPath(config.NodeBinary)
+		if err != nil {
+			return nil, err
+		}
+		config.NodeBinary, err = filepath.EvalSymlinks(config.NodeBinary)
+		if err != nil {
+			return nil, err
+		}
 	}
 	moduleCache := filepath.Join(config.DataDir, ".toolchains", "gomodcache")
 	if info, statErr := os.Stat(moduleCache); statErr != nil || !info.IsDir() {
 		moduleCache = goEnvironment(config.GoBinary, "GOMODCACHE")
 	}
+	if config.ValidationSandbox == nil {
+		config.ValidationSandbox = defaultValidationSandbox(goEnvironment(config.GoBinary, "GOROOT"), config.NodeBinary, moduleCache)
+	}
 	return &Manager{config: config, adapter: adapter, sandbox: config.ValidationSandbox, moduleCache: moduleCache}, nil
+}
+
+func newBuilderAdapter(config Config, adapterID string) (agent.Adapter, error) {
+	switch adapterID {
+	case "codex-agent":
+		return agent.NewCodexAdapter(config.CodexBinary, "workspace-write")
+	case "cursor-agent":
+		reader, err := agent.NewCursorAdapter(config.CursorBinary)
+		if err != nil {
+			return nil, err
+		}
+		return cursorBuilder{reader: reader}, nil
+	default:
+		return nil, fmt.Errorf("unsupported upgrade builder adapter %q", adapterID)
+	}
 }
 
 func (m *Manager) jobDir(id string) string       { return filepath.Join(m.config.DataDir, "upgrades", id) }
@@ -95,6 +134,31 @@ func (m *Manager) backupDir(id string) string    { return filepath.Join(m.jobDir
 func (m *Manager) BackupPath(id string) string { return m.backupDir(id) }
 
 func (m *Manager) ValidationSandboxName() string { return m.sandbox.Name() }
+
+// A sandbox executable existing on PATH does not prove that its kernel policy
+// is usable (e.g. user namespaces may be disabled). Check before advertising it.
+func (m *Manager) CheckValidationSandbox(ctx context.Context) error {
+	parent := filepath.Join(m.config.DataDir, "upgrades")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return err
+	}
+	job, err := os.MkdirTemp(parent, "sandbox-check-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(job) // Only this owned, freshly allocated probe directory.
+	directory := filepath.Join(job, "candidate")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	output, err := m.runCommand(ctx, directory, "/usr/bin/true")
+	if err != nil {
+		return fmt.Errorf("validation sandbox preflight: %w: %s", err, output)
+	}
+	return nil
+}
 
 type fileRecord struct {
 	Path   string
@@ -246,18 +310,40 @@ func copyFile(source, destination string, mode fs.FileMode) error {
 	if err != nil {
 		return err
 	}
+	return writeAtomic(destination, data, mode)
+}
+
+func writeAtomic(destination string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	temporary := destination + ".upgrade-new"
-	if err := os.WriteFile(temporary, data, mode.Perm()); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(destination), ".upgrade-new-")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, destination); err != nil {
-		_ = os.Remove(temporary)
+	defer os.Remove(file.Name())
+	if err = file.Chmod(mode.Perm()); err == nil {
+		_, err = file.Write(data)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
 		return err
 	}
-	return nil
+	if closeErr != nil {
+		return closeErr
+	}
+	if err = os.Rename(file.Name(), destination); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(destination))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func copyManifest(source, destination string, files map[string]fileRecord) error {
@@ -301,6 +387,7 @@ func protected(path string) bool {
 		"cmd/assistant-supervisor/",
 		"cmd/assistant-local/",
 		"internal/upgrade/",
+		"internal/localconfig/",
 		"internal/model/upgrade.go",
 		"internal/store/",
 		"internal/backup/",
@@ -370,23 +457,37 @@ func (m *Manager) Prepare(ctx context.Context, upgrade model.Upgrade) model.Upgr
 升级需求：
 ` + upgrade.Instructions
 	var eventLog strings.Builder
+	var eventMu sync.Mutex
 	modelID, agentID := m.config.ModelID, ""
+	builder := m.adapter
 	if upgrade.Builder != nil {
-		if m.config.RuntimeID == "" || upgrade.Builder.RuntimeID != m.config.RuntimeID || upgrade.Builder.AdapterID != "codex-agent" {
+		if m.config.RuntimeID == "" || upgrade.Builder.RuntimeID != m.config.RuntimeID {
 			return failed(upgrade, fmt.Errorf("configured upgrade builder is not supported by this local supervisor"))
+		}
+		if upgrade.Builder.AdapterID != m.config.AdapterID {
+			builder, err = newBuilderAdapter(m.config, upgrade.Builder.AdapterID)
+			if err != nil {
+				return failed(upgrade, err)
+			}
 		}
 		modelID, agentID = upgrade.Builder.ModelID, upgrade.Builder.ID
 		prompt = upgrade.Builder.Role.ExecutionInstructions() + "\n\n" + prompt
 	}
-	result := m.adapter.Run(ctx, model.RunSpec{AgentID: agentID, TaskTitle: upgrade.Title, TaskGoal: upgrade.Instructions, Instructions: prompt, ModelID: modelID, OutputSchema: preparationSchema}, candidate, nil, func(event agent.Event) {
+	result := builder.Run(ctx, model.RunSpec{AgentID: agentID, TaskTitle: upgrade.Title, TaskGoal: upgrade.Instructions, Instructions: prompt, ModelID: modelID, OutputSchema: preparationSchema}, candidate, nil, func(event agent.Event) {
+		eventMu.Lock()
+		defer eventMu.Unlock()
 		if event.AgentSessionRef != "" {
 			upgrade.SessionRef = event.AgentSessionRef
 		}
 		if event.Message != "" {
-			fmt.Fprintf(&eventLog, "%s: %s\n", event.Stream, event.Message)
+			if eventLog.Len() < 30000 {
+				fmt.Fprintf(&eventLog, "%s: %s\n", event.Stream, clipped(event.Message, 4000))
+			}
 		}
 		if event.Error != "" {
-			fmt.Fprintf(&eventLog, "error: %s\n", event.Error)
+			if eventLog.Len() < 30000 {
+				fmt.Fprintf(&eventLog, "error: %s\n", clipped(event.Error, 4000))
+			}
 		}
 	})
 	upgrade.Log = clipped(eventLog.String(), 30000)
@@ -432,6 +533,15 @@ func (m *Manager) Prepare(ctx context.Context, upgrade model.Upgrade) model.Upgr
 		sort.Strings(javascript)
 		for _, file := range javascript {
 			output, err := m.runCommand(ctx, candidate, m.config.NodeBinary, "--check", file)
+			upgrade.Log += output
+			if err != nil {
+				return failed(upgrade, err)
+			}
+		}
+		javascriptTests, _ := filepath.Glob(filepath.Join(candidate, "internal", "server", "ui", "*.test.cjs"))
+		if len(javascriptTests) > 0 {
+			args := append([]string{m.config.NodeBinary, "--test"}, javascriptTests...)
+			output, err := m.runCommand(ctx, candidate, args...)
 			upgrade.Log += output
 			if err != nil {
 				return failed(upgrade, err)
@@ -554,7 +664,14 @@ func (m *Manager) validationEnvironment(job string) []string {
 
 func goEnvironment(goBinary, name string) string {
 	command := exec.Command(goBinary, "env", name)
-	command.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	// Pin the selected executable's own toolchain, not an older GOROOT exported
+	// by the user's shell. Candidate commands get the same clean policy.
+	for _, value := range os.Environ() {
+		if !strings.HasPrefix(value, "GOROOT=") && !strings.HasPrefix(value, "GOTOOLCHAIN=") && !strings.HasPrefix(value, "GOENV=") {
+			command.Env = append(command.Env, value)
+		}
+	}
+	command.Env = append(command.Env, "GOTOOLCHAIN=local", "GOENV=off")
 	output, err := command.Output()
 	if err != nil {
 		return ""
@@ -786,6 +903,11 @@ func (m *Manager) IsApplied(upgrade model.Upgrade) bool {
 func (m *Manager) Backup(ctx context.Context, state *store.Store, upgrade model.Upgrade) (string, error) {
 	backup := m.backupDir(upgrade.ID)
 	if _, err := os.Stat(filepath.Join(backup, "control.sqlite")); err == nil {
+		if _, err := os.Stat(filepath.Join(m.config.DataDir, "runtime.sqlite")); err == nil {
+			if err := protection.VerifySQLite(ctx, filepath.Join(backup, "runtime.sqlite")); err != nil {
+				return "", err
+			}
+		}
 		return backup, protection.VerifySQLite(ctx, filepath.Join(backup, "control.sqlite"))
 	}
 	if err := os.MkdirAll(filepath.Join(backup, "source"), 0o700); err != nil {
@@ -809,6 +931,24 @@ func (m *Manager) Backup(ctx context.Context, state *store.Store, upgrade model.
 		if err := copyFile(filepath.Join(m.config.Root, "bin", name), filepath.Join(backup, "bin", name), record.Mode); err != nil {
 			return "", err
 		}
+	}
+	// Save the runtime spool too; control.sqlite is the last, durable completion
+	// marker. Never overwrite either live database during a code rollback.
+	runtimeDB := filepath.Join(m.config.DataDir, "runtime.sqlite")
+	if _, err := os.Stat(runtimeDB); err == nil {
+		destination := filepath.Join(backup, "runtime.sqlite")
+		if _, err := os.Stat(destination); errors.Is(err, os.ErrNotExist) {
+			if err := (protection.DatabaseSource{Path: runtimeDB}).Backup(ctx, destination); err != nil {
+				return "", err
+			}
+		} else if err != nil {
+			return "", err
+		}
+		if err := protection.VerifySQLite(ctx, destination); err != nil {
+			return "", err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
 	database := filepath.Join(backup, "control.sqlite")
 	if err := state.Backup(ctx, database); err != nil {
