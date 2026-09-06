@@ -29,7 +29,8 @@ func main() {
 	}
 }
 func run() error {
-	listen := flag.String("listen", "127.0.0.1:17343", "loopback HTTP address")
+	listen := flag.String("listen", "127.0.0.1:17343", "HTTP listen address; defaults to loopback")
+	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback HTTP listening with separate API and runtime tokens (32+ characters each)")
 	dataDir := flag.String("data", "./data/local", "persistent data directory")
 	runtimeID := flag.String("runtime-id", "local", "stable local runtime ID; retain it across restarts")
 	modelID := flag.String("model", "", "model for the initial local helper agent; existing agents are never overwritten")
@@ -40,13 +41,11 @@ func run() error {
 	supervisorInstance := flag.String("supervisor-instance", "", "opaque supervisor instance used by health checks")
 	upgradeValidationSandbox := flag.String("upgrade-validation-sandbox", "unavailable", "candidate validation sandbox maintained by the supervisor")
 	flag.Parse()
-	host, _, err := net.SplitHostPort(*listen)
+	apiToken := os.Getenv("ASSISTANT_API_TOKEN")
+	runtimeToken := os.Getenv("ASSISTANT_RUNTIME_TOKEN")
+	controlURL, err := localControlURL(*listen, *allowRemote, apiToken, runtimeToken)
 	if err != nil {
 		return err
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("assistant-local accepts loopback only; configure authenticated assistantd explicitly for remote access")
 	}
 	// Fail before touching presence or the database when a local instance is
 	// already listening. This avoids a double-click taking the live runtime offline.
@@ -86,10 +85,8 @@ func run() error {
 	if _, err := backups.Capture(ctx, "startup"); err != nil {
 		return fmt.Errorf("required startup recovery point: %w", err)
 	}
-	apiToken := os.Getenv("ASSISTANT_API_TOKEN")
-	runtimeToken := os.Getenv("ASSISTANT_RUNTIME_TOKEN")
 	control := server.New(server.Config{LocalRuntimeID: *runtimeID, Listen: *listen, APIToken: apiToken, RuntimeToken: runtimeToken, UpgradeEnabled: *upgradeEnabled, UpgradeValidationSandbox: *upgradeValidationSandbox, InstanceID: *supervisorInstance, Backups: backups}, state, nil)
-	d, err := runtimehost.New(runtimehost.Config{RuntimeID: *runtimeID, ControlURL: "http://" + *listen, Token: runtimeToken, WorkRoot: filepath.Join(*dataDir, "workspaces")}, spool, nil, adapter)
+	d, err := runtimehost.New(runtimehost.Config{RuntimeID: *runtimeID, ControlURL: controlURL, Token: runtimeToken, WorkRoot: filepath.Join(*dataDir, "workspaces")}, spool, nil, adapter)
 	if err != nil {
 		return err
 	}
