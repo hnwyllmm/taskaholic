@@ -7,7 +7,7 @@ import (
 
 // Validate remote exposure before touching the database or opening a socket.
 // Binding to all interfaces must not make the local Runtime dial 0.0.0.0/::.
-func localControlURL(listen string, allowRemote bool, apiToken, runtimeToken string) (string, error) {
+func localControlURL(listen string, allowRemote, noAPIAuth bool, apiToken, runtimeToken string) (string, error) {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
 		return "", err
@@ -20,7 +20,10 @@ func localControlURL(listen string, allowRemote bool, apiToken, runtimeToken str
 		if !allowRemote {
 			return "", fmt.Errorf("non-loopback listening requires explicit --allow-remote")
 		}
-		if !validRemoteToken(apiToken) || !validRemoteToken(runtimeToken) || apiToken == runtimeToken {
+		if !validRemoteToken(runtimeToken) {
+			return "", fmt.Errorf("remote listening requires ASSISTANT_RUNTIME_TOKEN with at least 32 printable ASCII characters without whitespace, even with --no-api-auth")
+		}
+		if !noAPIAuth && (!validRemoteToken(apiToken) || apiToken == runtimeToken) {
 			return "", fmt.Errorf("remote listening requires separate ASSISTANT_API_TOKEN and ASSISTANT_RUNTIME_TOKEN values, each at least 32 printable ASCII characters without whitespace")
 		}
 	}

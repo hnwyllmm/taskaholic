@@ -84,6 +84,7 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	mux.HandleFunc("GET /", server.handleRoot)
 	mux.HandleFunc("GET /health/live", server.handleLive)
 	mux.HandleFunc("GET /health/ready", server.handleReady)
+	mux.HandleFunc("GET /api/v1/auth/config", server.handleAuthConfig)
 	mux.Handle("POST /api/v1/tasks", server.apiAuth(http.HandlerFunc(server.handleCreateTask)))
 	mux.Handle("GET /api/v1/tasks", server.apiAuth(http.HandlerFunc(server.handleListTasks)))
 	mux.Handle("GET /api/v1/tasks/{task_id}", server.apiAuth(http.HandlerFunc(server.handleGetTask)))

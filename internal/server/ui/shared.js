@@ -1,7 +1,8 @@
 'use strict';
 window.WA=(()=>{
   const el=(tag,text,cls)=>{const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;};
-  const token=()=>{try{return sessionStorage.getItem('wa.apiToken')||'';}catch{return '';}};
+  let apiTokenRequired=true;
+  const token=()=>{if(!apiTokenRequired)return '';try{return sessionStorage.getItem('wa.apiToken')||'';}catch{return '';}};
   const saveToken=value=>{try{if(value)sessionStorage.setItem('wa.apiToken',value);else sessionStorage.removeItem('wa.apiToken');}catch{throw Error('浏览器不允许保存标签页会话，请允许会话存储后再连接。');}};
   // getRandomValues also works on HTTP intranet origins; randomUUID requires
   // a secure context. Keep 128 bits of randomness for idempotency keys.
@@ -13,6 +14,16 @@ window.WA=(()=>{
   const link=(text,href,cls)=>{const a=el('a',text,cls);a.href=href;return a;};
   const badge=state=>{const n=el('span',labels[state]||state,'status-pill');n.dataset.state=state;return n;};
   const date=ms=>new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  const syncAccess=async(settings,indicator)=>{
+    try{
+      const response=await fetch('/api/v1/auth/config',{cache:'no-store'});
+      if(!response.ok)return;
+      const config=await response.json();
+      if(typeof config.api_token_required!=='boolean')return;
+      apiTokenRequired=config.api_token_required;
+      settings.hidden=!apiTokenRequired;indicator.hidden=apiTokenRequired;
+    }catch{/* Keep connection settings available when policy cannot be read. */}
+  };
   const header=document.querySelector('[data-app-shell]');
   if(header){
     const page=document.body.dataset.page;header.className='app-header';
@@ -20,7 +31,8 @@ window.WA=(()=>{
     const nav=el('nav',null,'app-nav');nav.setAttribute('aria-label','主导航');for(const [id,title,url] of [['home','首页','/'],['tasks','工作列表','/tasks'],['members','成员管理','/members'],['team','团队资料','/team'],['system','系统状态','/system']]){const a=link(title,url,id===page?'selected':'');if(id===page)a.setAttribute('aria-current','page');nav.append(a);}header.append(nav);
     const connection=el('div',null,'app-connection'),status=el('span','连接中…','connection-label');status.id=page==='tasks'?'health':'connection';connection.append(status);
     const settings=el('details',null,'auth-settings');settings.append(el('summary','连接设置'));const panel=el('div',null,'auth-popover'),label=el('label','API Token'),input=el('input');input.id='token';input.type='password';input.autocomplete='off';input.value=token();label.append(input);panel.append(label,el('p','连接后仅保留在此标签页会话中，支持切换页面；不写入 URL 或长期存储。','muted small'));const button=el('button','连接');button.id='connect';panel.append(button);const clear=el('button','清除 Token');clear.onclick=()=>{saveToken('');input.value='';location.reload();};panel.append(clear);settings.append(panel);connection.append(settings);
+    const access=el('span','免登录模式','small muted');access.hidden=true;access.title='所有能连接此地址的设备都可以访问数据并操作任务；仅用于受信任网络。';connection.append(access);void syncAccess(settings,access);
     if(page==='tasks'){const b=el('button','备份');b.id='backup';connection.append(b);}header.append(connection);
   }
-  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date};
+  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,syncAccess};
 })();

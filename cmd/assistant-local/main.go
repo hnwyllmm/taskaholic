@@ -30,7 +30,8 @@ func main() {
 }
 func run() error {
 	listen := flag.String("listen", "127.0.0.1:17343", "HTTP listen address; defaults to loopback")
-	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback HTTP listening with separate API and runtime tokens (32+ characters each)")
+	allowRemote := flag.Bool("allow-remote", false, "allow non-loopback HTTP listening; authentication is required unless --no-api-auth is explicit")
+	noAPIAuth := flag.Bool("no-api-auth", false, "disable browser/control API authentication on a trusted network; runtime authentication is unchanged")
 	dataDir := flag.String("data", "./data/local", "persistent data directory")
 	runtimeID := flag.String("runtime-id", "local", "stable local runtime ID; retain it across restarts")
 	modelID := flag.String("model", "", "model for the initial local helper agent; existing agents are never overwritten")
@@ -43,7 +44,11 @@ func run() error {
 	flag.Parse()
 	apiToken := os.Getenv("ASSISTANT_API_TOKEN")
 	runtimeToken := os.Getenv("ASSISTANT_RUNTIME_TOKEN")
-	controlURL, err := localControlURL(*listen, *allowRemote, apiToken, runtimeToken)
+	if *noAPIAuth {
+		apiToken = ""
+		slog.Warn("control API authentication disabled; all reachable network clients can access data and operate tasks")
+	}
+	controlURL, err := localControlURL(*listen, *allowRemote, *noAPIAuth, apiToken, runtimeToken)
 	if err != nil {
 		return err
 	}

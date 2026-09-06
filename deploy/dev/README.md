@@ -5,19 +5,21 @@
 ## 运行与访问
 
 - systemd 用户服务：`work-assistant.service`；用户已启用 linger，服务启用后不依赖 SSH 会话存活，进程异常退出自动重启。
-- 监听：`0.0.0.0:17343`，可通过 dev 的网络地址访问，例如 `http://6.12.233.133:17343/`（需所在网络能路由到 dev）。显式开启 `--allow-remote`，启动时要求独立的 API / Runtime Token，各至少 32 个字符；内部 Runtime 仍连 `127.0.0.1`。默认启动地址保持 loopback，未更改其它实例。
+- 监听：`0.0.0.0:17343`，可通过 dev 的网络地址访问，例如 `http://6.12.233.133:17343/`（需所在网络能路由到 dev）。按用户要求显式开启 `--allow-remote --no-api-auth`，浏览器/控制 API 免登录；Runtime 仍要求至少 32 字符的 Token，内部连接仍使用 `127.0.0.1`。其它实例及默认启动设置不变。
 - 主成员：`Cursor 工作助手`，Adapter 为 `cursor-agent`，模型为 Cursor 的 `auto`。首页助理、角色设计和 AI 路由已明确绑定此成员，之后可在成员管理的系统岗位中调整。
 - 普通工作与验收仍只读。Cursor 使用原生 Ask 模式和开启的沙箱；每个隔离 Session 目录有自己的 Cursor 权限文件，禁止 Write、Shell 和 MCP 调用。不会修改全局 Cursor 配置、使用 `--force/--yolo` 或自动批准外部 MCP。当前主要支持已有材料的文档、分析、只读原生文件工具和结构化文本交付。
 - Cursor 保留自己的原生会话；重试/验收用 `--resume` 指定原 chat ID，返回不同 ID 时失败且保留原绑定。结果须是完整 JSON 对象，具体业务再按固定协议验证，不把提示词当作权限校验。
 - Linux 没有当前自动升级器要求的 macOS 验证沙箱，因此本部署关闭自动升级，不以裸执行代替。常驻与自动重启由 systemd 负责，升级源码/程序目前需人工发布。
 
-直接访问时，在连接设置填写 dev 的 `ASSISTANT_API_TOKEN`。当前是明文 HTTP，Token 鉴权不提供传输加密，只在可信网络使用。没有修改防火墙、NAT 或配置 HTTPS；不可信网络请使用现有 SSH 隧道（17345 不影响 Mac 本机已有的 17343）：
+直接访问无需填写 Token，页面显示“免登录模式”。能连接此端口的设备均可读取数据、创建/操作任务及访问备份；应用不会自动判断请求是否来自局域网/VPN。当前是明文 HTTP，网络访问范围由用户的局域网、VPN 和防火墙控制；本次未修改防火墙或 NAT。不要将免登录端口直接暴露到不受信任的网络。
+
+已有 SSH 隧道仍可使用（17345 不影响 Mac 本机已有的 17343），但隧道本身不会关闭 dev 的直接访问入口：
 
 ```bash
 ssh -N -L 127.0.0.1:17345:127.0.0.1:17343 dev
 ```
 
-打开 `http://127.0.0.1:17345/`，连接设置填写 dev 的 `ASSISTANT_API_TOKEN`。Token 位于 dev 的 `~/.config/work-assistant/dev.env`，权限 0600；不要放进 URL、提交 Git 或粘贴到公共聊天。Cursor 登录单独由 `ssh dev` 后的 `agent login` 管理，服务复用该账户已有登录，不传输 Mac 凭据。
+打开 `http://127.0.0.1:17345/` 也无需 Token。原 API Token 保留在 dev 的 `~/.config/work-assistant/dev.env`（0600），目前被 `--no-api-auth` 忽略，并未删除。需要恢复网页认证时，从 systemd 单元移除 `--no-api-auth`，执行 `daemon-reload` 并重启服务、刷新网页即可。Runtime Token 始终保留并生效，不能填写到网页。Cursor 登录仍单独由 `ssh dev` 后的 `agent login` 管理，与网页免登录无关。
 
 ```bash
 systemctl --user status work-assistant
@@ -40,7 +42,7 @@ cd /data/wangyunlai.wyl/workspace/work-assistant
 GOTOOLCHAIN=go1.27.1 GOPROXY=https://goproxy.cn go test ./...
 GOTOOLCHAIN=go1.27.1 GOPROXY=https://goproxy.cn go vet ./...
 GOTOOLCHAIN=go1.27.1 GOPROXY=https://goproxy.cn go build -trimpath -o ./bin/ ./cmd/...
-node --test internal/server/ui/activity.test.cjs internal/server/ui/adapters.test.cjs
+node --test internal/server/ui/activity.test.cjs internal/server/ui/adapters.test.cjs internal/server/ui/shared.test.cjs
 ```
 
 第一次部署时用 `node deploy/dev/prepare.mjs` 生成私有环境文件（不覆盖已有值），将 `deploy/dev/work-assistant.service` 安装到 `~/.config/systemd/user/work-assistant.service`，再 `systemctl --user daemon-reload` 和 `systemctl --user enable --now work-assistant`。

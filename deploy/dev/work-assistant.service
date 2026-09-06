@@ -10,7 +10,7 @@ Type=simple
 WorkingDirectory=/data/wangyunlai.wyl/workspace/work-assistant
 EnvironmentFile=%h/.config/work-assistant/dev.env
 Environment=PATH=/home/wangyunlai.wyl/.local/bin:/home/wangyunlai.wyl/.n/bin:/home/wangyunlai.wyl/local/go/bin:/usr/local/obdev/git/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/data/wangyunlai.wyl/workspace/work-assistant/bin/assistant-local --data /data/wangyunlai.wyl/workspace/work-assistant/data/dev --runtime-id dev-cursor --listen 0.0.0.0:17343 --allow-remote --adapter cursor-agent --cursor-binary /home/wangyunlai.wyl/.local/bin/agent --model auto
+ExecStart=/data/wangyunlai.wyl/workspace/work-assistant/bin/assistant-local --data /data/wangyunlai.wyl/workspace/work-assistant/data/dev --runtime-id dev-cursor --listen 0.0.0.0:17343 --allow-remote --no-api-auth --adapter cursor-agent --cursor-binary /home/wangyunlai.wyl/.local/bin/agent --model auto
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
