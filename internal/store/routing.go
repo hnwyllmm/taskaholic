@@ -45,7 +45,7 @@ func (s *Store) StartRoutingDecision(ctx context.Context, taskID string, version
 	if err != nil {
 		return d, err
 	}
-	if task.Version != version || w.Paused || w.AgentID != "" || task.State == model.TaskStateCompleted {
+	if task.Version != version || w.Paused || w.AgentID != "" || task.State == model.TaskStateCompleted || task.State == model.TaskStateNew {
 		return d, fmt.Errorf("%w: 路由目标已变化", model.ErrConflict)
 	}
 	if _, err = getActiveSessionTx(ctx, tx, taskID); err == nil {

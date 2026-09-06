@@ -20,6 +20,7 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 		"GET /api/v1/work/summaries":                                                    s.handleWorkSummaries,
 		"POST /api/v1/work/tasks":                                                       s.handleWorkCreate,
 		"GET /api/v1/work/tasks/{task_id}":                                              s.handleWorkDetail,
+		"POST /api/v1/work/tasks/{task_id}/assignment":                                  s.handleWorkAssignment,
 		"GET /api/v1/work/tasks/{task_id}/activities":                                   s.handleActivities,
 		"GET /api/v1/work/tasks/{task_id}/events":                                       s.handleEventStream,
 		"POST /api/v1/work/tasks/{task_id}/messages":                                    s.handleWorkMessage,
@@ -56,6 +57,18 @@ func (s *Server) handleWorkCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	task, err := s.store.CreateWork(r.Context(), req)
 	reply(w, 201, task, err)
+}
+func (s *Server) handleWorkAssignment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		AgentID         string `json:"agent_id"`
+		ExpectedVersion int64  `json:"expected_version"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	task, err := s.store.AssignWork(r.Context(), r.PathValue("task_id"), req.AgentID, req.ExpectedVersion)
+	reply(w, http.StatusAccepted, task, err)
 }
 func (s *Server) handleWorkDetail(w http.ResponseWriter, r *http.Request) {
 	work, err := s.store.GetWorkDetail(r.Context(), r.PathValue("task_id"))
@@ -194,6 +207,9 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
+	if task.State == model.TaskStateNew || config.Paused {
+		return nil
+	}
 	runtimes, err := s.connectedRuntimes(ctx)
 	if err != nil {
 		return err
@@ -213,7 +229,7 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 			}
 		}
 	}
-	req := store.CreateRunRequest{TaskID: taskID}
+	req := store.CreateRunRequest{TaskID: taskID, ExpectedTaskVersion: task.Version}
 	if session, e := s.store.GetTaskSession(ctx, taskID); e == nil {
 		// Affinity is stronger than current configuration. Never fail over an
 		// existing task to another employee or lose its native session.

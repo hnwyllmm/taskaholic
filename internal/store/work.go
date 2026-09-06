@@ -60,12 +60,13 @@ func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 }
 
 type CreateWorkRequest struct {
-	Title        string                 `json:"title"`
-	Goal         string                 `json:"goal"`
-	Requirements model.TaskRequirements `json:"requirements"`
-	AgentID      string                 `json:"agent_id"`
-	ProjectID    string                 `json:"project_id"`
-	Key          string                 `json:"idempotency_key"`
+	DeferAssignment bool                   `json:"defer_assignment"`
+	Title           string                 `json:"title"`
+	Goal            string                 `json:"goal"`
+	Requirements    model.TaskRequirements `json:"requirements"`
+	AgentID         string                 `json:"agent_id"`
+	ProjectID       string                 `json:"project_id"`
+	Key             string                 `json:"idempotency_key"`
 }
 
 // Creation of the task, source event, first message and scheduling intent is
@@ -86,6 +87,9 @@ func (s *Store) CreateWork(ctx context.Context, req CreateWorkRequest) (model.Ta
 }
 
 func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model.Task, error) {
+	if req.DeferAssignment && req.AgentID != "" {
+		return model.Task{}, fmt.Errorf("%w: choose either deferred assignment or a specific member", model.ErrValidation)
+	}
 	if len(req.Title) > 400 || len(req.Goal) > 32000 || strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Goal) == "" {
 		return model.Task{}, fmt.Errorf("%w: title and goal required, maximum 400/32000 bytes", model.ErrValidation)
 	}
@@ -108,22 +112,27 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 		}
 	}
 	if req.AgentID != "" {
-		var found string
-		if err = tx.QueryRowContext(ctx, `SELECT agent_id FROM agent_profile WHERE agent_id=?`, req.AgentID).Scan(&found); err != nil {
+		if _, err = validateWorkMemberTx(ctx, tx, task, req.AgentID); err != nil {
 			return task, err
 		}
 	}
 	data, _ := json.Marshal(project)
-	if _, err = tx.ExecContext(ctx, `INSERT INTO task_workflow(task_id,agent_id,project_json) VALUES(?,?,?)`, task.ID, req.AgentID, data); err != nil {
+	// Also set the existing scheduling hold. Older binaries must not start a
+	// deferred task if the application is rolled back after it was saved.
+	if _, err = tx.ExecContext(ctx, `INSERT INTO task_workflow(task_id,agent_id,project_json,paused) VALUES(?,?,?,?)`, task.ID, req.AgentID, data, req.DeferAssignment); err != nil {
 		return task, err
 	}
 	if _, err = insertMessageTx(ctx, tx, task.ID, "user", req.Goal, "", "PENDING"); err != nil {
 		return task, err
 	}
-	if _, err = appendEventTx(ctx, tx, "task", task.ID, "ManualTaskSubmitted", "", task.ID, map[string]any{"source": "manual", "project": project, "preferred_agent_id": req.AgentID}); err != nil {
+	if _, err = appendEventTx(ctx, tx, "task", task.ID, "ManualTaskSubmitted", "", task.ID, map[string]any{"source": "manual", "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment}); err != nil {
 		return task, err
 	}
-	if err = setWorkStateTx(ctx, tx, task.ID, model.TaskStateQueued); err != nil {
+	initialState := model.TaskStateQueued
+	if req.DeferAssignment {
+		initialState = model.TaskStateNew
+	}
+	if err = setWorkStateTx(ctx, tx, task.ID, initialState); err != nil {
 		return task, err
 	}
 	task, err = getTaskTx(ctx, tx, task.ID)
@@ -138,12 +147,12 @@ func setWorkStateTx(ctx context.Context, tx *sql.Tx, taskID, state string) error
 	return err
 }
 
-const workSelect = `SELECT task_id,agent_id,project_json,paused,scheduler_error FROM task_workflow`
+const workSelect = `SELECT task_id,agent_id,project_json,paused,scheduler_error,(SELECT version FROM task WHERE task.task_id=task_workflow.task_id) FROM task_workflow`
 
 func scanWork(row rowScanner) (model.WorkConfig, error) {
 	var w model.WorkConfig
 	var raw []byte
-	if err := row.Scan(&w.TaskID, &w.AgentID, &raw, &w.Paused, &w.SchedulerError); err != nil {
+	if err := row.Scan(&w.TaskID, &w.AgentID, &raw, &w.Paused, &w.SchedulerError, &w.TaskVersion); err != nil {
 		return w, err
 	}
 	err := json.Unmarshal(raw, &w.Project)
@@ -234,7 +243,7 @@ func messageWorkTx(ctx context.Context, tx *sql.Tx, taskID, content, key string,
 	if err = supersedeReviewsTx(ctx, tx, taskID); err != nil {
 		return m, err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=0,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, taskID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=?,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, task.State == model.TaskStateNew, taskID); err != nil {
 		return m, err
 	}
 	var active string
@@ -243,6 +252,10 @@ func messageWorkTx(ctx context.Context, tx *sql.Tx, taskID, content, key string,
 		return m, err
 	}
 	state := model.TaskStateQueued
+	if task.State == model.TaskStateNew {
+		// Supplementing a saved task is not permission to assign it yet.
+		state = model.TaskStateNew
+	}
 	if active != "" {
 		state = model.TaskStateInProgress
 		if interrupt {
@@ -328,7 +341,11 @@ func pauseWorkTx(ctx context.Context, tx *sql.Tx, taskID string) error {
 	if _, err = insertMessageTx(ctx, tx, taskID, "system", "已暂停调度并请求停止当前运行。恢复时沿用原 Agent / Session；已发生的外部操作不会回滚。", "", "RECORDED"); err != nil {
 		return err
 	}
-	if err = setWorkStateTx(ctx, tx, taskID, model.TaskStatePaused); err != nil {
+	pausedState := model.TaskStatePaused
+	if task.State == model.TaskStateNew {
+		pausedState = model.TaskStateNew
+	}
+	if err = setWorkStateTx(ctx, tx, taskID, pausedState); err != nil {
 		return err
 	}
 	return nil
@@ -336,7 +353,7 @@ func pauseWorkTx(ctx context.Context, tx *sql.Tx, taskID string) error {
 
 // PendingWork is a durable queue view, not an in-memory goroutine per task.
 func (s *Store) PendingWork(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT w.task_id FROM task_workflow w JOIN task t ON t.task_id=w.task_id JOIN task_message m ON m.task_id=w.task_id AND m.delivery='PENDING' WHERE w.paused=0 AND w.retry_at_ms<=? AND t.state!='COMPLETED' AND NOT EXISTS(SELECT 1 FROM run r WHERE r.task_id=w.task_id AND r.state IN ('QUEUED','RUNNING')) GROUP BY w.task_id ORDER BY MIN(m.seq) LIMIT 50`, time.Now().UnixMilli())
+	rows, err := s.db.QueryContext(ctx, `SELECT w.task_id FROM task_workflow w JOIN task t ON t.task_id=w.task_id JOIN task_message m ON m.task_id=w.task_id AND m.delivery='PENDING' WHERE w.paused=0 AND w.retry_at_ms<=? AND t.state NOT IN ('NEW','COMPLETED') AND NOT EXISTS(SELECT 1 FROM run r WHERE r.task_id=w.task_id AND r.state IN ('QUEUED','RUNNING')) GROUP BY w.task_id ORDER BY MIN(m.seq) LIMIT 50`, time.Now().UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -379,6 +396,12 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	}
 	if task.State == model.TaskStateCompleted {
 		return model.Run{}, fmt.Errorf("%w: task completed", model.ErrConflict)
+	}
+	if task.State == model.TaskStateNew {
+		return model.Run{}, fmt.Errorf("%w: task is waiting for assignment", model.ErrConflict)
+	}
+	if req.ExpectedTaskVersion != 0 && req.ExpectedTaskVersion != task.Version {
+		return model.Run{}, fmt.Errorf("%w: task assignment changed while scheduling", model.ErrConflict)
 	}
 	if err = validateRoutingAssignmentTx(ctx, tx, req, task, w); err != nil {
 		return model.Run{}, err
@@ -669,7 +692,7 @@ func (s *Store) GetArtifact(ctx context.Context, taskID, artifactID string) (mod
 	return readJSONRow[model.Artifact](s.db.QueryRowContext(ctx, `SELECT data_json FROM artifact WHERE artifact_id=? AND task_id=?`, artifactID, taskID))
 }
 func (s *Store) ListWork(ctx context.Context) ([]model.Task, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.task_id,t.title,t.goal,t.state,t.version,t.current_revision_id,COALESCE(t.assigned_agent_id,''),t.created_at_ms,t.updated_at_ms,t.requirements_json FROM task t JOIN task_workflow w ON w.task_id=t.task_id ORDER BY t.created_at_ms DESC LIMIT 500`)
+	rows, err := s.db.QueryContext(ctx, `SELECT t.task_id,t.title,t.goal,t.state,t.version,t.current_revision_id,COALESCE(t.assigned_agent_id,''),t.created_at_ms,t.updated_at_ms,t.requirements_json,w.agent_id FROM task t JOIN task_workflow w ON w.task_id=t.task_id ORDER BY t.created_at_ms DESC LIMIT 500`)
 	if err != nil {
 		return nil, err
 	}
@@ -677,7 +700,7 @@ func (s *Store) ListWork(ctx context.Context) ([]model.Task, error) {
 	tasks := []model.Task{}
 	for rows.Next() {
 		var t model.Task
-		if err = scanTask(rows, &t); err != nil {
+		if err = scanTask(rows, &t, &t.PreferredAgentID); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, t)

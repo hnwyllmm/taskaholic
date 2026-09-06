@@ -1,0 +1,8 @@
+.assignment-panel{padding:20px;margin:18px 0}
+.assignment-panel h2{margin:0 0 8px}
+.assignment-panel form{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:end}
+.assignment-panel label,.assignment-panel select{min-width:0;width:100%}
+.assignment-panel .row{flex-wrap:wrap}
+.assignment-panel button{white-space:nowrap}
+#new-agent-label[hidden]{display:none}
+@media(max-width:650px){.assignment-panel form{grid-template-columns:minmax(0,1fr)}.assignment-panel .row{justify-content:flex-end}}

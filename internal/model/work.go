@@ -19,6 +19,7 @@ type Project struct {
 
 type WorkConfig struct {
 	TaskID         string  `json:"task_id"`
+	TaskVersion    int64   `json:"task_version"`
 	AgentID        string  `json:"preferred_agent_id,omitempty"`
 	Project        Project `json:"project"`
 	Paused         bool    `json:"paused"`

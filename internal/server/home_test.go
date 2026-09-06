@@ -21,24 +21,26 @@ func TestHomePagesAndChatAPI(t *testing.T) {
 	defer state.Close()
 	s := New(Config{APIToken: "test"}, state, nil)
 	for path, fragment := range map[string]string{
-		"/":                   "系统进化",
-		"/tasks":              "工作列表",
-		"/members":            "成员管理",
-		"/members/":           "成员管理",
-		"/roles":              "成员管理",
-		"/roles/":             "成员管理",
-		"/team":               "团队资料",
-		"/team/":              "团队资料",
-		"/projects":           "团队资料",
-		"/projects/":          "团队资料",
-		"/system":             "数据保护",
-		"/assets/home.js":     "openDecision",
-		"/assets/adapters.js": "WAAdapters",
-		"/assets/models.js":   "WAModels",
-		"/assets/models.css":  "model-controls",
-		"/assets/shared.js":   "主导航",
-		"/assets/shell.css":   "home-grid",
-		"/assets/pages.js":    "renderProjects",
+		"/":                      "系统进化",
+		"/tasks":                 "工作列表",
+		"/members":               "成员管理",
+		"/members/":              "成员管理",
+		"/roles":                 "成员管理",
+		"/roles/":                "成员管理",
+		"/team":                  "团队资料",
+		"/team/":                 "团队资料",
+		"/projects":              "团队资料",
+		"/projects/":             "团队资料",
+		"/system":                "数据保护",
+		"/assets/home.js":        "openDecision",
+		"/assets/adapters.js":    "WAAdapters",
+		"/assets/models.js":      "WAModels",
+		"/assets/models.css":     "model-controls",
+		"/assets/assignment.js":  "WAAssignment",
+		"/assets/assignment.css": "assignment-panel",
+		"/assets/shared.js":      "主导航",
+		"/assets/shell.css":      "home-grid",
+		"/assets/pages.js":       "renderProjects",
 	} {
 		w := httptest.NewRecorder()
 		s.http.Handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
@@ -107,7 +109,7 @@ func TestWorkQueueSummary(t *testing.T) {
 	}
 	body := string(data)
 	for _, group := range []string{
-		"['等待队列',['QUEUED']]",
+		"['等待队列',['NEW','QUEUED']]",
 		"['推进中',['IN_PROGRESS','WAITING_SUBTASKS']]",
 		"['需要你',['WAITING_REVIEW','WAITING_INPUT','BLOCKED']]",
 		"['已完成',['COMPLETED']]",

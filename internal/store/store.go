@@ -317,6 +317,7 @@ func (s *Store) GetTaskDetail(ctx context.Context, taskID string, eventLimits ..
 }
 
 type CreateRunRequest struct {
+	ExpectedTaskVersion  int64 // Scheduler snapshot guard; zero for legacy callers.
 	RequireNativeSession bool
 	SystemBinding        *model.SystemBinding
 	RoutingDecisionID    string // Internal router run guard.
@@ -1131,10 +1132,11 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
-func scanTask(row rowScanner, task *model.Task) error {
+func scanTask(row rowScanner, task *model.Task, extra ...any) error {
 	var needs []byte
-	if err := row.Scan(&task.ID, &task.Title, &task.Goal, &task.State, &task.Version,
-		&task.CurrentRevisionID, &task.AssignedAgentID, &task.CreatedAtMS, &task.UpdatedAtMS, &needs); err != nil {
+	columns := []any{&task.ID, &task.Title, &task.Goal, &task.State, &task.Version,
+		&task.CurrentRevisionID, &task.AssignedAgentID, &task.CreatedAtMS, &task.UpdatedAtMS, &needs}
+	if err := row.Scan(append(columns, extra...)...); err != nil {
 		return err
 	}
 	return json.Unmarshal(needs, &task.Requirements)

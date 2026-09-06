@@ -26,6 +26,7 @@ type Task struct {
 	Version           int64            `json:"version"`
 	CurrentRevisionID string           `json:"current_revision_id"`
 	AssignedAgentID   string           `json:"assigned_agent_id,omitempty"`
+	PreferredAgentID  string           `json:"preferred_agent_id,omitempty"` // Work-list projection, not Session affinity.
 	CreatedAtMS       int64            `json:"created_at_ms"`
 	UpdatedAtMS       int64            `json:"updated_at_ms"`
 }

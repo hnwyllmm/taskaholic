@@ -39,7 +39,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		if len(recent) < 8 {
 			recent = append(recent, t)
 		}
-		if t.State != model.TaskStateReview && t.State != model.TaskStateInput && t.State != model.TaskStateBlocked {
+		if t.State != model.TaskStateNew && t.State != model.TaskStateReview && t.State != model.TaskStateInput && t.State != model.TaskStateBlocked {
 			continue
 		}
 		if len(items) >= 50 {
@@ -51,6 +51,11 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a := attention{Task: t}
+		if t.State == model.TaskStateNew {
+			a.Message = "任务已保存，等待你指定执行成员或选择自动分派。"
+			items = append(items, a)
+			continue
+		}
 		for i := len(d.Messages) - 1; i >= 0; i-- {
 			if d.Messages[i].Speaker != "user" {
 				a.Message = d.Messages[i].Content
