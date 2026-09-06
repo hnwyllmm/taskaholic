@@ -65,3 +65,41 @@ Cursor 仍使用 Ask/只读模式和启用的沙箱，每个 Session 的策略�
 - 浏览器自动页面演练两次超时，未作为成功证据；本次以实际 HTTP 访问与页面逻辑自动测试验证免登录行为。
 
 免登录模式不自动限制 LAN/VPN 来源：所有能连接 17343 端口的设备均可访问数据、操作任务和备份。网络范围仍由用户的局域网、VPN、防火墙控制，本次未扩大防火墙规则或删除 Runtime 认证。Cursor 自身的账户登录仍独立，不因网页免登录而跳过。
+
+## 补充：后台守护进程与 Cursor 自升级
+
+2026-09-06 17:39 起（Asia/Shanghai），正式程序对应源码提交 `9a1713d`，包含 `11fc2c5` 的升级实现及后台离线依赖检查修正。此节替代早期记录中“Linux 自动升级关闭”和“Cursor 登录尚未验证”的限制；历史记录保留。
+
+- 正式进程链：systemd 用户管理器 `34389` → `assistant-supervisor` `177316` → `assistant-local` `177459`。PID 仅是本次验收快照。服务 enabled/active/running，`Linger=yes`、`Restart=on-failure`、`NoNewPrivileges=yes`、`KillMode=mixed`，最终检查 `NRestarts=0`，不依赖 SSH 会话。
+- 继续监听 `0.0.0.0:17343`，Mac 直连首页返回 200，`/health/ready` 返回带 supervisor instance 的 ready。`/api/v1/upgrades` 返回 `enabled:true`，系统状态显示 `Linux bubblewrap`；浏览器免登录保持不变，未认证 Runtime 仍返回 401。
+- 升级构建绑定原 Cursor 成员 `agent_1788680851852_1fccbccd22469176cb6b`，版本 2。首页聊天、角色设计和路由的原绑定及版本未改；模型仍为 `auto`，没有创建新的正式成员或测试工单。
+- 单元固定 Go 1.27.1 绝对路径和 `GOMODCACHE=/home/wangyunlai.wyl/local/go/lib/pkg/mod`。启动先检查沙箱、编译器和实际源码/测试的离线依赖，避免错误使用 systemd 默认空缓存；不会因不可用而降级到裸执行。
+- 曾因启动检查过度要求未使用的上游测试依赖而启动失败，部署保护脚本自动恢复了上一版后台程序及单元，没有恢复或覆盖数据库。已用实际源码依赖检查修复，并先在独立 systemd 测试服务中验证成功后发布；测试服务已停止。
+
+验证范围：
+
+- 最终 dev 源码全量 `go test -race ./...`、`go vet ./...` 和 9 个 Node 前端测试通过；Mac 全量 race 回归及后续增量测试通过。
+- 真实 Cursor 在临时项目中生成结构化补丁，候选达到 READY，并记录原生 Cursor Session；在从后台服务获取的环境配置下也成功。没有使用 `--force`，普通 Cursor 的 Write/Shell/MCP 禁止规则不变。
+- 整个应用的源码候选在 bubblewrap + `NoNewPrivileges` 下完成启动预检、全部 Go 测试/vet、前端语法和单元测试、五个程序构建，达到 READY。没有把候选测试当作真实生产功能变更来安装。
+- 隔离测试验证无法读写宿主私有测试文件、不能写升级目录之外、不能连接宿主 loopback 服务；隔离命名空间中的本地 HTTP 测试仍可正常执行。
+- 真实进程夹具验证安装成功、健康检查失败自动回滚、子进程异常退出后拉起、安装完成但未记成功时恢复，以及候选被破坏时保持 INSTALLING/维护锁并拒绝启动混合版本。
+- 升级备份包含 control.sqlite 和 runtime.sqlite；测试确认代码回滚不会删除备份之后写入的数据库记录。最终切换前活动 Run 为 0。
+
+数据保留核对：`task=2`（包括系统内部任务）、`run=7`（全部完成）、`session=1`、`task_session=1`、`home_chat=1`、`agent_profile=1`；Runtime 的 local_run=7、inbound_message=7、outbound_message=35。用 `node deploy/dev/inspect.mjs` 比较切换前后，六个业务表的完整记录 SHA-256 全部一致，两个数据库 quick_check=ok、外键错误=0，原生 Session 引用没有替换或公开。
+
+恢复点均位于 `/data/wangyunlai.wyl/work-assistant-backups/dev/e688631bf5cc20df2aa521fd/`：
+
+- 切换前：`snapshot-20260906T092337.449910849Z-1708334599`，已离线验证。
+- 最终切换后：`snapshot-20260906T093946.217008982Z-4234813536`，已再次通过 `assistantctl backup-verify`。
+
+| 最终恢复点文件 | 字节数 | SHA-256 |
+|---|---:|---|
+| control.sqlite | 577536 | 48909dab353a8a7391bc0aaf65f116dc290a0ce044467322aefdbe59ce391af8 |
+| runtime.sqlite | 192512 | d1ea19245ebd0c67b704f4440f0c02d1f73c0efdd0f80a574a9388c700422d2d |
+
+最终安装二进制 SHA-256：
+
+- assistant-local：`1664f687c632a8f0fd7179160fb4f19dc7f0b749e7990f62ce0c645de447df6c`
+- assistant-supervisor：`248eb4db7c3730801c170d68e56aaee7a7c511180d527fe79a8f25c647c4b793`
+
+旧程序和单元保留在 `.deploy/supervisor-20260906/previous/` 及 `before-cache-pin/`，不进入 Git。未修改 Mac 正式实例、认证文件或 SQLite schema，未向 GitHub 推送。数据库迁移、依赖、升级器和启动/认证策略仍是人工发布保护区；备份仍为同机副本，不包含 Cursor 自己管理的原生 Session 文件。
