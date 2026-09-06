@@ -1,0 +1,13 @@
+/data/
+/backups/
+/bin/
+/.toolchains/
+/.deploy/
+.env
+.env.*
+*.log
+*.tar.gz
+.DS_Store
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

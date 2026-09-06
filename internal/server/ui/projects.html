@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>团队资料 · Work Assistant</title>
+  <link rel="stylesheet" href="/assets/shell.css">
+  <script src="/assets/shared.js" defer></script>
+  <script src="/assets/pages.js" defer></script>
+</head>
+<body class="app-page" data-page="team">
+  <header data-app-shell></header>
+  <div id="notice" role="status" aria-live="polite" hidden></div>
+  <main>
+    <div class="page-heading">
+      <div>
+        <span class="eyebrow">SHARED BY YOU AND YOUR AGENTS</span>
+        <h1>团队资料</h1>
+        <p>你和所有 Agent 是一个团队。在这里保存共同的目标、协作约定、术语和参考资料，不必属于某个项目。</p>
+      </div>
+      <button id="new-project" class="primary">＋ 添加资料</button>
+    </div>
+    <div class="page-toolbar">
+      <label class="sr" for="project-search">搜索团队资料</label>
+      <input id="project-search" type="search" placeholder="搜索名称或资料内容…">
+      <span id="project-count" class="small muted"></span>
+    </div>
+    <div id="projects" class="card-grid"></div>
+    <p class="page-footer">当前需在创建工作时选择一份资料，系统保存快照后交给执行 Agent，不会自动同步所有 Agent 的会话记忆。资料也不授予文件访问权限。</p>
+  </main>
+  <dialog id="project-dialog" class="decision-dialog" aria-labelledby="project-title">
+    <div class="dialog-heading">
+      <h2 id="project-title">添加团队资料</h2>
+      <button id="close-project">关闭</button>
+    </div>
+    <form id="project-form">
+      <label>资料名称<input id="project-name" maxlength="70" required placeholder="例如：团队协作约定"></label>
+      <label>资料内容<textarea id="project-context" rows="10" maxlength="20000" required placeholder="团队目标、协作约定、术语、参考信息…"></textarea></label>
+      <p class="small muted">不创建或修改实际仓库。当前资料保存后只读；需要调整时可复制为一份新资料，旧工作的快照不变。</p>
+      <button id="save-project" class="primary" type="submit">保存资料</button>
+    </form>
+    <section id="project-view" hidden>
+      <pre id="project-content" class="project-context"></pre>
+      <div class="dialog-actions">
+        <a id="project-work-link" href="/tasks">带上这份资料创建工作 →</a>
+        <button id="copy-project">复制为新资料</button>
+      </div>
+    </section>
+    <div id="project-error" class="dialog-error" hidden role="alert"></div>
+  </dialog>
+</body>
+</html>

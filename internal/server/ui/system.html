@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>系统状态 · Work Assistant</title><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/pages.js" defer></script></head>
+<body class="app-page" data-page="system"><header data-app-shell></header><div id="notice" role="status" aria-live="polite" hidden></div>
+<main><div class="page-heading"><div><span class="eyebrow">BEHIND THE SCENES</span><h1>系统状态</h1><p>看看机器、Agent 和调度是否就绪；在这里备份你的工作记录。</p></div><button id="refresh">刷新状态</button></div>
+<div class="system-grid"><div>
+<section class="system-section"><h2>运行概况</h2><div id="system-summary" class="card status-rows">正在读取…</div></section>
+<section class="system-section"><div class="section-heading"><h2>执行机器</h2><span class="small muted">已登记的 Runtime</span></div><div id="runtime-list"></div></section>
+<section class="system-section"><div class="section-heading"><h2>Agent 配置与容量</h2><a href="/members">管理成员 →</a></div><div id="agent-list"></div></section>
+</div><div>
+<section class="system-section card"><span class="eyebrow">LOCAL FIRST</span><h2>数据保护</h2>
+<p class="small muted">任务、对话、成员、团队资料、评审、交付物和任务总结保存在控制端数据库。本机组合部署的自动恢复点还包含 Runtime 运行队列。</p>
+<div id="protection-status" class="status-rows" aria-live="polite">正在读取备份状态…</div>
+<p id="protection-warning" class="scope-note" hidden></p>
+<button id="create-backup" class="primary">立即创建恢复点</button>
+<p id="backup-result" class="small muted"></p>
+<details><summary>备份位置与最近恢复点</summary><p id="backup-directory" class="small muted"></p><div id="backup-history"></div></details>
+<p class="scope-note">自动恢复点逐库校验并保存；不代表两个数据库在同一时刻提交。不包含原生 Agent Session、工作目录、代码仓库或认证文件。数据库恢复不等于完整运行环境恢复。</p>
+<p class="scope-note">当前未确认异机副本。同一台机器、同一块磁盘上的备份不能抵御整机丢失或硬盘损坏。备份未额外加密，应放在受保护的磁盘或目录。</p>
+<button id="download-backup">下载控制端数据库</button><p class="small muted">下载只包含控制端记录；自动恢复点的校验清单和 Runtime 队列在上述备份目录内。安全恢复命令仅写入新目录，核对待执行动作前不会启动任务。</p>
+</section>
+<section class="system-section card"><h2>当前执行边界</h2><div class="status-rows"><div class="status-row"><span>普通工作权限</span><strong>只读分析</strong></div><div class="status-row"><span>交付方式</span><strong>文本文件 · 版本化保存</strong></div><div class="status-row"><span>工作完成</span><strong>人工验收后关闭</strong></div><div class="status-row"><span>系统进化</span><strong>隔离构建 · 两次确认 · 自动回滚</strong></div><div class="status-row"><span>进程维护</span><strong>升级守护进程 · 自动重启</strong></div></div><p class="small muted">普通任务不会自动修改仓库或提交 PR。只有在首页聊天明确提出系统升级、确认准备候选版本，并再次确认安装后，升级守护进程才会切换本应用；新版本健康检查失败时回滚。Multica 工单尚未接入。</p></section>
+<section class="system-section card"><h2>角色、模型和 Session</h2><p class="small muted">成员管理页可编辑角色职责、模型和并发。新工作使用新配置；已有工作继续复用原 Agent、模型和 Session。模型配置存在不等于已验证可用，真实执行才会验证认证与模型访问。</p><a href="/members" class="small">打开成员管理 →</a></section>
+</div></div><p class="page-footer" id="updated-at"></p></main></body></html>
