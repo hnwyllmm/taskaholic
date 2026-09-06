@@ -103,3 +103,14 @@ Cursor 仍使用 Ask/只读模式和启用的沙箱，每个 Session 的策略�
 - assistant-supervisor：`248eb4db7c3730801c170d68e56aaee7a7c511180d527fe79a8f25c647c4b793`
 
 旧程序和单元保留在 `.deploy/supervisor-20260906/previous/` 及 `before-cache-pin/`，不进入 Git。未修改 Mac 正式实例、认证文件或 SQLite schema，未向 GitHub 推送。数据库迁移、依赖、升级器和启动/认证策略仍是人工发布保护区；备份仍为同机副本，不包含 Cursor 自己管理的原生 Session 文件。
+
+## 补充：成员模型下拉与手动填写
+
+2026-09-06 20:50（Asia/Shanghai），源码 `8b34820` 已在 dev 上部署。添加/修改成员及角色草案的手动运行环境复用模型控件，支持“下拉选择 / 手动填写”、默认模型和未收录的自定义 ID。系统岗位补充说明：它是现有成员承担系统内置功能的绑定，并不是另一类成员；未改名称、布局位置或实际分工。
+
+- 可选 `agent.ModelProvider` → Runtime `models.list` → HTTP 模型列表接口。Cursor 在 dev 上真实返回 24 个模型选项（包含 `auto`）；列表来自 CLI，不创建 Run 或原生 Session。其它 Adapter 暂无动态提供器时明确降级为已有配置和手填，不伪造在线型号。
+- Mac 和 dev 全量 `go test -race ./...`、`go vet ./...` 通过，14 个 Node 测试通过。覆盖模型解析、命令参数/凭据过滤/超时/输出限制、错误不回显、查询并发缓存与失败恢复、HTTP 鉴权/离线/旧 Runtime 以及实际 WebSocket RPC、两种填写方式、旧型号保留和跨机器异步响应竞争。
+- 部署前后 task=6、run=12、session=4、task_session=4、agent_profile=2、home_chat=1；这六个业务表记录摘要完全一致。四个系统岗位绑定未改，两个 SQLite quick_check=ok、外键错误=0。无数据库迁移、无测试成员或测试工单写入正式数据。
+- 部署恢复目录 `.deploy/member-models-20260906/` 保留旧源码、旧程序、前后只读审计及模型查询结果。未修改服务单元、监听范围、登录策略、认证文件或 Mac 正式实例；未推送 GitHub。
+- 同一备份根目录下，切换前 `snapshot-20260906T125012.483368281Z-3660684957`、切换后 `snapshot-20260906T125017.893177520Z-701259224` 均通过 `assistantctl backup-verify`。
+- 页面自动浏览连接两次超时，未声称通过视觉验收；交互逻辑由 DOM 单元测试验证，正式链路由真实 HTTP/Runtime 查询验证。
