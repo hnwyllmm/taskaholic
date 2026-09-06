@@ -199,6 +199,9 @@ func TestRepositoryCandidateValidation(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
+	if err := m.CheckValidationSandbox(ctx); err != nil {
+		t.Fatal(err)
+	}
 	u := m.Prepare(ctx, model.Upgrade{ID: "repository-smoke", Instructions: "validate disposable candidate"})
 	if u.State != "READY" {
 		t.Fatalf("%s\n%s", u.Error, u.Log)
@@ -209,6 +212,7 @@ func TestRepositoryCandidateValidation(t *testing.T) {
 func TestValidationPreflightRejectsMissingOfflineDependencies(t *testing.T) {
 	root, data := testProject(t)
 	writeTestFile(t, filepath.Join(root, "go.mod"), "module work-assistant\n\ngo 1.23\n\nrequire example.invalid/not-cached v1.0.0\n", 0o600)
+	writeTestFile(t, filepath.Join(root, "cmd/assistant-local/main.go"), "package main\nimport _ \"example.invalid/not-cached\"\nfunc main() {}\n", 0o600)
 	m, err := New(testManagerConfig(root, data), fakeAdapter{})
 	if err != nil {
 		t.Fatal(err)
