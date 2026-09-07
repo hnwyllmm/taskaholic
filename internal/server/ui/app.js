@@ -68,7 +68,7 @@ function renderAgents() {
   for (const agent of agents) {
     const row = node('div', null, 'agent-row');
     const online = state.runtimes.find(r=>r.runtime_id === agent.runtime_id)?.state === 'ONLINE';
-    row.append(node('strong', agent.name), node('span', agent.runtime_id + (online ? ' · 在线' : ' · 离线')), node('span', agent.model_id || '默认模型'), node('span', `运行中 ${agent.active_runs} / ${agent.max_concurrent}`), node('code', agent.agent_id));
+    row.append(node('strong', agent.name), node('span', agent.runtime_id + (online ? ' · 在线' : ' · 离线')), node('span', agent.adapter_id==='codex-agent'?'Codex CLI':agent.adapter_id==='cursor-agent'?'Cursor Agent':agent.adapter_id), node('span', agent.model_id || '默认模型'), node('span', `运行中 ${agent.active_runs} / ${agent.max_concurrent}`), node('code', agent.agent_id));
     const settings = node('details'), summary = node('summary', '修改配置 · '+agent.state); settings.append(summary);
     const form = node('form'); const fields = {};
     for (const [key,label,value,type] of [['name','名称',agent.name,'text'],['model_id','模型（只影响新 Session）',agent.model_id||'','text'],['max_concurrent','并发上限',agent.max_concurrent,'number']]) {
@@ -88,6 +88,9 @@ function renderAgents() {
 function option(value, label) { const el = node('option', label); el.value = value; return el; }
 function suggestAdapter(prefix) {
   const field=$(prefix+'-adapter');
+  let choices=$(prefix+'-adapter-options');
+  if(!choices){choices=node('datalist');choices.id=prefix+'-adapter-options';field.after(choices);field.setAttribute('list',choices.id);}
+  choices.replaceChildren(...WAAdapters.available(state.runtimes,$(prefix+'-runtime').value).map(id=>option(id,id==='codex-agent'?'Codex CLI':id==='cursor-agent'?'Cursor Agent':id)));
   field.value=WAAdapters.suggested(state.runtimes,$(prefix+'-runtime').value,field.value,field.dataset.edited==='true',prefix==='builder'&&!!state.session);
   updateModels(prefix);
 }

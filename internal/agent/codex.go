@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"work-assistant/internal/id"
 	"work-assistant/internal/model"
@@ -141,7 +142,7 @@ type codexTurnResult struct {
 }
 
 func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
-	args := []string{"exec"}
+	args := []string{"exec", "-c", "approval_policy=\"never\""}
 	var schemaPath string
 	if len(schemas) > 0 && len(schemas[0]) > 0 {
 		file, err := os.CreateTemp("", "work-assistant-schema-*.json")
@@ -180,6 +181,7 @@ func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, session
 	command := exec.CommandContext(ctx, a.binary, args...)
 	command.Dir = workingDir
 	command.Stdin = nil
+	configureCodexProcess(command)
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		return codexTurnResult{ExitCode: -1, Err: fmt.Errorf("open Codex stdout: %w", err)}
@@ -211,6 +213,19 @@ func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, session
 		return codexTurnResult{SessionID: parsed.SessionID, ExitCode: exitCode(waitErr), Err: fmt.Errorf("Codex CLI: %w", waitErr)}
 	}
 	return codexTurnResult{SessionID: parsed.SessionID, ExitCode: 0, Output: parsed.Output}
+}
+
+// Do not pass the control-plane credentials to the CLI or its tools. Kill the
+// entire process group on interruption so child commands cannot outlive a run.
+func configureCodexProcess(command *exec.Cmd) {
+	command.Env = []string{}
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "ASSISTANT_") {
+			command.Env = append(command.Env, entry)
+		}
+	}
+	command.WaitDelay = time.Second
+	configureCursorProcess(command) // Shared platform-specific process-group setup.
 }
 
 func codexPrompt(spec model.RunSpec) string {

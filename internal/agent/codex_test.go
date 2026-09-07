@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"work-assistant/internal/model"
 )
@@ -21,6 +22,7 @@ func TestCodexAdapterCreatesResumesAndAppliesQueuedDirective(t *testing.T) {
 	logPath := filepath.Join(directory, "arguments.log")
 	fake := filepath.Join(directory, "codex-fake")
 	script := `#!/bin/sh
+test -z "$ASSISTANT_API_TOKEN" && test -z "$ASSISTANT_RUNTIME_TOKEN" || exit 9
 printf '%s\n' '--call--' >> "$CODEX_FAKE_LOG"
 for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_LOG"; done
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-123"}'
@@ -31,6 +33,8 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_FAKE_LOG", logPath)
+	t.Setenv("ASSISTANT_API_TOKEN", "must-not-reach-codex")
+	t.Setenv("ASSISTANT_RUNTIME_TOKEN", "must-not-reach-codex")
 	adapter, err := NewCodexAdapter(fake, "workspace-write")
 	if err != nil {
 		t.Fatal(err)
@@ -59,7 +63,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	log := string(arguments)
 	for _, expected := range []string{
-		"--call--", "exec", "--json", "--sandbox", "read-only", "--model", "model-test", "--output-schema", "sandbox_mode=\"read-only\"",
+		"--call--", "exec", "approval_policy=\"never\"", "--json", "--sandbox", "read-only", "--model", "model-test", "--output-schema", "sandbox_mode=\"read-only\"",
 		"Task: Implement feature", "Goal:\nMake it work", "Additional instructions:\nalso test it",
 		"resume", "thread-123", "review the result",
 	} {
@@ -83,6 +87,28 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	if !foundSession || !foundMessage || !foundApplied {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestCodexInterruptionStopsChildProcessGroup(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("POSIX process groups")
+	}
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "codex")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nsleep 30 &\nwait\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	a, err := NewCodexAdapter(fake, "read-only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	result := a.Run(ctx, model.RunSpec{TaskGoal: "test cancellation"}, dir, nil, func(Event) {})
+	if result.Err == nil || time.Since(start) > 3*time.Second {
+		t.Fatal("Codex interruption left child output pipes open", result.Err)
 	}
 }
 

@@ -26,6 +26,28 @@ func TestLocalAdapterSelection(t *testing.T) {
 		t.Fatal("unknown adapter fell back silently")
 	}
 }
+
+func TestAdditionalAdaptersKeepPrimaryAndRejectUnavailable(t *testing.T) {
+	binary, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("needs true executable")
+	}
+	adapters, err := localAdapters("cursor-agent", " codex-agent,cursor-agent,codex-agent ", binary, binary)
+	if err != nil || len(adapters) != 2 || adapters[0].Name() != "cursor-agent" || adapters[1].Name() != "codex-agent" {
+		t.Fatal(adapters, err)
+	}
+	if adapters[1].Capabilities()["sandbox"] != "read-only" {
+		t.Fatal("additional adapter widened execution permissions")
+	}
+	for _, extra := range []string{"typo", "codex-agent,"} {
+		if _, err := localAdapters("cursor-agent", extra, binary, binary); err == nil {
+			t.Fatal("invalid explicit adapter was ignored", extra)
+		}
+	}
+	if _, err := localAdapters("cursor-agent", "codex-agent", filepath.Join(t.TempDir(), "missing-codex"), binary); err == nil {
+		t.Fatal("unavailable explicit adapter was ignored")
+	}
+}
 func TestBootstrapCreatesCursorAndPreservesEditedMemberOnRestart(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "control.sqlite"))
 	if err != nil {

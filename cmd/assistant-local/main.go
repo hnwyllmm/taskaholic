@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,7 @@ func run() error {
 	modelID := flag.String("model", "", "model for the initial local helper agent; existing agents are never overwritten")
 	binary := flag.String("codex-binary", "codex", "installed Codex CLI path")
 	adapterID := flag.String("adapter", "codex-agent", "initial execution adapter: codex-agent or cursor-agent")
+	extraAdapters := flag.String("extra-adapters", "", "additional execution adapters, comma-separated; does not change existing members or the initial helper")
 	cursorBinary := flag.String("cursor-binary", "agent", "installed Cursor Agent CLI path")
 	upgradeEnabled := flag.Bool("upgrade-enabled", false, "allow an external supervisor to apply confirmed upgrades")
 	supervisorInstance := flag.String("supervisor-instance", "", "opaque supervisor instance used by health checks")
@@ -61,7 +63,7 @@ func run() error {
 	if err := probe.Close(); err != nil {
 		return err
 	}
-	adapter, err := localAdapter(*adapterID, *binary, *cursorBinary)
+	adapters, err := localAdapters(*adapterID, *extraAdapters, *binary, *cursorBinary)
 	if err != nil {
 		return err
 	}
@@ -91,14 +93,14 @@ func run() error {
 		return fmt.Errorf("required startup recovery point: %w", err)
 	}
 	control := server.New(server.Config{LocalRuntimeID: *runtimeID, Listen: *listen, APIToken: apiToken, RuntimeToken: runtimeToken, UpgradeEnabled: *upgradeEnabled, UpgradeValidationSandbox: *upgradeValidationSandbox, InstanceID: *supervisorInstance, Backups: backups}, state, nil)
-	d, err := runtimehost.New(runtimehost.Config{RuntimeID: *runtimeID, ControlURL: controlURL, Token: runtimeToken, WorkRoot: filepath.Join(*dataDir, "workspaces")}, spool, nil, adapter)
+	d, err := runtimehost.New(runtimehost.Config{RuntimeID: *runtimeID, ControlURL: controlURL, Token: runtimeToken, WorkRoot: filepath.Join(*dataDir, "workspaces")}, spool, nil, adapters...)
 	if err != nil {
 		return err
 	}
 	results := make(chan error, 3)
 	go func() { results <- control.Run(ctx) }()
 	go func() { results <- d.Run(ctx) }()
-	go func() { results <- bootstrap(ctx, state, *runtimeID, *modelID, *listen, adapter.Name()) }()
+	go func() { results <- bootstrap(ctx, state, *runtimeID, *modelID, *listen, adapters[0].Name()) }()
 	for i := 0; i < 3; i++ {
 		e := <-results
 		if e != nil {
@@ -109,6 +111,28 @@ func run() error {
 		}
 	}
 	return err
+}
+
+func localAdapters(primary, extra, codexBinary, cursorBinary string) ([]agent.Adapter, error) {
+	names := []string{primary}
+	if strings.TrimSpace(extra) != "" {
+		names = append(names, strings.Split(extra, ",")...)
+	}
+	var adapters []agent.Adapter
+	seen := make(map[string]bool)
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if seen[name] {
+			continue
+		}
+		a, err := localAdapter(name, codexBinary, cursorBinary)
+		if err != nil {
+			return nil, err
+		}
+		seen[name] = true
+		adapters = append(adapters, a)
+	}
+	return adapters, nil
 }
 
 func localAdapter(adapterID, codexBinary, cursorBinary string) (agent.Adapter, error) {

@@ -37,6 +37,7 @@ type options struct {
 	codexBinary       string
 	cursorBinary      string
 	adapterID         string
+	extraAdapters     string
 	allowRemote       bool
 	noAPIAuth         bool
 	goBinary          string
@@ -62,6 +63,7 @@ func run() error {
 	flag.StringVar(&o.codexBinary, "codex-binary", "codex", "installed Codex CLI path")
 	flag.StringVar(&o.cursorBinary, "cursor-binary", "agent", "installed Cursor Agent CLI path")
 	flag.StringVar(&o.adapterID, "adapter", "codex-agent", "local helper and default upgrade adapter: codex-agent or cursor-agent")
+	flag.StringVar(&o.extraAdapters, "extra-adapters", "", "additional execution adapters, comma-separated; retain the primary adapter and existing sessions")
 	flag.BoolVar(&o.allowRemote, "allow-remote", false, "explicitly allow non-loopback listening with runtime authentication")
 	flag.BoolVar(&o.noAPIAuth, "no-api-auth", false, "explicitly disable browser API authentication on a trusted network")
 	flag.StringVar(&o.goBinary, "go-binary", "", "Go compiler used to validate candidates")
@@ -409,6 +411,9 @@ func (c *childController) childArgs() []string {
 	}
 	if c.options.allowRemote {
 		args = append(args, "--allow-remote")
+	}
+	if c.options.extraAdapters != "" {
+		args = append(args, "--extra-adapters", c.options.extraAdapters)
 	}
 	if c.options.noAPIAuth {
 		args = append(args, "--no-api-auth")

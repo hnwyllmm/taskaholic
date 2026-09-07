@@ -206,17 +206,17 @@ func TestSupervisorRestartsExitedChildAndRecoversAppliedInstall(t *testing.T) {
 }
 
 func TestSupervisorPassesCursorAndExplicitExposureFlags(t *testing.T) {
-	c := newChildController(options{adapterID: "cursor-agent", cursorBinary: "/custom path/agent", allowRemote: true, noAPIAuth: true, listen: "0.0.0.0:17343"})
+	c := newChildController(options{adapterID: "cursor-agent", extraAdapters: "codex-agent", codexBinary: "/custom path/codex", cursorBinary: "/custom path/agent", allowRemote: true, noAPIAuth: true, listen: "0.0.0.0:17343"})
 	args := c.childArgs()
 	joined := strings.Join(args, "\x00")
-	for _, want := range []string{"--adapter\x00cursor-agent", "--cursor-binary\x00/custom path/agent", "--allow-remote", "--no-api-auth", "--upgrade-enabled"} {
+	for _, want := range []string{"--adapter\x00cursor-agent", "--extra-adapters\x00codex-agent", "--codex-binary\x00/custom path/codex", "--cursor-binary\x00/custom path/agent", "--allow-remote", "--no-api-auth", "--upgrade-enabled"} {
 		if !strings.Contains(joined, want) {
 			t.Fatal("missing", want)
 		}
 	}
 	defaults := newChildController(options{})
 	joined = strings.Join(defaults.childArgs(), " ")
-	if strings.Contains(joined, "--allow-remote") || strings.Contains(joined, "--no-api-auth") {
+	if strings.Contains(joined, "--allow-remote") || strings.Contains(joined, "--no-api-auth") || strings.Contains(joined, "--extra-adapters") {
 		t.Fatal("insecure default")
 	}
 }

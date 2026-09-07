@@ -1,8 +1,8 @@
 # Work Assistant MVP
 
-## dev 部署（Cursor Agent）
+## dev 部署（Cursor + Codex Agent）
 
-部署目录为 `/data/wangyunlai.wyl/workspace/work-assistant`，使用独立 SQLite 数据和 systemd 用户服务。Cursor Adapter 支持原生 Session 恢复、公开行动事件、进程组中断，以及 Ask 模式下的结构化文本交付。Cursor 认证必须通过真实调用验证；Runtime 在线不代表账户可用。Mac 默认 Codex 部署不受影响。
+部署目录为 `/data/wangyunlai.wyl/workspace/work-assistant`，使用独立 SQLite 数据和 systemd 用户服务。同一 Runtime 同时提供 Cursor 和 Codex，保留原 Cursor 成员、系统岗位与 Session。两者支持原生 Session 恢复、公开行动事件、进程组中断和结构化文本交付。账户必须通过真实调用验证；Runtime 在线不代表账户可用。Mac 默认 Codex 部署不受影响。
 
 访问方式、Token、备份边界、构建和维护命令见 [dev 部署说明](deploy/dev/README.md)。Linux 支持 systemd 用户服务托管升级守护进程，使用 Cursor 准备补丁、bubblewrap 隔离验证，人工确认后自动安装和重启。
 
@@ -54,7 +54,13 @@ API：`POST /api/v1/work/tasks` 增加可选 `defer_assignment:true`（不能同
 
 Cursor 列表来自对应 Runtime 上安装的 CLI 的 `agent models`，不硬编码产品型号，也不启动任务或原生 Session。查询通过 `GET /api/v1/runtimes/{runtime_id}/models?adapter_id=cursor-agent` 转为现有 WebSocket 上的只读 `models.list` RPC；Runtime 单次查询超时 8 秒、输出上限 256 KiB，相同 Adapter 的并发请求合并，成功缓存 5 分钟、失败缓存 30 秒。失败信息不回显 CLI stderr。列表只表示 CLI 返回的型号，不保证账户权限或剩余额度。
 
-其它 Adapter 可选实现 `agent.ModelProvider`，Runtime 自动声明 `model_catalog` 能力。当前只有 Cursor 实现动态查询；未实现的 Adapter、旧 Runtime 或离线机器仍支持默认模型、同机同 Adapter 已有成员配置及手工 ID。本次不增加数据库表，不改写已保存的成员、Session 或系统岗位绑定。
+Codex 列表来自已安装 CLI 的 `codex app-server --listen stdio://`，按 `initialize → initialized → model/list` 读取当前账户可见的型号，支持分页，不启动或恢复线程。查询限时 8 秒，单消息 256 KiB、总交换 1 MiB；共享 Runtime 的缓存和失败降级策略。不会把 Cursor 的 `auto` 当成 Codex 模型。两种 CLI 均不接收 `ASSISTANT_*` 控制面凭据。
+
+其它 Adapter 可选实现 `agent.ModelProvider`，Runtime 自动声明 `model_catalog` 能力。未实现的 Adapter、旧 Runtime 或离线机器仍支持默认模型、同机同 Adapter 已有成员配置及手工 ID。本次不增加数据库表，不改写已保存的成员、Session 或系统岗位绑定。
+
+组合部署可用 `--adapter cursor-agent --extra-adapters codex-agent --codex-binary /path/to/codex` 启用第二种 Agent。主 Adapter 决定首次引导成员和默认升级构建器；额外 Adapter 不改绑现有成员，不增加数据库或服务端口。显式配置的 Adapter 不可用时启动失败，不静默替换；systemd/守护进程重启和升级保留该设置。
+
+dev 的六个开发/评审角色定义在 `deploy/dev/seekdb-roles.mjs`，可通过 `seed-seekdb-roles.mjs` 预览或增量发布。角色模板与成员配置分离；通用代码 Reviewer 明确优先阅读和遵守目标仓库的 `code-review` skill。角色不授予仓库写入、PR 或合并权限。
 
 ### 首页助理对话
 
