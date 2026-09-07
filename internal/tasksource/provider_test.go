@@ -128,7 +128,7 @@ func TestGitHubConditionalPollingCommentsCIAndNewHead(t *testing.T) {
 		link := ""
 		switch {
 		case path == "/repos/o/r/pulls/1":
-			value = map[string]any{"number": 1, "state": "open", "head": map[string]string{"sha": head}, "user": map[string]string{"login": "human"}}
+			value = map[string]any{"number": 1, "state": "open", "head": map[string]string{"sha": head}, "user": map[string]string{"login": "human"}, "base": map[string]any{"repo": map[string]any{"id": 123, "full_name": "o/r"}}}
 		case strings.Contains(path, "/files"):
 			value = []any{map[string]string{"filename": "main.go", "status": "modified", "patch": "+newCode"}}
 		case strings.Contains(path, "/issues/1/comments"):
@@ -141,7 +141,7 @@ func TestGitHubConditionalPollingCommentsCIAndNewHead(t *testing.T) {
 				old := comment(3, "before registration")
 				old["updated_at"] = since.Add(-time.Hour).UTC().Format(time.RFC3339)
 				value = []any{comment(1, "please improve"), comment(4, "<!-- work-assistant:task-reply --> done"), old}
-				link = "Link: <https://api.github.com/repos/o/r/issues/1/comments?per_page=100&page=2>; rel=\"next\"\r\n"
+				link = "Link: <https://api.github.com/repositories/123/issues/1/comments?per_page=100&page=2>; rel=\"next\"\r\n"
 			}
 		case strings.Contains(path, "/pulls/1/comments"):
 			old := comment(5, "outdated")
@@ -209,7 +209,7 @@ func TestGitHubConditionalPollingCommentsCIAndNewHead(t *testing.T) {
 
 func TestGitHubRateLimitAndPaginationDomainGuard(t *testing.T) {
 	head := strings.Repeat("a", 40)
-	for _, kind := range []string{"rate", "evil"} {
+	for _, kind := range []string{"rate", "evil", "other_name", "other_id", "unverified_id", "mismatched_identity"} {
 		calls := 0
 		g := GitHub{Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
 			calls++
@@ -217,10 +217,27 @@ func TestGitHubRateLimitAndPaginationDomainGuard(t *testing.T) {
 				return response(429, "Retry-After: 1800\r\n", map[string]string{"message": "slow down"}), errors.New("429")
 			}
 			if calls == 1 {
-				return response(200, "", map[string]any{"number": 1, "state": "open", "head": map[string]string{"sha": head}}), nil
+				pr := map[string]any{"number": 1, "state": "open", "head": map[string]string{"sha": head}}
+				if kind != "unverified_id" {
+					name := "o/r"
+					if kind == "mismatched_identity" {
+						name = "o/other"
+					}
+					pr["base"] = map[string]any{"repo": map[string]any{"id": 123, "full_name": name}}
+				}
+				return response(200, "", pr), nil
 			}
 			if calls == 2 {
-				return response(200, "Link: <https://evil.test/secrets>; rel=\"next\"\r\n", []any{}), nil
+				if kind == "mismatched_identity" {
+					t.Fatal("continued polling a different base repository")
+				}
+				link := map[string]string{
+					"evil":          "https://evil.test/repositories/123/pulls/1/files?page=2",
+					"other_name":    "https://api.github.com/repos/o/other/pulls/1/files?page=2",
+					"other_id":      "https://api.github.com/repositories/1234/pulls/1/files?page=2",
+					"unverified_id": "https://api.github.com/repositories/123/pulls/1/files?page=2",
+				}[kind]
+				return response(200, "Link: <"+link+">; rel=\"next\"\r\n", []any{}), nil
 			}
 			t.Fatal("credentialed request sent to an untrusted next link")
 			return nil, nil

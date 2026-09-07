@@ -39,6 +39,7 @@ type githubPoll struct {
 	ctx      context.Context
 	cursor   githubCursor
 	prefix   string
+	idPrefix string
 	nextMS   int64
 }
 
@@ -51,7 +52,8 @@ func (p *githubPoll) get(path string, output any) (string, error) {
 		}
 		path = u.RequestURI()
 	}
-	if !strings.HasPrefix(path, p.prefix) || strings.Contains(path, "..") {
+	allowed := strings.HasPrefix(path, p.prefix) || (p.idPrefix != "" && strings.HasPrefix(path, p.idPrefix))
+	if !allowed || strings.Contains(path, "..") {
 		return "", fmt.Errorf("GitHub API 请求超出登记仓库")
 	}
 	cached := p.cursor.Cache[path]
@@ -150,6 +152,12 @@ type githubPR struct {
 	Head    struct {
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		Repo struct {
+			ID       int64  `json:"id"`
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"base"`
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -195,6 +203,15 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 	}
 	if pr.Number != number || !model.CommitSHA.MatchString(pr.Head.SHA) || (pr.State != "open" && pr.State != "closed") {
 		return result, fmt.Errorf("GitHub PR 身份/版本字段无效")
+	}
+	// GitHub emits /repositories/{id}/ pagination links, including when the
+	// first request used /repos/{owner}/{repo}/. Trust only the base repository
+	// identity returned by that first request, never an arbitrary ID in a Link.
+	if pr.Base.Repo.ID > 0 {
+		if !strings.EqualFold(pr.Base.Repo.FullName, owner+"/"+repo) {
+			return result, fmt.Errorf("GitHub PR 目标仓库身份与登记地址不一致")
+		}
+		p.idPrefix = fmt.Sprintf("/repositories/%d/", pr.Base.Repo.ID)
 	}
 	emit := func(e model.SourceEvent) {
 		if !p.cursor.Seen[e.Key] {

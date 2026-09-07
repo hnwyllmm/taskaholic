@@ -84,7 +84,7 @@ Agent 的结构化交付可包含：
 - `POST /api/v1/work/tasks/{id}/pull-requests`：`{"url":"...","source_id":"github"}`。
 - `PUT /api/v1/source-targets/{id}`：`{"enabled":false}`，仅停止轮询，不撤回已持久化事件。
 
-CLI 路径可通过控制进程启动环境的 `WORK_ASSISTANT_GH_BINARY`、`WORK_ASSISTANT_MULTICA_BINARY` 替换，不对网页开放。子进程只继承认证/网络/基础运行所需白名单环境，不继承控制 Token 等系统秘密。GitHub 初始请求与分页严格限制到登记仓库和 api.github.com。
+CLI 路径可通过控制进程启动环境的 `WORK_ASSISTANT_GH_BINARY`、`WORK_ASSISTANT_MULTICA_BINARY` 替换，不对网页开放。子进程只继承认证/网络/基础运行所需白名单环境，不继承控制 Token 等系统秘密。GitHub 初始请求与分页严格限制到登记仓库和 api.github.com。分页允许 `/repos/owner/repo/`，以及由首次 PR 响应的 base.repo.id 和 full_name 共同确认的 `/repositories/id/`；不信任 Link 中任意仓库 ID，不把 fork 的 head 仓库当作目标仓库。
 
 只读连通性验证：
 
