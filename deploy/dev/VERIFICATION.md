@@ -125,3 +125,36 @@ Cursor 仍使用 Ask/只读模式和启用的沙箱，每个 Session 的策略�
 - 切换前后 task=6（含内部任务）、run=12、session=4、task_session=4、agent_profile=2、home_chat=1；六个业务表的完整记录摘要相同，四个系统岗位绑定未改变，两库完整性和外键检查正常。
 - 同一备份根目录下，切换前 `snapshot-20260906T131725.019827289Z-1417530032`、切换后 `snapshot-20260906T131730.583718223Z-2658269091` 均已验证。旧代码、程序及前后审计保留在 `.deploy/task-assignment-20260906/`。没有覆盖数据库、修改登录策略或 Mac 正式实例，未向 GitHub 推送。
 - Mac 直连验证任务页面、新脚本和样式均返回 200，新增 API 拒绝缺少版本的请求；原 Cursor 模型查询仍返回 24 个选项，Runtime 连接与守护升级正常。Browser 页面连接仍超时，视觉验收尚未完成；不把脚本模拟测试当作浏览器渲染验收。
+
+## 补充：Codex 并存与 SeekDB 开发/评审团队
+
+2026-09-07 11:05（Asia/Shanghai），源码 `07b57ae` 已部署。`work-assistant.service` 同时启用 Cursor 和 Codex，Runtime ID 保持 `dev-cursor`；原两个成员和四个系统岗位不变。服务 active/running、`NRestarts=0`，本次监督进程 PID 为 `3047785`。HTTP 监听和认证设置不变，升级守护进程仍启用。
+
+- 新增六个角色和各自一位 `· Codex` 成员：SeekDB 开发者、seekdb-bindings 开发者、通用代码仓库开发者、SeekDB / seekdb-bindings 架构 Reviewer、QA / 测试 Reviewer、通用 Reviewer。每位新成员 `model_id=gpt-5.6-sol`、`max_concurrent=1`、ACTIVE，沿用 dev 当前模型配置；原 Cursor 成员仍为 `auto`。运行态共 8 位可用成员。
+- 架构评审涵盖扩展性、产品路径、跨仓库契约与兼容性；QA 涵盖方案/代码可测试性、场景覆盖、真实测试结果和最终制品验收；通用评审涵盖代码质量、性能、过度防御和低价值单测，并要求先查找、完整阅读和遵守仓库 code-review skill。实查 SeekDB 的 `.agents/skills/code-review/SKILL.md` 存在，seekdb-bindings 本次未发现；未开展实际仓库代码评审或修改这两个仓库。
+- 模型发现复用可选 ModelProvider 和现有 RPC。dev 正式 HTTP/Runtime 查询返回 Cursor 24 个、Codex 7 个选项；Codex 从已安装 `0.151.0` CLI 的 stdio App Server 读取可见列表，不硬编码型号，不创建原生线程。成员的旧值、手工 ID 和默认模型仍可使用。
+- Codex 执行固定普通任务的只读沙箱及不自动批准，过滤 `ASSISTANT_*` 凭据，取消时终止相应进程组。`--extra-adapters` 由 supervisor 传给子进程；重启不变更已绑定的角色、模型、成员和原生 Session。未增加数据库表、服务端口或仓库写权限。
+
+验证：
+
+- Mac / dev 全量 Go race 回归及 vet 通过，dev 五个程序构建通过，23 个 Node 测试通过。覆盖双 Adapter 保留主成员、无效/缺失 CLI 拒绝启动、子进程参数继承、模型发现的初始化/分页/重复游标/超时/边界与错误脱敏、进程组取消、角色增量发布与重复执行/冲突保护。
+- `ASSISTANT_TEST_CODEX=1 go test -v ./internal/agent -run TestInstalledCodexCatalogAndNativeSession -count=1` 实际通过（65.94 秒）：真实结构化结果，第二轮只通过原 thread 恢复前轮随机标记。未在正式数据库创建测试任务。
+- 独立 API 实例 `/data/wangyunlai.wyl/tmp/wa-codex-smoke-FeX8eN` 验证：正常任务产生 ready.txt 和待人工验收记录；验收聊天在原成员/原模型/原 Session 上回答前轮标记；交付文件没有变化，持久化活动记录 2 条。最终脚本退出 0，测试服务已停止。先前一次夹具误将已完成状态判为 SUCCEEDED 而非 COMPLETED，修正夹具后重新跑通；不是正式服务的业务失败。
+- Mac 直连成员页面和新资源 HTTP 200。Browser 连接超时，未完成视觉验收；不把 API、源码或 DOM 模拟测试当作实际浏览器截图验收。
+
+数据保护：
+
+- 安装前/后六个主要业务表完整摘要一致。新增角色/成员后，进一步将安装前恢复点中的 47 条原有业务记录逐行与当前库比较，全部一致；会话、运行、聊天、旧角色、旧成员、工单和系统岗位未被重写。
+- 最终 `task=12`（新增 6 个角色设计的内部任务，不是测试工单）、`run=12`、`session=4`、`task_session=4`、`agent_profile=8`、`role=8`、`role_draft=9`、`home_chat=1`。原有两个 FAILED 升级记录保留，未重试或扩大升级范围。
+- 同一备份根 `/data/wangyunlai.wyl/work-assistant-backups/dev/e688631bf5cc20df2aa521fd/` 下，安装前 `snapshot-20260907T030454.369621890Z-1264462633`、安装后 `snapshot-20260907T030459.636096947Z-3198512547`、配置前 `snapshot-20260907T030529.892057019Z-3320448210`、配置后 `snapshot-20260907T030530.189281931Z-326917921` 均通过 `assistantctl backup-verify`。
+- 旧源码、五个程序、原 systemd 单元与部署前后审计位于 `.deploy/codex-roles-20260907/previous/` 及同级 JSON 文件。角色模板已入 Git，实际角色、成员和任务映射在备份的 SQLite 内。备份仍是同机副本，不包含 CLI 自己管理的原生 Session 文件、凭据或外部仓库；没有向 GitHub 推送。
+
+Codex 连接修复：
+
+- 首次真实验证失败于旧代理链路：dev `.codex/.env` 中同时有旧 Mac 地址和失效的 `127.0.0.1:13678` 转发，返回 CONNECT 503。按 `restore-dev-codex-proxy` 流程重新发现地址，恢复为 `dev → 30.249.224.87:18080 → Mac 127.0.0.1:13659 → OpenAI`，没有把 SSH 当作代理传输。
+- Mac LaunchAgent `com.wangyunlai.codex-dev-openai-proxy` 为 loaded/running，本次 PID `81519`；plist 为 `/Users/wangyunlai.wyl/.codex/restore-dev-codex-proxy/launch-agent/com.wangyunlai.codex-dev-openai-proxy.plist`，日志为同目录上级 `gateway.log`。仅绑定该 Mac 地址，要求已有代理认证及 dev `6.12.233.133/32` 来源限制，保持 CONNECT 443 白名单。
+- 白名单为 api.openai.com、chatgpt.com、*.chatgpt.com、auth.openai.com、*.oaiusercontent.com，并依据日志中实际拒绝项补入精确的 developers.openai.com；未增加全域通配。实际模型返回 OK，之后会话和业务链路验证通过；非 OpenAI 的 example.com CONNECT 返回 403。
+- dev 环境文件以 0600 原子更新，原文件保留为 `/home/wangyunlai.wyl/.codex/.env.bak-20260907-105827`。没有复制登录凭据、打印代理密码或修改 `.bashrc`；未重启无关的 Codex App Server/用户任务。Work Assistant 的 Codex CLI 每轮新进程读取当前环境。
+- Codex 网络仍依赖这台 Mac 的现有代理在线；Mac 网络地址变化、退出登录或重启后需重新检查/恢复该链路。这不是 dev 完全独立的出网方案。Mac 正式 Work Assistant 实例、数据库和成员未改。
+
+协议依据：[Codex 非交互执行与恢复](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server 模型发现](https://learn.chatgpt.com/docs/app-server)。实际命令同时以 dev 已安装版本的 help 和真实调用校验。
