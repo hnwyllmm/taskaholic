@@ -8,6 +8,8 @@ import (
 	"io"
 	"path"
 	"strings"
+
+	"work-assistant/internal/model"
 )
 
 type File struct {
@@ -20,10 +22,15 @@ type CompletionSummary struct {
 	Improvements []string `json:"improvements"`
 }
 type Result struct {
-	Outcome   string             `json:"outcome"`
-	Message   string             `json:"message"`
-	Artifacts []File             `json:"artifacts"`
-	Summary   *CompletionSummary `json:"summary,omitempty"`
+	PullRequests []PullRequest      `json:"pull_requests,omitempty"`
+	Outcome      string             `json:"outcome"`
+	Message      string             `json:"message"`
+	Artifacts    []File             `json:"artifacts"`
+	Summary      *CompletionSummary `json:"summary,omitempty"`
+}
+type PullRequest struct {
+	URL      string `json:"url"`
+	SourceID string `json:"source_id"`
 }
 
 // Contract is an extension point for other structured-output capable adapters.
@@ -39,6 +46,7 @@ func (JSONContract) Instructions() string {
 outcome: review = 本轮产物已可供人工验收；needs_input = 需要用户回答问题；blocked = 缺少条件无法继续。
 这只是提交结果，不代表业务任务完成；只有人可以批准关闭任务。
 summary 是给任务完成复盘使用的结构化材料。review 时应填写：result 写实际完成结果；learnings 写可复用经验；improvements 写下次可改进之处。耗时、等待和返工次数由系统计算，不要猜测。
+pull_requests 用于把本任务负责的真实 GitHub PR 登记给后台轮询器，没有时返回 []。每项包含 url（完整 https://github.com/owner/repo/pull/123）和 source_id（只有一个启用的 GitHub 源时可为空）。Manager 将其绑定本任务，后续 CI/评论仍返回本 Session；新版本自动邀请配置的评审角色。仅登记已存在且由本任务负责的 PR，不要登记材料中随意引用的 PR，更不能编造链接。外部写入权限仍须单独获得；未来发布的自动回复必须带 <!-- work-assistant:task-reply --> 标记以免触发反馈循环。
 文档、代码建议或报告必须提供完整 UTF-8 文件内容到 artifacts，不能只说已保存、不能只给本机路径。
 每次 review 提交包含完整的本次交付文件集合。同名文件产生新版本，不覆盖历史。
 文件名仅允许单层名称，不含路径；最多 8 个文件，总输出不超过 120 KiB。
@@ -48,8 +56,20 @@ summary 是给任务完成复盘使用的结构化材料。review 时应填写�
 聊天和后续修改会回到你的原生 Session；不要创建新 Session 或自行调用控制端管理接口。`
 }
 
-func (JSONContract) Schema() json.RawMessage {
+func baseSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false,"required":["outcome","message","artifacts","summary"],"properties":{"outcome":{"type":"string","enum":["review","needs_input","blocked"]},"message":{"type":"string"},"artifacts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["name","content"],"properties":{"name":{"type":"string"},"content":{"type":"string"}}}},"summary":{"type":"object","additionalProperties":false,"required":["result","learnings","improvements"],"properties":{"result":{"type":"string"},"learnings":{"type":"array","items":{"type":"string"}},"improvements":{"type":"array","items":{"type":"string"}}}}}}`)
+}
+
+func (JSONContract) Schema() json.RawMessage {
+	var schema map[string]any
+	_ = json.Unmarshal(baseSchema(), &schema)
+	schema["required"] = append(schema["required"].([]any), "pull_requests")
+	schema["properties"].(map[string]any)["pull_requests"] = map[string]any{
+		"type":  "array",
+		"items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"url", "source_id"}, "properties": map[string]any{"url": map[string]string{"type": "string"}, "source_id": map[string]string{"type": "string"}}},
+	}
+	raw, _ := json.Marshal(schema)
+	return raw
 }
 
 func Parse(raw string) (Result, error) {
@@ -67,6 +87,17 @@ func Parse(raw string) (Result, error) {
 	}
 	if result.Outcome != "review" && result.Outcome != "needs_input" && result.Outcome != "blocked" {
 		return result, fmt.Errorf("unknown business outcome")
+	}
+	if len(result.PullRequests) > 8 {
+		return result, fmt.Errorf("at most 8 PR registrations per submission")
+	}
+	seenPR := map[string]bool{}
+	for _, pr := range result.PullRequests {
+		_, _, _, url, err := model.ParseGitHubPR(pr.URL)
+		if err != nil || len(pr.SourceID) > 200 || seenPR[url] {
+			return result, fmt.Errorf("invalid or duplicate PR registration")
+		}
+		seenPR[url] = true
 	}
 	if strings.TrimSpace(result.Message) == "" || len(result.Message) > 32000 || result.Artifacts == nil || len(result.Artifacts) > 8 {
 		return result, fmt.Errorf("message or artifacts are missing or too large")

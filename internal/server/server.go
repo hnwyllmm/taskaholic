@@ -26,6 +26,7 @@ import (
 	"work-assistant/internal/router"
 	"work-assistant/internal/rpcpeer"
 	"work-assistant/internal/store"
+	"work-assistant/internal/tasksource"
 	"work-assistant/internal/workflow"
 )
 
@@ -58,6 +59,7 @@ type Server struct {
 	agentRouter   router.AgentSelector
 	roleBuilder   rolebuilder.Builder
 	http          *http.Server
+	sources       *tasksource.Engine
 }
 
 func New(config Config, state *store.Store, logger *slog.Logger) *Server {
@@ -65,6 +67,7 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 		logger = slog.Default()
 	}
 	server := &Server{config: config, store: state, log: logger, hub: newRuntimeHub(), router: router.FirstOnline{}}
+	server.sources = tasksource.New(state)
 	server.homeAssistant = config.HomeAssistant
 	if server.homeAssistant == nil {
 		server.homeAssistant = concierge.JSONAssistant{}
@@ -105,6 +108,7 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	mux.HandleFunc("GET /runtime/ws", server.handleRuntimeWebSocket)
 	server.registerRoleRoutes(mux)
 	server.registerWorkRoutes(mux)
+	server.registerSourceRoutes(mux)
 	server.registerHomeRoutes(mux)
 	server.registerUpgradeRoutes(mux)
 	server.registerSystemAgentRoutes(mux)
@@ -138,6 +142,9 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.dispatchLoop(dispatchCtx)
 	go s.workLoop(dispatchCtx)
+	sourceDone := make(chan struct{})
+	go func() { defer close(sourceDone); s.sourceLoop(dispatchCtx) }()
+	defer func() { cancelDispatch(); <-sourceDone }()
 
 	errCh := make(chan error, 1)
 	go func() {

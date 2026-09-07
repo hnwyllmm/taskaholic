@@ -163,7 +163,7 @@ func TestReasoningMigrationPreservesLegacyData(t *testing.T) {
 	if _, err = s.db.Exec(`ALTER TABLE run DROP COLUMN execution_json`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.db.Exec(`DELETE FROM schema_version WHERE version=12`); err != nil {
+	if _, err = s.db.Exec(`DELETE FROM schema_version WHERE version>=12`); err != nil {
 		t.Fatal(err)
 	}
 	if err = migrateV12(s.db); err != nil {

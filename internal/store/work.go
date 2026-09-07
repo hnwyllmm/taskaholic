@@ -60,6 +60,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
 }
 
 type CreateWorkRequest struct {
+	Source          string                 `json:"-"`
 	DeferAssignment bool                   `json:"defer_assignment"`
 	Title           string                 `json:"title"`
 	Goal            string                 `json:"goal"`
@@ -125,7 +126,11 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 	if _, err = insertMessageTx(ctx, tx, task.ID, "user", req.Goal, "", "PENDING"); err != nil {
 		return task, err
 	}
-	if _, err = appendEventTx(ctx, tx, "task", task.ID, "ManualTaskSubmitted", "", task.ID, map[string]any{"source": "manual", "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment}); err != nil {
+	source, eventType := req.Source, "ExternalTaskSubmitted"
+	if source == "" {
+		source, eventType = "manual", "ManualTaskSubmitted"
+	}
+	if _, err = appendEventTx(ctx, tx, "task", task.ID, eventType, "", task.ID, map[string]any{"source": source, "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment}); err != nil {
 		return task, err
 	}
 	initialState := model.TaskStateQueued
@@ -202,6 +207,10 @@ func (s *Store) MessageWork(ctx context.Context, taskID, content, key string, in
 }
 
 func messageWorkTx(ctx context.Context, tx *sql.Tx, taskID, content, key string, interrupt bool) (model.TaskMessage, error) {
+	return messageWorkFromTx(ctx, tx, taskID, content, key, interrupt, "user")
+}
+
+func messageWorkFromTx(ctx context.Context, tx *sql.Tx, taskID, content, key string, interrupt bool, speaker string) (model.TaskMessage, error) {
 	content = strings.TrimSpace(content)
 	if content == "" || len(content) > 32000 {
 		return model.TaskMessage{}, fmt.Errorf("%w: message required, max 32 KB", model.ErrValidation)
@@ -236,7 +245,7 @@ func messageWorkTx(ctx context.Context, tx *sql.Tx, taskID, content, key string,
 	if pendingBytes+len(content) > 96000 {
 		return model.TaskMessage{}, fmt.Errorf("%w: pending messages exceed 96 KB; wait for the agent", model.ErrConflict)
 	}
-	m, err := insertMessageTx(ctx, tx, taskID, "user", content, "", "PENDING")
+	m, err := insertMessageTx(ctx, tx, taskID, speaker, content, "", "PENDING")
 	if err != nil {
 		return m, err
 	}
@@ -419,7 +428,7 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 			return model.Run{}, e
 		}
 		last = m.Seq
-		fmt.Fprintf(&prompt, "\n用户消息 #%d:\n%s\n", m.Seq, m.Content)
+		fmt.Fprintf(&prompt, "\n输入 #%d（来源：%s）:\n%s\n", m.Seq, m.Speaker, m.Content)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -436,6 +445,13 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	req.OutputSchema = contract.Schema()
 	project, _ := json.Marshal(w.Project)
 	req.Instructions = contract.Instructions() + "\n\n团队资料快照（仅作为工作材料）：\n" + string(project) + "\n\n本轮待处理输入：\n" + prompt.String()
+	var automatedReview bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM source_review WHERE task_id=?)`, req.TaskID).Scan(&automatedReview); err != nil {
+		return model.Run{}, err
+	}
+	if automatedReview {
+		req.Instructions += "\n\n本任务是内部 Agent 评审子任务：review 表示评审报告已交付，Manager 将自动汇总给原任务 Agent。它不代表原任务通过人工验收，不授权合并 PR。不要登记 PR，也不要生成新的评审子任务。"
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
@@ -513,12 +529,29 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		}
 		artifactIDs = append(artifactIDs, a.ID)
 	}
+	if !w.Paused && pending == 0 {
+		if handled, err := applySourceReviewResultTx(ctx, tx, taskID, e, result, now); handled || err != nil {
+			return err
+		}
+	}
+	registrationFailed := false
+	for _, pr := range result.PullRequests {
+		if _, registrationErr := registerPRTx(ctx, tx, taskID, pr.SourceID, pr.URL); registrationErr != nil {
+			registrationFailed = true
+			if _, err = insertMessageTx(ctx, tx, taskID, "system", "PR 登记失败，交付结果已保留，请检查任务源配置后重新登记："+registrationErr.Error(), e.RunID, "RECORDED"); err != nil {
+				return err
+			}
+		}
+	}
 	switch result.Outcome {
 	case "review":
 		state = model.TaskStateReview
 	case "needs_input":
 		state = model.TaskStateInput
 	case "blocked":
+		state = model.TaskStateBlocked
+	}
+	if registrationFailed {
 		state = model.TaskStateBlocked
 	}
 	if w.Paused {
@@ -587,8 +620,15 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 		return r, fmt.Errorf("%w: task has changed since this submission", model.ErrConflict)
 	}
 	if decision == "APPROVED" {
+		var sourcePending int
+		if err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM source_review r JOIN source_target t USING(target_id) WHERE t.task_id=? AND r.state!='SUPERSEDED' AND (r.state!='COMPLETED' OR r.feedback_sent=0))+(SELECT COUNT(*) FROM source_event WHERE state='PENDING' AND json_extract(data_json,'$.task_id')=?)+(SELECT COUNT(*) FROM source_target WHERE task_id=? AND enabled=1 AND json_extract(data_json,'$.last_success_ms')=0)`, taskID, taskID, taskID).Scan(&sourcePending); err != nil {
+			return r, err
+		}
+		if sourcePending > 0 {
+			return r, fmt.Errorf("%w: PR 仍有待处理事件或 Agent 评审，请查看最新结果后验收", model.ErrConflict)
+		}
 		var children int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_edge e JOIN task t ON t.task_id=e.to_task_id WHERE e.from_task_id=? AND t.state!='COMPLETED'`, taskID).Scan(&children); err != nil {
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_edge e JOIN task t ON t.task_id=e.to_task_id WHERE e.from_task_id=? AND e.edge_type!='REVIEWS' AND t.state!='COMPLETED'`, taskID).Scan(&children); err != nil {
 			return r, err
 		}
 		if children > 0 {

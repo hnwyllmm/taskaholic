@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>任务源 · Work Assistant</title>
+  <link rel="stylesheet" href="/assets/shell.css"><link rel="stylesheet" href="/assets/sources.css">
+  <script src="/assets/shared.js" defer></script><script src="/assets/sources.js" defer></script>
+</head>
+<body class="app-page" data-page="sources">
+<header data-app-shell></header><div id="notice" role="status" aria-live="polite" hidden></div>
+<main>
+  <div class="page-heading"><div><span class="eyebrow">EVENTS BECOME WORK</span><h1>任务源</h1><p>把新工单变成工作，把后续反馈送回原成员和 Session。</p></div><button id="refresh">刷新状态</button></div>
+  <div class="source-toolbar"><button id="add-multica">＋ AntMultica 任务源</button><button id="add-github">＋ GitHub 任务源</button><button id="register-pr" class="primary">登记 PR</button></div>
+  <section class="card-grid" id="sources" aria-label="任务源配置"></section>
+  <section class="source-section"><div class="section-heading"><h2>轮询目标</h2><span class="small muted">暂停轮询不删除历史，也不中断正在工作的 Agent</span></div><div id="targets" class="source-list"></div></section>
+  <section class="source-section"><div class="section-heading"><h2>PR 版本评审</h2><span class="small muted">一个版本一组评审任务 · 旧版本保留记录</span></div><div id="reviews" class="source-list"></div></section>
+  <section class="source-section"><div class="section-heading"><h2>最近事件</h2><span class="small muted">最近 200 条 · 先持久化、再处理</span></div><div id="events" class="source-list"></div></section>
+  <p class="page-footer">凭据仅由运行主机上已登录的 gh / multica 管理，不填写或保存在网页中。任务源不会自行推送、评论、审批或合并 PR。轮询只能观察到采样时的 PR 版本；一次推送包含多个 commit 时，评审最新版本的完整变更。</p>
+</main>
+<dialog id="source-dialog" class="decision-dialog">
+  <form id="source-form">
+    <div class="dialog-heading"><h2 id="editor-title">任务源配置</h2><button type="button" id="close-source">取消</button></div>
+    <label>名称<input id="source-name" maxlength="100" required></label>
+    <div class="source-fields"><label>状态<select id="source-enabled"><option value="true">启用</option><option value="false">停用</option></select></label><label>轮询间隔（秒）<input id="source-interval" type="number" min="5" max="86400" required></label></div>
+    <div id="multica-fields">
+      <div class="source-fields"><label>工作区 UUID<input id="workspace-id" maxlength="100"></label><label>工作区地址名称<input id="workspace-slug" maxlength="100" placeholder="seekdb"></label></div>
+      <label>指派人 UUID（精确匹配）<input id="assignee-id" maxlength="100"></label>
+      <div class="source-fields"><label>迭代字段名称 / UUID<input id="iteration-key" maxlength="100" placeholder="迭代"></label><label>迭代名称<input id="iteration-value" maxlength="100" placeholder="1.5.0"></label></div>
+      <label>执行角色<select id="source-role"></select></label>
+      <label>导入后<select id="defer-assignment"><option value="false">自动分派给合适成员</option><option value="true">进入等待队列，稍后分派</option></select></label>
+      <p class="small muted">只导入所选迭代内、精确指派给此人的未完成工单。修改迭代不删除旧任务，也不重复创建已导入工单。身份变化请创建新源。</p>
+    </div>
+    <div id="github-fields">
+      <fieldset><legend>新版本邀请哪些评审角色</legend><div id="reviewer-roles" class="source-checks"></div></fieldset>
+      <label>忽略评论账号（可选，逗号分隔）<input id="ignore-logins" placeholder="例如某个仅发送通知的 bot"></label>
+      <p class="small muted">每个角色自动选一名成员，排除原作者；评审完成后汇总回原任务。新 head 会暂停未完成的旧版本评审。不会因为评论作者与 PR 作者同账号就忽略人工意见；系统自动回复必须携带专用标记以防循环。</p>
+    </div>
+    <label>团队资料<select id="source-project"></select></label>
+    <p id="source-error" class="dialog-error" role="alert" hidden></p>
+    <button type="submit" class="primary">保存配置</button>
+  </form>
+</dialog>
+<dialog id="pr-dialog" class="decision-dialog">
+  <form id="pr-form">
+    <div class="dialog-heading"><h2>登记 PR</h2><button type="button" id="close-pr">取消</button></div>
+    <label>负责此 PR 的原任务<select id="pr-task" required></select></label>
+    <label>GitHub 任务源<select id="pr-source" required></select></label>
+    <label>PR 地址<input id="pr-url" type="url" required placeholder="https://github.com/oceanbase/seekdb/pull/123"></label>
+    <p class="small muted">请选择已开始执行的任务，确保后续反馈回到原成员的 Session。首次登记不补发旧评论，但会检查当前 CI 并评审当前版本。Agent 也能通过交付 JSON 中的 pull_requests 字段自动登记。</p>
+    <p id="pr-error" class="dialog-error" role="alert" hidden></p><button type="submit" class="primary">开始跟踪</button>
+  </form>
+</dialog>
+</body></html>

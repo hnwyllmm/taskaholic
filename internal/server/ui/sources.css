@@ -1,0 +1,14 @@
+.source-toolbar{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px}
+.source-section{margin-top:34px}.source-list{display:grid;gap:12px}
+.source-row{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:12px;align-items:start}
+.source-row p{margin:5px 0;font-size:12px}.source-row details{grid-column:1/-1}
+.source-row pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;font-size:12px}
+.source-row h3{margin:0}.source-meta{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.source-error{color:#9d4a34!important;white-space:pre-wrap}
+.source-fields{display:grid;grid-template-columns:1fr 1fr;gap:15px}
+.source-checks{display:grid;gap:7px}.source-checks label{display:flex;align-items:center;gap:9px;margin:0}
+.source-checks input{width:auto}.source-checks input:disabled+span{opacity:.6}
+#source-form>label,#multica-fields>label,#github-fields>label,#pr-form>label{display:block;margin:16px 0}
+.source-fields label{display:block}fieldset{border:1px solid var(--border);border-radius:8px;padding:15px;margin:14px 0}
+.source-row .source-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+@media(max-width:650px){.source-fields,.source-row{grid-template-columns:1fr}.source-row details{grid-column:1}.section-heading{align-items:start;flex-direction:column}.source-toolbar button{flex:1}}

@@ -30,7 +30,7 @@ func TestResultValidation(t *testing.T) {
 			t.Fatalf("invalid summary accepted: %s", raw)
 		}
 	}
-	if schema := string((JSONContract{}).Schema()); !strings.Contains(schema, `"required":["outcome","message","artifacts","summary"]`) {
+	if schema := string((JSONContract{}).Schema()); !strings.Contains(schema, `"required":["outcome","message","artifacts","summary","pull_requests"]`) {
 		t.Fatal("completion summary is not required by the advertised contract", schema)
 	}
 }

@@ -17,6 +17,12 @@ func (s *Server) handlePageUI(w http.ResponseWriter, r *http.Request) {
 		path, contentType = "system.html", "text/html; charset=utf-8"
 	case "/team", "/team/", "/projects", "/projects/":
 		path, contentType = "projects.html", "text/html; charset=utf-8"
+	case "/sources", "/sources/":
+		path, contentType = "sources.html", "text/html; charset=utf-8"
+	case "/assets/sources.js":
+		path, contentType = "sources.js", "text/javascript; charset=utf-8"
+	case "/assets/sources.css":
+		path, contentType = "sources.css", "text/css; charset=utf-8"
 	case "/assets/shell.css":
 		path, contentType = "shell.css", "text/css; charset=utf-8"
 	case "/assets/shared.js":
