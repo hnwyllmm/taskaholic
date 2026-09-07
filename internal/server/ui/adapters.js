@@ -12,6 +12,14 @@
     if(!names.length||names.includes(current))return current;
     return names.includes('codex-agent')?'codex-agent':names[0];
   }
-  if(typeof module!=='undefined'&&module.exports)module.exports={suggested,available};
-  else window.WAAdapters={suggested,available};
+  function options(runtimes,runtimeID,current,edited=false,pinned=false){
+    const value=suggested(runtimes,runtimeID,current,edited,pinned);
+    const names=available(runtimes,runtimeID);
+    const result=names.map(id=>({value:id,label:id==='codex-agent'?'Codex CLI':id==='cursor-agent'?'Cursor Agent':id,disabled:false}));
+    if(value&&!names.includes(value))result.push({value,label:value+' · 当前配置（机器未提供）',disabled:true});
+    if(!result.length)result.push({value:'',label:'暂无可用 Agent 类型',disabled:true});
+    return {value,options:result};
+  }
+  if(typeof module!=='undefined'&&module.exports)module.exports={suggested,available,options};
+  else window.WAAdapters={suggested,available,options};
 })();

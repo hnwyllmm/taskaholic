@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"work-assistant/internal/model"
+	"work-assistant/internal/runtimehost"
 	"work-assistant/internal/store"
 )
 
@@ -78,5 +79,85 @@ func TestBootstrapCreatesCursorAndPreservesEditedMemberOnRestart(t *testing.T) {
 	agents, err = s.ListAgents(context.Background())
 	if err != nil || len(agents) != 1 || agents[0].Name != "用户自定成员" || agents[0].ModelID != "changed-model" || agents[0].AdapterID != "cursor-agent" {
 		t.Fatal("bootstrap rewrote existing member", agents, err)
+	}
+}
+
+// Exercise the actual offline rename module against a real store, then restart
+// the real bootstrap. The runtime-specific idempotency key must still resolve
+// the original helper, otherwise startup tries to create a duplicate member.
+func TestBootstrapAfterOfflineRuntimeRename(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("runtime rename tooling requires Node with node:sqlite")
+	}
+	dir := t.TempDir()
+	database := filepath.Join(dir, "control.sqlite")
+	s, err := store.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
+	ctx := context.Background()
+	register := func(runtimeID string) {
+		t.Helper()
+		if err := s.RegisterRuntime(ctx, model.RuntimeHello{RuntimeID: runtimeID, Epoch: "boot", Capabilities: map[string]any{"adapters": map[string]any{"cursor-agent": map[string]any{"role_instructions": true, "structured_output": true, "read_only_runs": true}}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	boot := func(runtimeID string) {
+		t.Helper()
+		bootCtx, cancel := context.WithTimeout(ctx, 450*time.Millisecond)
+		defer cancel()
+		if err := bootstrap(bootCtx, s, runtimeID, "auto", "127.0.0.1:17343", "cursor-agent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	register("dev-cursor")
+	boot("dev-cursor")
+	before, err := s.ListAgents(ctx)
+	if err != nil || len(before) != 1 {
+		t.Fatal("initial bootstrap", err)
+	}
+	drafts, err := s.ListRoleDrafts(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkAllRuntimesOffline(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	spoolPath := filepath.Join(dir, "runtime.sqlite")
+	spool, err := runtimehost.OpenSpool(spoolPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spool.Close()
+	module, err := filepath.Abs("../../deploy/dev/rename-runtime.mjs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(node, "--input-type=module", "-e", `import {DatabaseSync} from 'node:sqlite'; const {renameRuntime}=await import(process.argv[1]); const c=new DatabaseSync(process.argv[2]),s=new DatabaseSync(process.argv[3]); try{renameRuntime(c,s,'dev-cursor','dev')}finally{c.close();s.close()}`, module, database, spoolPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("offline rename: %v: %s", err, output)
+	}
+	s, err = store.Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	register("dev")
+	boot("dev")
+	after, err := s.ListAgents(ctx)
+	if err != nil || len(after) != 1 || after[0].ID != before[0].ID || after[0].RuntimeID != "dev" || after[0].RoleID != before[0].RoleID {
+		t.Fatal("renamed bootstrap replaced helper", err)
+	}
+	afterDrafts, err := s.ListRoleDrafts(ctx)
+	if err != nil || len(afterDrafts) != len(drafts) || afterDrafts[0].ID != drafts[0].ID {
+		t.Fatal("renamed bootstrap created another role draft", err)
 	}
 }

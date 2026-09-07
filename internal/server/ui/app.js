@@ -88,15 +88,14 @@ function renderAgents() {
 function option(value, label) { const el = node('option', label); el.value = value; return el; }
 function suggestAdapter(prefix) {
   const field=$(prefix+'-adapter');
-  let choices=$(prefix+'-adapter-options');
-  if(!choices){choices=node('datalist');choices.id=prefix+'-adapter-options';field.after(choices);field.setAttribute('list',choices.id);}
-  choices.replaceChildren(...WAAdapters.available(state.runtimes,$(prefix+'-runtime').value).map(id=>option(id,id==='codex-agent'?'Codex CLI':id==='cursor-agent'?'Cursor Agent':id)));
-  field.value=WAAdapters.suggested(state.runtimes,$(prefix+'-runtime').value,field.value,field.dataset.edited==='true',prefix==='builder'&&!!state.session);
+  const choices=WAAdapters.options(state.runtimes,$(prefix+'-runtime').value,field.value,field.dataset.edited==='true',prefix==='builder'&&!!state.session);
+  field.replaceChildren(...choices.options.map(item=>{const itemOption=option(item.value,item.label);itemOption.disabled=item.disabled;return itemOption;}));
+  field.value=choices.value;
   updateModels(prefix);
 }
 function updateModels(prefix){void modelControls[prefix].update({runtimeID:$(prefix+'-runtime').value,adapterID:$(prefix+'-adapter').value,runtimes:state.runtimes,agents:state.agents});}
 for(const prefix of ['builder','agent']) {
-  $(prefix+'-adapter').addEventListener('input',()=>{$(prefix+'-adapter').dataset.edited='true';updateModels(prefix);});
+  $(prefix+'-adapter').addEventListener('change',()=>{$(prefix+'-adapter').dataset.edited='true';modelControls[prefix].setValue('');updateModels(prefix);});
   $(prefix+'-runtime').addEventListener('change',()=>suggestAdapter(prefix));
 }
 async function refreshLibrary() {
@@ -131,7 +130,7 @@ async function loadDraft(id) {
   const draft = await api('/role-drafts/' + id), detail = await api('/tasks/' + draft.task_id);
   state.draft = draft; state.role = draft.published_role_id ? await api('/roles/'+draft.published_role_id) : null; state.editingRole=false; state.session = detail.session || null; state.dirty = false;
   $('message').value = '';
-  if (state.session) { $('builder-runtime').value=state.session.runtime_id; $('builder-model').value=state.session.model_id || ''; $('builder-adapter').value=state.session.adapter_id; }
+  if (state.session) { $('builder-runtime').value=state.session.runtime_id; $('builder-model').value=state.session.model_id || ''; $('builder-adapter').replaceChildren(option(state.session.adapter_id,state.session.adapter_id)); $('builder-adapter').value=state.session.adapter_id; }
   else { $('builder-runtime').value=''; $('builder-model').value=''; $('builder-adapter').value=''; $('builder-adapter').dataset.edited='false'; }
   $('session-hint').textContent = state.session ? '已绑定原 Agent / Session；继续对话沿用相同运行环境。' : '首次生成后绑定 Session，后续对话复用它。';
   renderCurrent(); await refreshLibrary(); schedulePoll();

@@ -7,7 +7,8 @@
 - systemd 用户服务：`work-assistant.service`；用户已启用 linger，不依赖 SSH 会话存活。进程链是 `systemd --user → assistant-supervisor → assistant-local → Cursor / Codex CLI`。systemd 维护守护进程，守护进程维护应用并负责升级安装/健康检查/回滚；重启应用不会结束升级的父进程。
 - 监听：`0.0.0.0:17343`，可通过 dev 的网络地址访问，例如 `http://6.12.233.133:17343/`（需所在网络能路由到 dev）。按用户要求显式开启 `--allow-remote --no-api-auth`，浏览器/控制 API 免登录；Runtime 仍要求至少 32 字符的 Token，内部连接仍使用 `127.0.0.1`。其它实例及默认启动设置不变。
 - 主成员：`Cursor 工作助手`，Adapter 为 `cursor-agent`，模型为 Cursor 的 `auto`。首页助理、角色设计和 AI 路由已明确绑定此成员，之后可在成员管理的系统岗位中调整。
-- 同机额外启用 `codex-agent`，使用 `/home/wangyunlai.wyl/.n/bin/codex`。为保持历史绑定，Runtime ID 仍为 `dev-cursor`，这只是稳定机器标识，不表示只支持 Cursor。主 Adapter 和原系统岗位保持不变；增加 Adapter 不复制、迁移原 Session。
+- Runtime ID 为 `dev`，与 Agent 类型无关。同机注册 `cursor-agent` 和 `codex-agent`，Codex 使用 `/home/wangyunlai.wyl/.n/bin/codex`；成员页的“Agent 类型”下拉框按机器实际注册能力展示 Cursor Agent、Codex CLI 以及后续插件。主 Adapter 和原系统岗位保持不变；切换新成员的 Agent 类型时重置待填模型，随后读取对应模型列表。
+- 原 `dev-cursor` 已在停服且消息排空后更名为 `dev`，原成员、Run、Session 的引用同步更新，原生 Session 引用、工作区、模型、并发和历史事件保留。不能只改 systemd 参数：这会创建新 Runtime 并使旧成员离线。`rename-runtime.mjs` 是带原子事务和逐表保留校验的离线迁移模块（非在线 API），只接受审查过的 schema；使用前必须停服、验证备份和消息排空，改名后同步启动配置并验证恢复。新名称的 `local-helper-role:<runtime>` 初始化幂等键必须映射到原草案，防止重启误建同名成员；模块在同一事务内添加此映射，保留旧键。历史事件与已送达消息继续记录当时的原名称，并追加 RuntimeRenamed 事件。
 - Codex 普通任务强制 `read-only` 和 `approval_policy=never`，覆盖 CLI 全局默认沙箱，不关闭沙箱。读取公开 JSONL 活动，用原生 thread ID 恢复验收对话；取消会终止对应进程组。模型下拉通过临时 stdio App Server 的只读 `model/list` 获取，不新建任务，不读取聊天记录，不暴露新网络端口。
 - 普通工作与验收仍只读。Cursor 使用原生 Ask 模式和开启的沙箱；每个隔离 Session 目录有自己的 Cursor 权限文件，禁止 Write、Shell 和 MCP 调用。不会修改全局 Cursor 配置、使用 `--force/--yolo` 或自动批准外部 MCP。当前主要支持已有材料的文档、分析、只读原生文件工具和结构化文本交付。
 - Cursor 保留自己的原生会话；重试/验收用 `--resume` 指定原 chat ID，返回不同 ID 时失败且保留原绑定。结果须是完整 JSON 对象，具体业务再按固定协议验证，不把提示词当作权限校验。

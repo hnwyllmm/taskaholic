@@ -7,7 +7,7 @@ import {rolePack} from './seekdb-roles.mjs';
 const specOf = role => Object.fromEntries(['name','description','capabilities','instructions','output_contract','boundaries'].map(k=>[k,role[k]]));
 
 // Additive and resumable. Never overwrite a user's role, member, or system slot.
-export async function seedRoles(api, {apply=false,members=false,modelID='',runtimeID='dev-cursor'}={}) {
+export async function seedRoles(api, {apply=false,members=false,modelID='',runtimeID='dev'}={}) {
   const [{roles},{agents},{runtimes}] = await Promise.all([api('/roles'),api('/agents'),api('/runtimes')]);
   if(members) {
     const runtime=runtimes.find(r=>r.runtime_id===runtimeID);

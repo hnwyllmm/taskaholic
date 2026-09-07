@@ -8,7 +8,7 @@ function fixture(){
   const api=async(route,method='GET',body)=>{
     if(method!=='GET')writes.push([route,method]);
     if(route==='/roles')return {roles};
-    if(route==='/runtimes')return {runtimes:[{runtime_id:'dev-cursor',state:'ONLINE',capabilities:{adapters:{'codex-agent':{role_instructions:true}}}}]};
+    if(route==='/runtimes')return {runtimes:[{runtime_id:'dev',state:'ONLINE',capabilities:{adapters:{'codex-agent':{role_instructions:true}}}}]};
     if(route.startsWith('/runtimes/'))return {status:'ready',models:[{id:'fixture-model'}]};
     if(route==='/system/agents')return {bindings:[{slot:'home_chat',agent_id:'original-cursor'}]};
     if(route==='/agents'){
