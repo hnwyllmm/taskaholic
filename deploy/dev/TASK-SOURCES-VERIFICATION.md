@@ -40,6 +40,17 @@
 
 systemd 验收状态：active/running，MainPID `572417`，NRestarts=0。已有免登录 LAN/VPN 访问方式不变；运行端认证仍保留。
 
+## 后续真实评审与分页补验
+
+工单 Agent 在只读调查中识别了已有且明确关联 SEEK-478 的 PR `https://github.com/oceanbase/seekdb/pull/1358`，通过结果中的 pull_requests 将其登记到原任务；不是本次新建的 PR。源在 head `e6d49057970e29768a6467ba8557d5235c052781` 上自动创建了架构、QA、通用代码三个评审任务。架构与 QA 已完成；通用 reviewer 已交付报告但返回 blocked，原因是自身沙箱无法取得当前 CI/PR/工单在线材料。系统保留报告且没有把 blocked 算作通过，原任务仍等待子评审，不自动批准或合并。
+
+最后通过真实 GitHub Link 验证发现分页使用 `/repositories/1080442728/`。补充提交 `b12e0dd`：从 PR 的 base.repo.id/full_name 校验该 ID，允许同仓库的数字路径，仍拒绝其它仓库、未确认的 ID 和其它域名。本地/dev provider race 测试通过，dev store/server race 与 vet 再验通过。只读探针对 PR #1358 使用 `--page-size 10`，实际读取 1 个数字仓库分页，第二次轮询新增事件为 0；未向 GitHub 写入。
+
+等待全部运行结束后安装分页补丁，没有中断评审。再次核对 schema 仍为 13、任务源配置和系统绑定不变、原任务与原生 Session 引用保留，健康检查通过。新旧程序副本位于 `.deploy/github-pagination-20260907-HHCn6H/`。补丁前后恢复点均通过 backup-verify：
+
+- 补丁前：`snapshot-20260907T060727.165608554Z-1919379888`。
+- 补丁后：`snapshot-20260907T060731.220034727Z-331591768`。
+
 ## 未扩大到的范围
 
 没有开放普通 Agent 的仓库写入、推送、评论发布、PR 合并权限。自动 reviewer 完成只表示其内部评审报告交付，不等于开发任务已获人工批准。轮询以实际观测到的 head 为版本；不是每个瞬时 push/中间 commit 的无遗漏捕获。原生 CLI Session、远端仓库和 CLI 凭据仍不包含在应用 SQLite 备份内。
