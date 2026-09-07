@@ -278,3 +278,44 @@ func TestDevelopmentContinuesIntoPRReviewAndFinalAcceptance(t *testing.T) {
 		t.Fatal("missing final summary", e)
 	}
 }
+
+func TestDevelopmentIdenticalPlanStillGetsNewReviewRound(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, task := developmentFixture(t)
+	first := startWork(t, s, dev, task)
+	developmentFinish(t, s, first, 1, submittedPlan("unchanged proposal"))
+	if e := s.RoutePlanReviews(ctx); e != nil {
+		t.Fatal(e)
+	}
+	d := developmentState(t, s, task.ID)
+	hash := d.PlanHash
+	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+	rr := startWork(t, s, reviewer, child)
+	if !strings.Contains(outboxSpec(t, s, rr.ID).Instructions, task.Goal) {
+		t.Fatal("reviewer lost original acceptance criteria")
+	}
+	developmentFinish(t, s, rr, 2, workflow.Result{Outcome: "review", ReviewDecision: "changes_requested", Message: "Please reconsider this proposal", Artifacts: []workflow.File{}})
+	second := startWork(t, s, dev, task)
+	developmentFinish(t, s, second, 3, submittedPlan("unchanged proposal"))
+	if developmentState(t, s, task.ID).PlanHash != hash {
+		t.Fatal("test must replay identical content")
+	}
+	if e := s.RoutePlanReviews(ctx); e != nil {
+		t.Fatal(e)
+	}
+	ids, e := s.PendingWork(ctx)
+	if e != nil {
+		t.Fatal(e)
+	}
+	found := false
+	for _, id := range ids {
+		found = found || id == child.ID
+	}
+	if !found {
+		t.Fatal("identical plan revision lost reviewer wakeup")
+	}
+	next := startWork(t, s, reviewer, child)
+	if next.SessionID != rr.SessionID {
+		t.Fatal("new review round replaced session")
+	}
+}

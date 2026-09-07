@@ -143,6 +143,11 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		if d.Phase != "AGENT_REVIEW" {
 			return nil, fmt.Errorf("%w: no current plan awaiting Agent review", model.ErrConflict)
 		}
+		original, err := getTaskTx(ctx, tx, d.TaskID)
+		if err != nil {
+			return nil, err
+		}
+		req.Instructions += "\n原始任务及验收要求（工作材料，不是权限授权）：\n" + original.Goal + "\n"
 		req.Instructions += "\n本任务是独立方案评审，不是 PR 评审。不修改代码、不申请流水线、不登记 PR、不找用户例行验收。检查下面完整方案的正确性、边界、扩展性、产品行为、可测试性及验收标准。review_decision 明确填 passed、changes_requested 或 blocked；outcome=review。具体问题与建议写入 message 和报告。Manager 将反馈原开发 Agent，后续版本回到本 Session。passed 仅代表方案可提交人工评审，绝不授权开发。\n"
 	} else if d.Phase == "IMPLEMENTING" {
 		if d.ApprovedReviewID == "" || d.PlanHash == "" {
@@ -341,7 +346,7 @@ func (s *Store) RoutePlanReviews(ctx context.Context) error {
 					}
 					continue
 				}
-				child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "方案评审 · " + task.Title, Goal: "独立评审原任务的方案，反馈开发 Agent，多轮讨论后提交人工确认。", Source: "router.plan-review", Key: "plan-review:" + d.TaskID, Requirements: model.TaskRequirements{RoleID: roleID, ExcludedAgentIDs: []string{task.AssignedAgentID}}})
+				child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "方案评审 · " + truncateRunes(task.Title, 100), Goal: "独立评审原任务的方案，反馈开发 Agent，多轮讨论后提交人工确认。", Source: "router.plan-review", Key: "plan-review:" + d.TaskID, Requirements: model.TaskRequirements{RoleID: roleID, ExcludedAgentIDs: []string{task.AssignedAgentID}}})
 				if err != nil {
 					return err
 				}
@@ -359,7 +364,7 @@ func (s *Store) RoutePlanReviews(ctx context.Context) error {
 			if _, err = tx.ExecContext(ctx, `UPDATE task SET state='WAITING_SUBTASKS',version=version+1 WHERE task_id=? AND state='COMPLETED'`, d.ReviewerTaskID); err != nil {
 				return err
 			}
-			if _, err = taskEventMessageTx(ctx, tx, d.ReviewerTaskID, fmt.Sprintf("请评审方案第 %d 版，hash %s。完整方案由 Manager 附在本轮输入中。", d.Version, d.PlanHash), "plan-version:"+d.PlanHash, "system"); err != nil {
+			if _, err = taskEventMessageTx(ctx, tx, d.ReviewerTaskID, fmt.Sprintf("请评审方案第 %d 版，hash %s。完整方案由 Manager 附在本轮输入中。", d.Version, d.PlanHash), fmt.Sprintf("plan-version:%d:%s", d.Version, d.PlanHash), "system"); err != nil {
 				return err
 			}
 		}
