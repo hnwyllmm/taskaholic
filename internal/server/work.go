@@ -15,6 +15,7 @@ import (
 )
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
 	for pattern, handler := range map[string]http.HandlerFunc{
 		"GET /api/v1/work/tasks":                                                        s.handleWorkList,
 		"GET /api/v1/work/summaries":                                                    s.handleWorkSummaries,

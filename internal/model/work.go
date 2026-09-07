@@ -133,9 +133,10 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
-	ReviewTurns []ReviewTurn  `json:"review_turns"`
-	Config      WorkConfig    `json:"config"`
-	Messages    []TaskMessage `json:"messages"`
-	Artifacts   []Artifact    `json:"artifacts"`
-	Reviews     []Review      `json:"reviews"`
+	TestPipelines []TestPipeline `json:"test_pipelines"`
+	ReviewTurns   []ReviewTurn   `json:"review_turns"`
+	Config        WorkConfig     `json:"config"`
+	Messages      []TaskMessage  `json:"messages"`
+	Artifacts     []Artifact     `json:"artifacts"`
+	Reviews       []Review       `json:"reviews"`
 }

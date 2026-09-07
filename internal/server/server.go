@@ -21,16 +21,20 @@ import (
 	"github.com/coder/websocket"
 
 	"work-assistant/internal/concierge"
+	"work-assistant/internal/gitlabci"
 	"work-assistant/internal/model"
 	"work-assistant/internal/rolebuilder"
 	"work-assistant/internal/router"
 	"work-assistant/internal/rpcpeer"
 	"work-assistant/internal/store"
+	"work-assistant/internal/taskaction"
 	"work-assistant/internal/tasksource"
 	"work-assistant/internal/workflow"
 )
 
 type Config struct {
+	TestPipelineExecutor     gitlabci.Executor
+	TestPipelineReader       gitlabci.Reader
 	LocalRuntimeID           string
 	HomeAssistant            concierge.Assistant
 	WorkContract             workflow.Contract
@@ -62,6 +66,7 @@ type Server struct {
 	roleBuilder   rolebuilder.Builder
 	http          *http.Server
 	sources       *tasksource.Engine
+	testActions   *taskaction.PipelineActions
 }
 
 func New(config Config, state *store.Store, logger *slog.Logger) *Server {
@@ -70,6 +75,14 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	}
 	server := &Server{config: config, store: state, log: logger, hub: newRuntimeHub(), router: router.FirstOnline{}}
 	server.sources = tasksource.New(state)
+	executor := config.TestPipelineExecutor
+	if executor == nil {
+		executor = gitlabci.New()
+	}
+	server.testActions = taskaction.NewPipelines(state, executor)
+	if config.TestPipelineReader != nil {
+		server.sources.Providers["gitlab"] = &tasksource.GitLab{Read: config.TestPipelineReader, Lookup: state.GetTestPipeline}
+	}
 	server.homeAssistant = config.HomeAssistant
 	if server.homeAssistant == nil {
 		server.homeAssistant = concierge.JSONAssistant{}
@@ -151,6 +164,9 @@ func (s *Server) Run(ctx context.Context) error {
 	sourceDone := make(chan struct{})
 	go func() { defer close(sourceDone); s.sourceLoop(dispatchCtx) }()
 	defer func() { cancelDispatch(); <-sourceDone }()
+	actionDone := make(chan struct{})
+	go func() { defer close(actionDone); serverActionLoop(dispatchCtx, s) }()
+	defer func() { cancelDispatch(); <-actionDone }()
 
 	errCh := make(chan error, 1)
 	go func() {

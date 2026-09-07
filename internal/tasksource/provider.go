@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"work-assistant/internal/gitlabci"
 	"work-assistant/internal/model"
 	"work-assistant/internal/store"
 )
@@ -86,7 +87,7 @@ func New(state *store.Store) *Engine {
 	if multica == "" {
 		multica = "multica"
 	}
-	return &Engine{Store: state, Providers: map[string]Provider{"github": &GitHub{Run: RunCLI, Binary: gh}, "antmultica": &AntMultica{Run: RunCLI, Binary: multica}}}
+	return &Engine{Store: state, Providers: map[string]Provider{"github": &GitHub{Run: RunCLI, Binary: gh}, "antmultica": &AntMultica{Run: RunCLI, Binary: multica}, "gitlab": &GitLab{Read: gitlabci.New(), Lookup: state.GetTestPipeline}}}
 }
 func (e *Engine) Tick(ctx context.Context) error {
 	maintenance, err := e.Store.Maintenance(ctx)

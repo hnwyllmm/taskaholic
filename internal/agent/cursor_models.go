@@ -21,7 +21,7 @@ func (a *CursorAdapter) ListModels(parent context.Context) ([]model.ModelOption,
 	defer cancel()
 	cmd := exec.CommandContext(ctx, a.binary, "models")
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "ASSISTANT_") {
+		if !isControlCredential(entry) {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}

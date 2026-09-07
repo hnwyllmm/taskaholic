@@ -35,7 +35,7 @@ func TestSourceBoundaryMigrationAuditsConfigAndPreservesTaskSession(t *testing.T
 	beforeWork, _ := s.GetWorkDetail(ctx, task.ID)
 	beforeSession, _ := s.GetTaskSession(ctx, task.ID)
 	beforeRun, _ := s.GetRun(ctx, run.ID)
-	if _, err := s.db.Exec(`DELETE FROM schema_version WHERE version=14`); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM schema_version WHERE version>=14`); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrateV14(s.db); err != nil {

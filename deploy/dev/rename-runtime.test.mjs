@@ -51,7 +51,7 @@ test('Online, active, pending, conflicting and unknown-schema renames fail witho
     ['control',"INSERT INTO idempotency_key VALUES('role.draft','local-helper-role:dev','other-draft',2)",/bootstrap identity/],
     ['control',"INSERT INTO upgrade_job VALUES('READY')",/unfinished upgrade/],
     ['control',"INSERT INTO maintenance VALUES('upgrade')",/maintenance/],
-    ['control','UPDATE schema_version SET version=15',/schema version/],
+    ['control','UPDATE schema_version SET version=16',/schema version/],
     ['control','CREATE TABLE unknown_binding(runtime_id TEXT)',/unreviewed runtime reference/],
   ])await t.test(sql,t=>{
     const f=fixture(t);f[target].exec(sql);const before=snapshot(f.control),spoolBefore=snapshot(f.spool);

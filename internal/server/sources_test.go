@@ -53,11 +53,26 @@ func TestSourceAPIAuthCASAndUI(t *testing.T) {
 			t.Fatal("source API accepted execution settings", config, rec.Code, rec.Body.String())
 		}
 	}
-	for _, path := range []string{"/sources", "/assets/sources.js", "/assets/sources.css"} {
+	for _, path := range []string{"/sources", "/assets/sources.js", "/assets/sources.css", "/assets/test-pipelines.js"} {
 		rec := httptest.NewRecorder()
 		server.http.Handler.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
 		if rec.Code != 200 || !strings.Contains(rec.Header().Get("Content-Security-Policy"), "default-src 'self'") {
 			t.Fatal("source page missing/security headers", path, rec.Code)
+		}
+	}
+	for _, token := range []string{"", "test"} {
+		req := httptest.NewRequest("POST", "/api/v1/work/tasks/t/test-pipelines/p/resolve", strings.NewReader(`{}`))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		rec := httptest.NewRecorder()
+		server.http.Handler.ServeHTTP(rec, req)
+		want := 400
+		if token == "" {
+			want = 401
+		}
+		if rec.Code != want {
+			t.Fatal("pipeline reset requires auth and explicit human confirmation", rec.Code)
 		}
 	}
 	req := httptest.NewRequest("PUT", "http://example.com/api/v1/sources/github", strings.NewReader("{}"))

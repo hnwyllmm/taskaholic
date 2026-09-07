@@ -231,7 +231,7 @@ func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort,
 func configureCodexProcess(command *exec.Cmd) {
 	command.Env = []string{}
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "ASSISTANT_") {
+		if !isControlCredential(entry) {
 			command.Env = append(command.Env, entry)
 		}
 	}

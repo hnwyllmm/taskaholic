@@ -129,7 +129,7 @@ func (a *CursorAdapter) runTurn(ctx context.Context, spec model.RunSpec, directo
 	// Runtime/control credentials belong to this host process, not the Agent.
 	// Preserve Cursor's own authentication and normal executable environment.
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "ASSISTANT_") {
+		if !isControlCredential(entry) {
 			cmd.Env = append(cmd.Env, entry)
 		}
 	}

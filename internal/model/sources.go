@@ -45,23 +45,25 @@ type SourceTarget struct {
 	Failures      int             `json:"failures"`
 	Cursor        json.RawMessage `json:"-"`
 	HeadSHA       string          `json:"head_sha,omitempty"`
+	TestRequestID string          `json:"test_request_id,omitempty"`
 }
 
 type SourceEvent struct {
-	ID          string `json:"event_id"`
-	SourceID    string `json:"source_id"`
-	TargetID    string `json:"target_id"`
-	Key         string `json:"key"`
-	Kind        string `json:"kind"`
-	Entity      string `json:"entity"`
-	TaskID      string `json:"task_id,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Message     string `json:"message"`
-	HeadSHA     string `json:"head_sha,omitempty"`
-	URL         string `json:"url,omitempty"`
-	State       string `json:"state"`
-	Error       string `json:"error,omitempty"`
-	CreatedAtMS int64  `json:"created_at_ms"`
+	ID          string               `json:"event_id"`
+	SourceID    string               `json:"source_id"`
+	TargetID    string               `json:"target_id"`
+	Key         string               `json:"key"`
+	Kind        string               `json:"kind"`
+	Entity      string               `json:"entity"`
+	TaskID      string               `json:"task_id,omitempty"`
+	Title       string               `json:"title,omitempty"`
+	Message     string               `json:"message"`
+	HeadSHA     string               `json:"head_sha,omitempty"`
+	URL         string               `json:"url,omitempty"`
+	State       string               `json:"state"`
+	Error       string               `json:"error,omitempty"`
+	CreatedAtMS int64                `json:"created_at_ms"`
+	Pipeline    *PipelineObservation `json:"pipeline,omitempty"`
 }
 
 type SourceReview struct {
@@ -98,6 +100,10 @@ func ValidateTaskSource(s TaskSource) error {
 		return fmt.Errorf("%w: 任务源名称必填，轮询间隔为 5～86400 秒", ErrValidation)
 	}
 	switch s.Kind {
+	case "gitlab":
+		if s.ID != SeekDBTestSource || s.Config.WorkspaceID != "" || len(s.Config.IgnoreLogins) != 0 {
+			return fmt.Errorf("%w: GitLab 测试源使用固定标识及服务端认证，不接受执行配置", ErrValidation)
+		}
 	case "github":
 		if len(s.Config.IgnoreLogins) > 50 {
 			return fmt.Errorf("%w: 最多配置 50 个忽略账号", ErrValidation)

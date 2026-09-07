@@ -38,6 +38,11 @@ func (s *Store) ProcessSourceEvents(ctx context.Context, planners ...router.Revi
 			}
 			current.State = "APPLIED"
 			switch e.Kind {
+			case "gitlab.pipeline":
+				current.State, err = applyTestPipelineEventTx(ctx, tx, t, e)
+				if err != nil {
+					return err
+				}
 			case "antmultica.issue":
 				var taskID string
 				err = tx.QueryRowContext(ctx, `SELECT task_id FROM source_entity WHERE entity=?`, e.Entity).Scan(&taskID)

@@ -2,7 +2,7 @@
 const {el,api,notice,link,date}=WA;
 const $=id=>document.getElementById(id);
 const state={sources:[],targets:[],events:[],reviews:[],roles:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set()};
-const eventLabels={'antmultica.issue':'工单新增 / 更新','github.head':'PR 新版本','github.comment':'PR 评论 / 评审意见','github.ci_failed':'CI 失败','github.review_result':'Agent 评审汇总','github.merged':'PR 已合并','github.closed':'PR 已关闭'};
+const eventLabels={'antmultica.issue':'工单新增 / 更新','github.head':'PR 新版本','github.comment':'PR 评论 / 评审意见','github.ci_failed':'CI 失败','github.review_result':'Agent 评审汇总','github.merged':'PR 已合并','github.closed':'PR 已关闭','gitlab.pipeline':'回归测试状态更新'};
 const stateLabels={PENDING:'待处理',APPLIED:'已处理',RECORDED:'仅记录',SUPERSEDED:'旧版本',COMPLETED:'已交付'};
 function options(select,items,idKey,empty){
   select.replaceChildren();
@@ -36,7 +36,7 @@ function render(){
   $('sources').append(manual);
   for(const s of state.sources){
     const c=el('article',null,'card');
-    c.append(el('span',s.enabled?'已启用':'已停用','eyebrow'),el('h2',s.name),el('p',s.kind==='antmultica'?s.config.workspace_slug+' · 迭代 '+s.config.iteration_value+' · 精确指派人过滤':'跟踪已登记的 PR · 采集版本、评论和 CI 更新'),el('p','每 '+s.interval_seconds+' 秒检查 · 错误或限流时自动退避'));
+    c.append(el('span',s.enabled?'已启用':'已停用','eyebrow'),el('h2',s.name),el('p',s.kind==='antmultica'?s.config.workspace_slug+' · 迭代 '+s.config.iteration_value+' · 精确指派人过滤':s.kind==='gitlab'?'采集已登记的 pipeline 状态 · 失败返回原任务；不负责发起或重试测试':'跟踪已登记的 PR · 采集版本、评论和 CI 更新'),el('p','每 '+s.interval_seconds+' 秒检查 · 错误或限流时自动退避'));
     const b=el('button','修改配置');b.onclick=()=>editSource(s);c.append(b);$('sources').append(c);
   }
   renderTargets();
@@ -67,9 +67,10 @@ function renderTargets(){
     const source=state.sources.find(s=>s.source_id===t.source_id),row=el('tr');
     const target=el('th');target.scope='row';
     const pr=/^https:\/\/github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/pull\/([1-9]\d*)$/.exec(t.entity);
-    const label=pr?pr[1]+'/'+pr[2]+' #'+pr[3]:t.task_id?t.entity:source?.config.workspace_slug||source?.name||t.entity;
-    const name=pr?link(label,t.entity):el('span',label);name.className='target-name';name.title=t.entity;
-    if(pr){name.target='_blank';name.rel='noopener noreferrer';}
+    const pipeline=/^https:\/\/gitlab\.oceanbase-dev\.com\/obqa\/seekdb_test\/-\/pipelines\/([1-9]\d*)$/.exec(t.entity);
+    const label=pr?pr[1]+'/'+pr[2]+' #'+pr[3]:pipeline?'seekdb_test pipeline #'+pipeline[1]:t.task_id?t.entity:source?.config.workspace_slug||source?.name||t.entity;
+    const name=pr||pipeline?link(label,t.entity):el('span',label);name.className='target-name';name.title=t.entity;
+    if(pr||pipeline){name.target='_blank';name.rel='noopener noreferrer';}
     target.append(name);
     const origin=el('td'),sourceName=el('span',source?.name||t.source_id,'target-source-name');sourceName.title=source?.name||t.source_id;origin.append(sourceName);
     const status=el('td'),active=!!source?.enabled&&t.enabled;
@@ -113,7 +114,7 @@ $('source-form').onsubmit=e=>{e.preventDefault();action(async()=>{
   const original=state.editing,config={};
   if(original.kind==='antmultica'){
     Object.assign(config,{workspace_id:$('workspace-id').value.trim(),workspace_slug:$('workspace-slug').value.trim(),assignee_id:$('assignee-id').value.trim(),iteration_key:$('iteration-key').value.trim(),iteration_value:$('iteration-value').value.trim()});
-  }else{
+  }else if(original.kind==='github'){
     config.ignore_logins=$('ignore-logins').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
   }
   const source={...original,name:$('source-name').value.trim(),enabled:$('source-enabled').value==='true',interval_seconds:Number($('source-interval').value),config};

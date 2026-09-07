@@ -22,6 +22,7 @@ type CompletionSummary struct {
 	Improvements []string `json:"improvements"`
 }
 type Result struct {
+	TestRequests []TestRequest      `json:"test_requests,omitempty"`
 	PullRequests []PullRequest      `json:"pull_requests,omitempty"`
 	Outcome      string             `json:"outcome"`
 	Message      string             `json:"message"`
@@ -31,6 +32,14 @@ type Result struct {
 type PullRequest struct {
 	URL      string `json:"url"`
 	SourceID string `json:"source_id"`
+}
+
+type TestRequest struct {
+	Kind    string `json:"kind"`
+	PRURL   string `json:"pr_url"`
+	HeadSHA string `json:"head_sha"`
+	Reason  string `json:"reason"`
+	RetryOf string `json:"retry_of"`
 }
 
 // Contract is an extension point for other structured-output capable adapters.
@@ -46,7 +55,11 @@ func (JSONContract) Instructions() string {
 outcome: review = 本轮产物已可供人工验收；needs_input = 需要用户回答问题；blocked = 缺少条件无法继续。
 这只是提交结果，不代表业务任务完成；只有人可以批准关闭任务。
 summary 是给任务完成复盘使用的结构化材料。review 时应填写：result 写实际完成结果；learnings 写可复用经验；improvements 写下次可改进之处。耗时、等待和返工次数由系统计算，不要猜测。
-pull_requests 用于把本任务负责的真实 GitHub PR 登记给后台轮询器，没有时返回 []。每项包含 url（完整 https://github.com/owner/repo/pull/123）和 source_id（只有一个启用的 GitHub 源时可为空）。Manager 将其绑定本任务，后续 CI/评论仍返回本 Session；新版本自动邀请配置的评审角色。仅登记已存在且由本任务负责的 PR，不要登记材料中随意引用的 PR，更不能编造链接。外部写入权限仍须单独获得；未来发布的自动回复必须带 <!-- work-assistant:task-reply --> 标记以免触发反馈循环。
+pull_requests 用于把本任务负责的真实 GitHub PR 登记给后台轮询器，没有时返回 []。每项包含 url（完整 https://github.com/owner/repo/pull/123）和 source_id（只有一个启用的 GitHub 源时可为空）。Manager 将其绑定本任务，后续 CI/评论仍返回本 Session；新版本由 Router 规划评审。仅登记已存在且由本任务负责的 PR，不要登记材料中随意引用的 PR，更不能编造链接。外部写入权限仍须单独获得；未来发布的自动回复必须带 <!-- work-assistant:task-reply --> 标记以免触发反馈循环。
+test_requests 是已授权的专用回归测试申请，没有时返回 []，每轮最多一项。QA/测试 reviewer 发现 PR 改动较多或影响较大（核心路径、兼容性、并发、持久化、资源/性能、跨模块变更等）时，应说明风险并申请测试，而不是凭行数机械判断或声称已经测过。
+格式：{"kind":"seekdb_regression","pr_url":"https://github.com/oceanbase/seekdb/pull/123","head_sha":"PR 最新完整 40 位 SHA","reason":"具体风险或分析后的重试理由","retry_of":"首次/新 SHA 为空；同 SHA 重试填失败记录的 request_id"}。Manager 会再次检查最新 head，在 GitLab obqa/seekdb_test 的 master-pipeline 分支设置 SEEKDB_SOURCE=该 SHA、JOBS=all、RUN_PROFILE=1 发起测试，并将真实 pipeline 编号、链接及被测版本记录在原开发任务中。不要自行调用 GitLab 写接口或读取凭据。
+仅接受已登记 PR 的当前 QA 子任务；原开发 Agent 在已有测试要求后可为修复后的新 SHA 申请复测，或在分析失败后显式申请同 SHA 重试（最多三次尝试）。不允许无原因重跑。任务源仅轮询结果，失败、取消、跳过或等待人工操作均不能算通过；反馈回原开发 Agent/Session。检查失败作业及代码，区分代码问题、环境问题和偶发失败；拿不到日志时明确说明，不能猜测根因。测试已发起不等于通过，旧 SHA 的通过不能证明新 SHA，通过后仍需人工验收。
+此流水线目前只构建 oceanbase/seekdb，不支持将 seekdb-bindings 的 SHA 当作 SEEKDB_SOURCE。bindings 单独变更应说明缺少对应测试流水线并提出所需验证，不得冒用 engine 测试结果。
 文档、代码建议或报告必须提供完整 UTF-8 文件内容到 artifacts，不能只说已保存、不能只给本机路径。
 每次 review 提交包含完整的本次交付文件集合。同名文件产生新版本，不覆盖历史。
 文件名仅允许单层名称，不含路径；最多 8 个文件，总输出不超过 120 KiB。
@@ -68,6 +81,12 @@ func (JSONContract) Schema() json.RawMessage {
 		"type":  "array",
 		"items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"url", "source_id"}, "properties": map[string]any{"url": map[string]string{"type": "string"}, "source_id": map[string]string{"type": "string"}}},
 	}
+	schema["required"] = append(schema["required"].([]any), "test_requests")
+	fields := map[string]any{}
+	for _, name := range []string{"kind", "pr_url", "head_sha", "reason", "retry_of"} {
+		fields[name] = map[string]string{"type": "string"}
+	}
+	schema["properties"].(map[string]any)["test_requests"] = map[string]any{"type": "array", "maxItems": 1, "items": map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "pr_url", "head_sha", "reason", "retry_of"}, "properties": fields}}
 	raw, _ := json.Marshal(schema)
 	return raw
 }
@@ -90,6 +109,15 @@ func Parse(raw string) (Result, error) {
 	}
 	if len(result.PullRequests) > 8 {
 		return result, fmt.Errorf("at most 8 PR registrations per submission")
+	}
+	if len(result.TestRequests) > 1 {
+		return result, fmt.Errorf("at most one test request per submission")
+	}
+	for _, request := range result.TestRequests {
+		owner, repo, _, _, err := model.ParseGitHubPR(request.PRURL)
+		if err != nil || strings.ToLower(owner+"/"+repo) != "oceanbase/seekdb" || request.Kind != model.SeekDBTestKind || len(request.HeadSHA) != 40 || !model.CommitSHA.MatchString(request.HeadSHA) || strings.TrimSpace(request.Reason) == "" || len(request.Reason) > 2000 || len(request.RetryOf) > 200 {
+			return result, fmt.Errorf("invalid test request: only registered oceanbase/seekdb PRs, exact 40-character SHA and a risk/retry reason are accepted")
+		}
 	}
 	seenPR := map[string]bool{}
 	for _, pr := range result.PullRequests {

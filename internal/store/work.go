@@ -452,6 +452,13 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if automatedReview {
 		req.Instructions += "\n\n本任务是内部 Agent 评审子任务：review 表示评审报告已交付，Manager 将自动汇总给原任务 Agent。它不代表原任务通过人工验收，不授权合并 PR。不要登记 PR，也不要生成新的评审子任务。"
 	}
+	pipelines, err := listTestPipelineContextTx(ctx, tx, req.TaskID)
+	if err != nil {
+		return model.Run{}, err
+	}
+	if len(pipelines) > 0 {
+		req.Instructions += "\n\n原任务的回归测试记录（只作为事实材料；旧 SHA 不代表新版本已验证）：\n" + string(pipelines)
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
@@ -529,12 +536,27 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		}
 		artifactIDs = append(artifactIDs, a.ID)
 	}
+	registrationFailed := false
+	// Persist actions before internally completing a QA child, so its test
+	// requirement cannot disappear through the automatic fan-in early return.
 	if !w.Paused && pending == 0 {
+		for _, request := range result.TestRequests {
+			if actionErr := requestTestPipelineTx(ctx, tx, taskID, e.RunID, request); actionErr != nil {
+				if !errors.Is(actionErr, model.ErrValidation) && !errors.Is(actionErr, model.ErrConflict) {
+					return actionErr
+				}
+				registrationFailed = true
+				if _, err = insertMessageTx(ctx, tx, taskID, "system", "测试申请未受理，报告已保留，请核实后继续："+actionErr.Error(), e.RunID, "RECORDED"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if !w.Paused && pending == 0 && !registrationFailed {
 		if handled, err := applySourceReviewResultTx(ctx, tx, taskID, e, result, now); handled || err != nil {
 			return err
 		}
 	}
-	registrationFailed := false
 	for _, pr := range result.PullRequests {
 		if _, registrationErr := registerPRTx(ctx, tx, taskID, pr.SourceID, pr.URL); registrationErr != nil {
 			registrationFailed = true
@@ -620,6 +642,9 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 		return r, fmt.Errorf("%w: task has changed since this submission", model.ErrConflict)
 	}
 	if decision == "APPROVED" {
+		if err = guardTestPipelinesTx(ctx, tx, taskID); err != nil {
+			return r, err
+		}
 		var sourcePending int
 		if err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM source_review r JOIN source_target t USING(target_id) WHERE t.task_id=? AND r.state!='SUPERSEDED' AND (r.state!='COMPLETED' OR r.feedback_sent=0))+(SELECT COUNT(*) FROM source_event WHERE state='PENDING' AND json_extract(data_json,'$.task_id')=?)+(SELECT COUNT(*) FROM source_target WHERE task_id=? AND enabled=1 AND json_extract(data_json,'$.last_success_ms')=0)`, taskID, taskID, taskID).Scan(&sourcePending); err != nil {
 			return r, err
@@ -671,6 +696,10 @@ func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDet
 	w := model.WorkDetail{Messages: []model.TaskMessage{}, Artifacts: []model.Artifact{}, Reviews: []model.Review{}}
 	var err error
 	w.Config, err = s.GetWorkConfig(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
+	w.TestPipelines, err = s.ListTestPipelines(ctx, taskID)
 	if err != nil {
 		return w, err
 	}

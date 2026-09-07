@@ -35,7 +35,7 @@ func (s *Server) handleSources(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	reply(w, 200, map[string]any{"sources": sources, "targets": targets, "events": events, "reviews": reviews, "plugins": []string{"antmultica", "github"}}, nil)
+	reply(w, 200, map[string]any{"sources": sources, "targets": targets, "events": events, "reviews": reviews, "plugins": []string{"antmultica", "github", "gitlab"}}, nil)
 }
 func (s *Server) handleSaveSource(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -87,6 +87,26 @@ func (s *Server) sourceLoop(ctx context.Context) {
 		case <-timer.C:
 			if err := s.sources.Tick(ctx); err != nil && ctx.Err() == nil {
 				s.log.Error("task source scheduler", "error", err)
+			}
+		}
+	}
+}
+
+// Network-bound writes are isolated from the Router/Manager scheduling loop
+// and from read-only source collection. The durable request survives shutdown.
+func serverActionLoop(ctx context.Context, s *Server) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			actionCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			err := s.testActions.Tick(actionCtx)
+			cancel()
+			if err != nil && ctx.Err() == nil {
+				s.log.Error("test action executor", "error", err)
 			}
 		}
 	}
