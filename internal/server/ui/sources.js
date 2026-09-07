@@ -1,7 +1,7 @@
 'use strict';
 const {el,api,notice,link,date}=WA;
 const $=id=>document.getElementById(id);
-const state={sources:[],targets:[],events:[],reviews:[],roles:[],projects:[],tasks:[],editing:null,busy:false,loading:false};
+const state={sources:[],targets:[],events:[],reviews:[],roles:[],projects:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set()};
 const eventLabels={'antmultica.issue':'工单新增 / 更新','github.head':'PR 新版本','github.comment':'PR 评论 / 评审意见','github.ci_failed':'CI 失败','github.review_result':'Agent 评审汇总','github.merged':'PR 已合并','github.closed':'PR 已关闭'};
 const stateLabels={PENDING:'待处理',APPLIED:'已处理',RECORDED:'仅记录',SUPERSEDED:'旧版本',COMPLETED:'已交付'};
 function options(select,items,idKey,empty){
@@ -39,18 +39,7 @@ function render(){
     c.append(el('span',s.enabled?'已启用':'已停用','eyebrow'),el('h2',s.name),el('p',s.kind==='antmultica'?s.config.workspace_slug+' · 迭代 '+s.config.iteration_value+' · 精确指派人过滤':'跟踪已登记的 PR · '+(s.config.reviewer_role_ids?.length||0)+' 个评审角色'),el('p','每 '+s.interval_seconds+' 秒检查 · 错误或限流时自动退避'));
     const b=el('button','修改配置');b.onclick=()=>editSource(s);c.append(b);$('sources').append(c);
   }
-  $('targets').replaceChildren();
-  for(const t of state.targets){
-    const source=state.sources.find(s=>s.source_id===t.source_id),c=el('article',null,'card source-row'),body=el('div');
-    body.append(el('h3',t.task_id?t.entity:source?.name||t.entity),el('p',t.error?'连接需要检查':!source?.enabled?'任务源已停用':t.enabled?'正在跟踪':'已停止跟踪','source-meta'),el('p','最近成功：'+(t.last_success_ms?date(t.last_success_ms):'尚未成功')+' · 下次允许轮询：'+(t.next_poll_ms?date(t.next_poll_ms):'即将开始'),'source-meta'));
-    if(t.head_sha)body.append(el('p','当前版本：'+t.head_sha,'source-meta'));
-    if(t.error)body.append(el('p',t.error,'source-error'));
-    const actions=el('div',null,'source-actions');
-    if(t.task_id)actions.append(link('原任务 →','/tasks#'+encodeURIComponent(t.task_id)));
-    const b=el('button',t.enabled?'暂停轮询':'恢复轮询');b.onclick=()=>action(async()=>{await api('/source-targets/'+encodeURIComponent(t.target_id),'PUT',{enabled:!t.enabled});await refresh();});actions.append(b);
-    c.append(body,actions);$('targets').append(c);
-  }
-  if(!state.targets.length)$('targets').append(el('p','尚无轮询目标。添加 AntMultica 源或登记一个 PR。','empty-state'));
+  renderTargets();
   $('reviews').replaceChildren();
   const batches=new Map();
   for(const r of state.reviews){const key=r.target_id+':'+r.head_sha;if(!batches.has(key))batches.set(key,[]);batches.get(key).push(r);}
@@ -71,6 +60,39 @@ function render(){
     const details=el('details');details.append(el('summary','事件内容'),el('pre',e.message));c.append(details);$('events').append(c);
   }
   if(!state.events.length)$('events').append(el('p','暂无外部事件。没有更新时，不会创建新的任务。','empty-state'));
+}
+function renderTargets(){
+  $('targets').replaceChildren();$('targets-count').textContent=state.targets.length+' 个目标';
+  for(const t of state.targets){
+    const source=state.sources.find(s=>s.source_id===t.source_id),row=el('tr');
+    const target=el('th');target.scope='row';
+    const pr=/^https:\/\/github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/pull\/([1-9]\d*)$/.exec(t.entity);
+    const label=pr?pr[1]+'/'+pr[2]+' #'+pr[3]:t.task_id?t.entity:source?.config.workspace_slug||source?.name||t.entity;
+    const name=pr?link(label,t.entity):el('span',label);name.className='target-name';name.title=t.entity;
+    if(pr){name.target='_blank';name.rel='noopener noreferrer';}
+    target.append(name);
+    const origin=el('td'),sourceName=el('span',source?.name||t.source_id,'target-source-name');sourceName.title=source?.name||t.source_id;origin.append(sourceName);
+    const status=el('td'),active=!!source?.enabled&&t.enabled;
+    const statusText=!source?.enabled?'任务源已停用':!t.enabled?'已停止跟踪':t.error?'连接需要检查':'正在跟踪';
+    status.append(el('span',statusText,'target-status '+(!active?'target-status-paused':t.error?'target-status-error':'target-status-active')));
+    if(t.error){
+      const details=el('details',null,'target-error');details.open=state.targetErrors.has(t.target_id);
+      details.ontoggle=()=>{if(details.open)state.targetErrors.add(t.target_id);else state.targetErrors.delete(t.target_id);};
+      details.append(el('summary','查看错误'),el('pre',t.error));status.append(details);
+    }
+    const last=el('td',t.last_success_ms?date(t.last_success_ms):'尚未成功','target-time');
+    if(t.last_success_ms)last.title=new Date(t.last_success_ms).toLocaleString('zh-CN');
+    const next=el('td',!active?'—':t.next_poll_ms?date(t.next_poll_ms):'即将开始','target-time');
+    if(active&&t.next_poll_ms)next.title=new Date(t.next_poll_ms).toLocaleString('zh-CN');
+    const revision=el('td'),sha=el('code',t.head_sha?t.head_sha.slice(0,12):'—','target-version');sha.title=t.head_sha||'暂无版本';revision.append(sha);
+    const actions=el('td'),buttons=el('div',null,'target-actions');
+    if(t.task_id)buttons.append(link('原任务','/tasks#'+encodeURIComponent(t.task_id)));
+    const toggle=el('button',t.enabled?'暂停轮询':'恢复轮询');toggle.type='button';
+    toggle.onclick=()=>action(async()=>{await api('/source-targets/'+encodeURIComponent(t.target_id),'PUT',{enabled:!t.enabled});await refresh();});
+    buttons.append(toggle);actions.append(buttons);
+    row.append(target,origin,status,last,next,revision,actions);$('targets').append(row);
+  }
+  if(!state.targets.length){const row=el('tr'),empty=el('td','尚无轮询目标。添加 AntMultica 源或登记一个 PR。','target-empty');empty.colSpan=7;row.append(empty);$('targets').append(row);}
 }
 function editSource(source){
   state.editing=source;

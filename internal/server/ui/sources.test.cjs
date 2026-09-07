@@ -4,7 +4,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 
-async function fixture(){
+async function fixture({targets=[]}={}){
   class Element{
     constructor(tag='div'){this.tag=tag;this.children=[];this.value='';this.open=false;}
     append(...nodes){this.children.push(...nodes);}
@@ -18,10 +18,14 @@ async function fixture(){
   const $=id=>{assert.ok(elements.has(id),'missing HTML element '+id);return elements.get(id);};
   const multica={source_id:'antmultica',kind:'antmultica',name:'My tasks',enabled:true,version:4,interval_seconds:60,config:{workspace_id:'workspace',workspace_slug:'seekdb',assignee_id:'me',iteration_key:'迭代',iteration_value:'1.5.0',role_id:'dev'}};
   const github={source_id:'github',kind:'github',name:'GitHub',enabled:true,version:2,interval_seconds:5,config:{reviewer_role_ids:['reviewer'],ignore_logins:[]}};
-  const data={sources:[multica,github],targets:[],events:[],reviews:[]},calls=[],notices=[];
+  const data={sources:[multica,github],targets,events:[],reviews:[]},calls=[],notices=[];
   const el=(tag,text,cls)=>Object.assign(new Element(tag),{textContent:text,className:cls});
   const api=async(route,method='GET',body)=>{
     calls.push({route,method,body});
+    if(method==='PUT'&&route.startsWith('/source-targets/')){
+      const target=data.targets.find(t=>t.target_id===decodeURIComponent(route.split('/').at(-1)));
+      assert.ok(target,'unknown target');target.enabled=body.enabled;return {};
+    }
     if(method!=='GET')return {};
     if(route==='/sources')return structuredClone(data);
     if(route==='/roles')return {roles:[{role_id:'dev',name:'Developer'},{role_id:'reviewer',name:'Reviewer'}]};
@@ -33,7 +37,7 @@ async function fixture(){
   context.window=context;context.addEventListener=()=>{};
   vm.runInContext(fs.readFileSync(path.join(__dirname,'sources.js'),'utf8'),context);
   const settle=async()=>{for(let i=0;i<4;i++)await new Promise(setImmediate);};await settle();
-  return {$,calls,settle,notices};
+  return {$,calls,settle,notices,data};
 }
 test('Task sources editor preserves CAS and exact identity while changing iteration',async()=>{
   const {$,calls,settle}=await fixture();
@@ -60,4 +64,52 @@ test('Sources UI does not render external input as HTML or collect credentials',
   assert.ok(!js.includes('innerHTML'));
   assert.ok(!html.includes('type="password"'));
   assert.match(js,/expected_version:original.version/);
+});
+
+const content=n=>[n.textContent??'',...(n.children||[]).map(content)].join(' ');
+const target=(fields={})=>({target_id:'pr-target',source_id:'github',entity:'https://github.com/oceanbase/seekdb/pull/1358',task_id:'owned',enabled:true,last_success_ms:1000,next_poll_ms:2000,head_sha:'abcdef0123456789012345678901234567890123ab',...fields});
+
+test('Polling targets render compact semantic rows while retaining versions, timestamps and links',async()=>{
+  const {$}=await fixture({targets:[target(),target({target_id:'multica-target',source_id:'antmultica',entity:'workspace',task_id:undefined,head_sha:undefined})]});
+  assert.equal($('targets').tag,'tbody');assert.equal($('targets-count').textContent,'2 个目标');assert.equal($('targets').children.length,2);
+  const row=$('targets').children[0];assert.equal(row.tag,'tr');assert.equal(row.children.length,7);
+  assert.equal(row.children[0].tag,'th');assert.equal(row.children[0].scope,'row');
+  const pr=row.children[0].children[0];assert.equal(pr.textContent,'oceanbase/seekdb #1358');assert.equal(pr.href,target().entity);assert.equal(pr.rel,'noopener noreferrer');
+  assert.equal(row.children[3].textContent,'1000');assert.equal(row.children[4].textContent,'2000');
+  assert.equal(row.children[5].children[0].textContent,'abcdef012345');assert.equal(row.children[5].children[0].title,target().head_sha);
+  assert.equal(row.children[6].children[0].children[0].href,'/tasks#owned');
+  assert.equal($('targets').children[1].children[0].children[0].textContent,'seekdb');
+  assert.ok(!$('targets').children.some(n=>n.tag==='article'));
+});
+
+test('Table pause and resume actions update only the selected target',async()=>{
+  const {$,calls,settle,data}=await fixture({targets:[target({target_id:'pr/one'}),target({target_id:'second',enabled:false})]});
+  let buttons=$('targets').children[0].children[6].children[0].children;
+  buttons.at(-1).onclick();await settle();
+  assert.deepEqual(structuredClone(calls.find(c=>c.method==='PUT')),{route:'/source-targets/pr%2Fone',method:'PUT',body:{enabled:false}});
+  assert.equal(data.targets[1].enabled,false);assert.match(content($('targets').children[0]),/已停止跟踪/);
+  assert.equal($('targets').children[0].children[4].textContent,'—');
+  buttons=$('targets').children[0].children[6].children[0].children;assert.equal(buttons.at(-1).textContent,'恢复轮询');
+  buttons.at(-1).onclick();await settle();assert.equal(data.targets[0].enabled,true);
+  assert.equal(calls.filter(c=>c.method==='PUT').length,2);assert.equal(data.targets[1].enabled,false);
+});
+
+test('Long error details remain collapsed by default and retain manual expansion on refresh',async()=>{
+  const error='<script>do not execute</script>\n'+'Network failure '.repeat(30),{$,settle,data}=await fixture({targets:[target({error})]});
+  let cell=$('targets').children[0].children[2],details=cell.children[1];
+  assert.match(content(cell),/连接需要检查/);assert.equal(details.open,false);assert.equal(details.children[1].textContent,error);
+  details.open=true;details.ontoggle();$('refresh').onclick();await settle();
+  details=$('targets').children[0].children[2].children[1];assert.equal(details.open,true);
+  data.sources.find(s=>s.source_id==='github').enabled=false;$('refresh').onclick();await settle();
+  cell=$('targets').children[0].children[2];assert.equal(cell.children[0].textContent,'任务源已停用');assert.equal($('targets').children[0].children[4].textContent,'—');
+});
+
+test('Empty targets keep table structure and narrow screens scroll instead of reverting to large cards',async()=>{
+  const {$}=await fixture();const row=$('targets').children[0];
+  assert.equal(row.tag,'tr');assert.equal(row.children[0].colSpan,7);assert.match(row.children[0].textContent,/尚无轮询目标/);
+  const html=fs.readFileSync(path.join(__dirname,'sources.html'),'utf8'),css=fs.readFileSync(path.join(__dirname,'sources.css'),'utf8');
+  assert.equal([...html.matchAll(/<th scope="col">/g)].length,7);
+  assert.match(html,/role="region" aria-label="轮询目标表格，可横向滚动" tabindex="0"/);
+  assert.match(css,/\.source-target-scroll\{[^}]*overflow-x:auto/);
+  assert.match(css,/\.source-target-table\{[^}]*table-layout:fixed/);
 });

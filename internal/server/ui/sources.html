@@ -12,7 +12,16 @@
   <div class="page-heading"><div><span class="eyebrow">EVENTS BECOME WORK</span><h1>任务源</h1><p>把新工单变成工作，把后续反馈送回原成员和 Session。</p></div><button id="refresh">刷新状态</button></div>
   <div class="source-toolbar"><button id="add-multica">＋ AntMultica 任务源</button><button id="add-github">＋ GitHub 任务源</button><button id="register-pr" class="primary">登记 PR</button></div>
   <section class="card-grid" id="sources" aria-label="任务源配置"></section>
-  <section class="source-section"><div class="section-heading"><h2>轮询目标</h2><span class="small muted">暂停轮询不删除历史，也不中断正在工作的 Agent</span></div><div id="targets" class="source-list"></div></section>
+  <section class="source-section">
+    <div class="section-heading"><div class="source-target-heading"><h2>轮询目标</h2><span id="targets-count" class="small muted"></span></div><span class="small muted">暂停轮询不删除历史，也不中断正在工作的 Agent</span></div>
+    <div class="source-target-scroll" role="region" aria-label="轮询目标表格，可横向滚动" tabindex="0">
+      <table class="source-target-table">
+        <caption class="sr">轮询目标、来源、状态、轮询时间、版本及操作</caption>
+        <thead><tr><th scope="col">目标</th><th scope="col">任务源</th><th scope="col">状态</th><th scope="col">最近成功</th><th scope="col">下次轮询</th><th scope="col">当前版本</th><th scope="col">操作</th></tr></thead>
+        <tbody id="targets"></tbody>
+      </table>
+    </div>
+  </section>
   <section class="source-section"><div class="section-heading"><h2>PR 版本评审</h2><span class="small muted">一个版本一组评审任务 · 旧版本保留记录</span></div><div id="reviews" class="source-list"></div></section>
   <section class="source-section"><div class="section-heading"><h2>最近事件</h2><span class="small muted">最近 200 条 · 先持久化、再处理</span></div><div id="events" class="source-list"></div></section>
   <p class="page-footer">凭据仅由运行主机上已登录的 gh / multica 管理，不填写或保存在网页中。任务源不会自行推送、评论、审批或合并 PR。轮询只能观察到采样时的 PR 版本；一次推送包含多个 commit 时，评审最新版本的完整变更。</p>
