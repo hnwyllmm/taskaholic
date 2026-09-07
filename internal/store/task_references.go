@@ -84,6 +84,10 @@ func taskReferences(ctx context.Context, q referenceReader, taskID string) ([]mo
 		if err = rows.Scan(&entity, &raw); err != nil {
 			return nil, nil, err
 		}
+		if owner, repo, number, link, e := model.ParseGitHubIssue(entity); e == nil {
+			refs = append(refs, model.TaskReference{Kind: "github.issue", Label: fmt.Sprintf("原工单 · %s/%s #%d", owner, repo, number), URL: link})
+			continue
+		}
 		var event model.SourceEvent
 		if len(raw) == 0 || json.Unmarshal(raw, &event) != nil || event.Kind != "antmultica.issue" {
 			continue

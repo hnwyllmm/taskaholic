@@ -6,5 +6,5 @@ import "strings"
 // This is environment hygiene, not OS isolation from the host user's files.
 func isControlCredential(entry string) bool {
 	key, _, _ := strings.Cut(entry, "=")
-	return strings.HasPrefix(key, "ASSISTANT_") || key == "GITLAB_TOKEN" || key == "GITLAB_PRIVATE_TOKEN" || key == "WORK_ASSISTANT_GITLAB_TOKEN_FILE"
+	return strings.HasPrefix(key, "ASSISTANT_") || key == "GITLAB_TOKEN" || key == "GITLAB_PRIVATE_TOKEN" || key == "WORK_ASSISTANT_GITLAB_TOKEN_FILE" || key == "GH_TOKEN" || key == "GITHUB_TOKEN" || key == "MULTICA_TOKEN"
 }

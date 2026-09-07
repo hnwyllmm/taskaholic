@@ -182,8 +182,22 @@ func TestQAPipelineLifecyclePersistsBeforeQACompletionAndReturnsOriginalSession(
 	}
 	next = attachTest(t, s, next, 12346)
 	observeTest(t, s, next, "success", "success:1", true)
+	// A terminal pipeline result also resumes the reviewer in its existing
+	// Session. Acceptance must wait for that updated report, not just the test.
+	qa, err := s.GetAgent(ctx, qaRun.AgentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qaAgain := startWork(t, s, qa, child)
+	if qaAgain.SessionID != qaRun.SessionID {
+		t.Fatal("test result lost reviewer session")
+	}
+	finishWork(t, s, qaAgain, 5, "review", "regression results reviewed")
+	if err = s.CollectSourceReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
 	final := startWork(t, s, author, parent)
-	finishWork(t, s, final, 5, "review", "all evidence ready")
+	finishWork(t, s, final, 6, "review", "all evidence ready")
 	work, _ = s.GetWorkDetail(ctx, parent.ID)
 	if _, err = s.DecideReview(ctx, parent.ID, work.Reviews[0].ID, "APPROVED", ""); err != nil {
 		t.Fatal(err)

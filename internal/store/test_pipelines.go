@@ -366,6 +366,9 @@ func applyTestPipelineEventTx(ctx context.Context, tx *sql.Tx, target model.Sour
 		_, err = insertMessageTx(ctx, tx, p.TaskID, "source", "历史版本结果（不驱动当前任务，也不作为当前版本验收证据）：\n"+message, "", "RECORDED")
 		return "SUPERSEDED", err
 	}
+	if err = continuePRReviewsTx(ctx, tx, pr, "review-test:"+event.ID, message); err != nil {
+		return "", err
+	}
 	return taskEventMessageTx(ctx, tx, p.TaskID, message, event.ID, "source")
 }
 

@@ -38,6 +38,7 @@ function renderTask(){const {detail,work}=state.current,t=detail.task,presentati
  assignment.update(state.current,state.agents,state.runtimes);
  hierarchy.update(state.current,state.agents,state.roles);
  WATestPipelines.render($('test-pipelines'),work.test_pipelines||[],{resolve:p=>action(async()=>{if(!confirm('请先在 GitLab 按申请标识核查，确认没有创建对应流水线。重置后 Agent 可以申请重试；如果判断错误，可能重复运行测试。确认未创建？'))return;const result=await api('/work/tasks/'+encodeURIComponent(p.task_id)+'/test-pipelines/'+encodeURIComponent(p.request_id)+'/resolve','POST',{confirm_not_created:true});await selectTask(state.id);await list();notice(result.status==='recovered'?'已找回原 pipeline 并恢复轮询，没有重跑。':'核查确认已记录，原 Agent 可以分析后显式重试。');})});
+ WATestPipelines.renderPublications($('publications'),work.publications||[],{resolve:p=>action(async()=>{if(!confirm('确认已在原页面检查，没有创建这条评论？系统会先再次核对；只有完整查询仍未找到时才允许重试。判断错误可能导致重复评论。'))return;const result=await api('/work/tasks/'+encodeURIComponent(p.task_id)+'/publications/'+encodeURIComponent(p.key)+'/resolve','POST',{confirm_not_created:true});await selectTask(state.id);notice(result.status==='recovered'?'已找回原评论，没有重复发布':result.message||result.status);})});
  $('send').textContent=t.state==='NEW'?'保存补充要求':'发送 / 继续';
  renderSummary(detail.summary,t);
  if(detail.summary?.executor)$('summary-body').append(node('p','最终交付执行配置 · '+executionLabel(detail.summary.executor),'small muted'));

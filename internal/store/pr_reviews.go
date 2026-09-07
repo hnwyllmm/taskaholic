@@ -142,6 +142,21 @@ func applySourceReviewResultTx(ctx context.Context, tx *sql.Tx, taskID string, e
 	if state == "SUPERSEDED" {
 		return true, setWorkStateTx(ctx, tx, taskID, model.TaskStatePaused)
 	}
+	if result.ReviewDecision == "waiting_tests" {
+		if _, err = tx.ExecContext(ctx, `UPDATE source_review SET state='WAITING_TESTS' WHERE task_id=?`, taskID); err != nil {
+			return true, err
+		}
+		return true, setWorkStateTx(ctx, tx, taskID, model.TaskStateWaiting)
+	}
+	if result.ReviewDecision == "blocked" || result.ReviewDecision == "changes_requested" {
+		target, err := sourceTargetTx(ctx, tx, targetID)
+		if err != nil {
+			return true, err
+		}
+		if _, err = taskEventMessageTx(ctx, tx, target.TaskID, "PR reviewer 反馈（不是人工批准）：\n"+target.Entity+"\n版本 "+head+"\n"+truncateRunes(result.Message, 6000), "review-feedback:"+e.RunID, "system"); err != nil {
+			return true, err
+		}
+	}
 	if result.Outcome != "review" {
 		return false, nil
 	}
@@ -223,7 +238,7 @@ func (s *Store) CollectSourceReviews(ctx context.Context) error {
 			// This is an internal Manager result, not a new GitHub observation.
 			// Deliver atomically with the fan-in marker, even if polling is off.
 			if t.HeadSHA == b.head {
-				if _, err = taskEventMessageTx(ctx, tx, t.TaskID, message, "review-results:"+t.ID+":"+b.head, "system"); err != nil {
+				if _, err = taskEventMessageTx(ctx, tx, t.TaskID, message, "review-results:"+t.ID+":"+b.head+":"+publicationKey(message), "system"); err != nil {
 					return err
 				}
 				if _, err = appendEventTx(ctx, tx, "task", t.TaskID, "PRReviewsCollected", "", t.TaskID, map[string]any{"target_id": t.ID, "head_sha": b.head}); err != nil {

@@ -133,6 +133,7 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
+	Publications  []Publication   `json:"publications"`
 	References    []TaskReference `json:"references"`
 	ReviewBrief   *ReviewBrief    `json:"review_brief,omitempty"`
 	TestPipelines []TestPipeline  `json:"test_pipelines"`

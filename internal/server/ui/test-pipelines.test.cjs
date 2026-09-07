@@ -6,7 +6,7 @@ const vm=require('node:vm');
 function fixture(){
   class Element{constructor(tag){this.tag=tag;this.children=[];this.dataset={};}append(...n){this.children.push(...n);}replaceChildren(...n){this.children=n;}}
   const document={createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text})};
-  const ctx=vm.createContext({document});ctx.window=ctx;vm.runInContext(fs.readFileSync(path.join(__dirname,'test-pipelines.js'),'utf8'),ctx);
+  const ctx=vm.createContext({document,URL});ctx.window=ctx;vm.runInContext(fs.readFileSync(path.join(__dirname,'test-pipelines.js'),'utf8'),ctx);
   return {widget:ctx.WATestPipelines,root:new Element('section')};
 }
 const text=n=>[n.textContent||'',...n.children.map(text)].join(' ');
@@ -25,4 +25,12 @@ test('Pipeline history is a compact table with pinned safe links and all attempt
 test('Pipeline UI uses text nodes and script loads before the task controller',()=>{
   assert.ok(!fs.readFileSync(path.join(__dirname,'test-pipelines.js'),'utf8').includes('innerHTML'));
   const html=fs.readFileSync(path.join(__dirname,'tasks.html'),'utf8');assert.ok(html.indexOf('/assets/test-pipelines.js')<html.indexOf('/tasks/tasks.js'));
+});
+
+test('Publications show sticky links, uncertainties and safe text in a compact table',()=>{
+ const {widget,root}=fixture(),p={key:'key',task_id:'task',url:'https://github.com/oceanbase/seekdb/pull/123',remote_url:'https://github.com/oceanbase/seekdb/pull/123#issuecomment-101',head_sha:'a'.repeat(40),sticky:true,state:'SYNCED',body:'<script>not html</script>'};let resolved;
+ widget.renderPublications(root,[p,{...p,state:'UNCERTAIN',remote_url:'javascript:alert(1)',error:'timeout'}],{resolve:p=>resolved=p});
+ assert.equal(find(root,'table').length,1);assert.equal(find(root,'tr').length,3);assert.equal(find(root,'a').length,1);assert.equal(find(root,'a')[0].href,p.remote_url);
+ assert.match(text(root),/不是|不等于/);assert.match(text(root),/已同步/);assert.match(text(root),/结果待核对/);assert.match(text(root),/<script>/);
+ find(root,'button')[0].onclick();assert.equal(resolved.state,'UNCERTAIN');widget.renderPublications(root,[]);assert.equal(root.hidden,true);
 });

@@ -34,5 +34,19 @@ window.WATestPipelines=(()=>{
     }
     scroll.append(table);root.append(scroll);
   }
-  return {render,blocked};
+  function renderPublications(root,items=[],{resolve}={}){
+    root.replaceChildren();root.hidden=!items.length;if(!items.length)return;
+    root.append(el('h2','平台回写'),el('p','每个评审角色在 PR 上维护一条固定评论；通过不等于 GitHub Approve。发送异常会保留记录并核对，不重复刷评论。','small muted'));
+    const table=el('table',null,'pipeline-table'),head=el('thead'),titles=el('tr'),body=el('tbody');
+    for(const name of ['位置','版本','回写状态','详情'])titles.append(el('th',name));head.append(titles);table.append(head,body);
+    const states={QUEUED:'等待回写',SUBMITTING:'正在回写',UNCERTAIN:'结果待核对',SYNCED:'已同步',BLOCKED:'需要处理'};
+    for(const p of items){const row=el('tr'),where=el('td'),url=p.remote_url||p.url;let safe=false;try{const u=new URL(url);safe=u.protocol==='https:'&&['github.com','antmultica.alipay.com'].includes(u.hostname)&&!u.username&&!u.password&&!u.port;}catch{}
+      if(safe){const a=el('a',p.sticky?'PR 固定评审评论':'原工单进展');a.href=url;a.target='_blank';a.rel='noopener noreferrer';where.append(a);}else where.textContent='关联平台';
+      const info=el('td'),details=el('details');details.append(el('summary',p.error||'查看回写内容'),el('p',p.body,'prewrap'));
+      if(resolve&&p.state==='UNCERTAIN'&&!p.remote_id){const button=el('button','已核实未发布，重新核对并允许重试');button.type='button';button.onclick=()=>resolve(p);details.append(button);}info.append(details);
+      row.append(where,el('td',(p.head_sha||'').slice(0,12)||'—'),el('td',states[p.state]||p.state),info);body.append(row);
+    }
+    const scroll=el('div',null,'pipeline-scroll');scroll.append(table);root.append(scroll);
+  }
+  return {render,blocked,renderPublications};
 })();

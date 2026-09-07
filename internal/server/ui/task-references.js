@@ -2,6 +2,7 @@
 (function(root){
   const el=(tag,text,cls)=>{const node=document.createElement(tag);if(text!=null)node.textContent=text;if(cls)node.className=cls;return node;};
   function safeURL(ref){
+    if(ref.kind==='github.issue'&&/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/issues\/[1-9][0-9]{0,8}$/.test(ref.url))return ref.url;
     if(ref.kind==='github.pr'&&/^https:\/\/github\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/pull\/[1-9][0-9]{0,8}$/.test(ref.url))return ref.url;
     if(ref.kind==='antmultica.issue'&&/^https:\/\/antmultica\.alipay\.com\/[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\/issues\/[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$/.test(ref.url))return ref.url;
     return null;

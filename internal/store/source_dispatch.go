@@ -77,6 +77,11 @@ func (s *Store) ProcessSourceEvents(ctx context.Context, planners ...router.Revi
 				if err != nil {
 					return err
 				}
+				if e.Kind == "github.comment" || e.Kind == "github.review_result" {
+					if err = continuePRReviewsTx(ctx, tx, t, "review-discussion:"+e.ID, e.Message); err != nil {
+						return err
+					}
+				}
 			case "github.closed", "github.merged":
 				_, err = insertMessageTx(ctx, tx, t.TaskID, "source", e.Message, "", "RECORDED")
 				if err != nil {

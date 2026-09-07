@@ -55,7 +55,9 @@ func readJSONRow[T any](row rowScanner) (T, error) {
 	return result, err
 }
 
-func listJSONRows[T any](ctx context.Context, db *sql.DB, query string, args ...any) ([]T, error) {
+func listJSONRows[T any](ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, query string, args ...any) ([]T, error) {
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

@@ -603,6 +603,17 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		state = model.TaskStateQueued
 	}
 	if state == model.TaskStateReview {
+		if result.ReviewDecision == "" {
+			targets, listErr := listJSONRows[model.SourceTarget](ctx, tx, `SELECT data_json FROM source_target WHERE task_id=?`, taskID)
+			if listErr != nil {
+				return listErr
+			}
+			for _, target := range targets {
+				if err = continuePRReviewsTx(ctx, tx, target, "author-result:"+e.RunID, result.Message); err != nil {
+					return err
+				}
+			}
+		}
 		r := model.Review{ID: id.New("review"), TaskID: taskID, RunID: e.RunID, State: "PENDING", ArtifactIDs: artifactIDs, CreatedAtMS: now}
 		data, _ := json.Marshal(r)
 		if _, err = tx.ExecContext(ctx, `INSERT INTO review VALUES(?,?,?,?,?)`, r.ID, taskID, e.RunID, r.State, data); err != nil {
@@ -666,6 +677,9 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 		if err = guardTestPipelinesTx(ctx, tx, taskID); err != nil {
 			return r, err
 		}
+		if err = guardReviewPublicationsTx(ctx, tx, taskID); err != nil {
+			return r, err
+		}
 		var sourcePending int
 		if err = tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM source_review r JOIN source_target t USING(target_id) WHERE t.task_id=? AND r.state!='SUPERSEDED' AND (r.state!='COMPLETED' OR r.feedback_sent=0))+(SELECT COUNT(*) FROM source_event WHERE state='PENDING' AND json_extract(data_json,'$.task_id')=?)+(SELECT COUNT(*) FROM source_target WHERE task_id=? AND enabled=1 AND json_extract(data_json,'$.last_success_ms')=0)`, taskID, taskID, taskID).Scan(&sourcePending); err != nil {
 			return r, err
@@ -723,6 +737,13 @@ func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDet
 	w.References, w.ReviewBrief, err = taskReferences(ctx, s.db, taskID)
 	if err != nil {
 		return w, err
+	}
+	w.Publications, err = s.ListPublications(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
+	for i := range w.Publications {
+		w.Publications[i].AppliedBody = ""
 	}
 	w.TestPipelines, err = s.ListTestPipelines(ctx, taskID)
 	if err != nil {

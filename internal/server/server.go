@@ -33,6 +33,7 @@ import (
 )
 
 type Config struct {
+	PublicationPublishers    map[string]taskaction.Publisher
 	TestPipelineExecutor     gitlabci.Executor
 	TestPipelineReader       gitlabci.Reader
 	LocalRuntimeID           string
@@ -67,6 +68,7 @@ type Server struct {
 	http          *http.Server
 	sources       *tasksource.Engine
 	testActions   *taskaction.PipelineActions
+	publications  *taskaction.Publications
 }
 
 func New(config Config, state *store.Store, logger *slog.Logger) *Server {
@@ -80,6 +82,10 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 		executor = gitlabci.New()
 	}
 	server.testActions = taskaction.NewPipelines(state, executor)
+	server.publications = taskaction.NewPublications(state)
+	for kind, publisher := range config.PublicationPublishers {
+		server.publications.Publishers[kind] = publisher
+	}
 	if config.TestPipelineReader != nil {
 		server.sources.Providers["gitlab"] = &tasksource.GitLab{Read: config.TestPipelineReader, Lookup: state.GetTestPipeline}
 	}
@@ -167,6 +173,9 @@ func (s *Server) Run(ctx context.Context) error {
 	actionDone := make(chan struct{})
 	go func() { defer close(actionDone); serverActionLoop(dispatchCtx, s) }()
 	defer func() { cancelDispatch(); <-actionDone }()
+	publicationDone := make(chan struct{})
+	go func() { defer close(publicationDone); s.publicationLoop(dispatchCtx) }()
+	defer func() { cancelDispatch(); <-publicationDone }()
 
 	errCh := make(chan error, 1)
 	go func() {

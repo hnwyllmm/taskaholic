@@ -40,7 +40,15 @@ func (e *RetryError) Error() string { return e.Message }
 // No shell interpolation or credential extraction. Existing CLI auth stores
 // remain on the host; stderr is intentionally not persisted (may contain secrets).
 func RunCLI(ctx context.Context, binary string, args ...string) ([]byte, error) {
+	return RunCLIInput(ctx, binary, nil, args...)
+}
+
+// Manager actions send bodies through stdin, never shell interpolation or argv.
+func RunCLIInput(ctx context.Context, binary string, input []byte, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, binary, args...)
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	allowed := map[string]bool{"HOME": true, "USER": true, "PATH": true, "LANG": true, "LC_ALL": true, "TMPDIR": true, "TMP": true, "TEMP": true, "XDG_CONFIG_HOME": true, "GH_CONFIG_DIR": true, "GH_TOKEN": true, "GITHUB_TOKEN": true, "MULTICA_TOKEN": true, "SSL_CERT_FILE": true, "SSL_CERT_DIR": true, "HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true, "http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")

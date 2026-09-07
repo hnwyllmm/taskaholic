@@ -24,7 +24,7 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-const SchemaVersion = 15
+const SchemaVersion = 16
 
 // OpenProtected is the production entrypoint. Open remains available for
 // explicit first-time test fixtures and offline tools.
@@ -1419,7 +1419,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateV14(db); err != nil {
 		return err
 	}
-	return migrateV15(db)
+	if err := migrateV15(db); err != nil {
+		return err
+	}
+	return migrateV16(db)
 }
 
 func migrateV2(db *sql.DB) error {
