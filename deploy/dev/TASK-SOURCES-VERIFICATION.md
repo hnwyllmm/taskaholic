@@ -42,7 +42,7 @@ systemd 验收状态：active/running，MainPID `572417`，NRestarts=0。已有�
 
 ## 后续真实评审与分页补验
 
-工单 Agent 在只读调查中识别了已有且明确关联 SEEK-478 的 PR `https://github.com/oceanbase/seekdb/pull/1358`，通过结果中的 pull_requests 将其登记到原任务；不是本次新建的 PR。源在 head `e6d49057970e29768a6467ba8557d5235c052781` 上自动创建了架构、QA、通用代码三个评审任务。架构与 QA 已完成；通用 reviewer 已交付报告但返回 blocked，原因是自身沙箱无法取得当前 CI/PR/工单在线材料。系统保留报告且没有把 blocked 算作通过，原任务仍等待子评审，不自动批准或合并。
+工单 Agent 在只读调查中识别了已有且明确关联 SEEK-478 的 PR `https://github.com/oceanbase/seekdb/pull/1358`，通过结果中的 pull_requests 将其登记到原任务；不是本次新建的 PR。源在 head `e6d49057970e29768a6467ba8557d5235c052781` 上自动创建了架构、QA、通用代码三个评审任务。三次 Run 均已结束，但 Task 状态不同：QA 为 COMPLETED，架构和通用代码为 BLOCKED。通用 reviewer 已交付报告但返回 blocked，原因是自身沙箱无法取得当前 CI/PR/工单在线材料。系统保留报告且没有把 blocked 算作通过，原任务仍等待子评审，不自动批准或合并。
 
 最后通过真实 GitHub Link 验证发现分页使用 `/repositories/1080442728/`。补充提交 `b12e0dd`：从 PR 的 base.repo.id/full_name 校验该 ID，允许同仓库的数字路径，仍拒绝其它仓库、未确认的 ID 和其它域名。本地/dev provider race 测试通过，dev store/server race 与 vet 再验通过。只读探针对 PR #1358 使用 `--page-size 10`，实际读取 1 个数字仓库分页，第二次轮询新增事件为 0；未向 GitHub 写入。
 
