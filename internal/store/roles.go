@@ -339,6 +339,23 @@ func (s *Store) GetAgent(ctx context.Context, agentID string) (model.AgentProfil
 
 const agentSelect = `SELECT a.data_json, r.data_json, (SELECT COUNT(*) FROM run WHERE agent_id = a.agent_id AND state IN ('QUEUED','RUNNING')) + (SELECT COUNT(*) FROM upgrade_job WHERE state IN ('QUEUED','BUILDING') AND json_extract(data_json,'$.builder.agent_id')=a.agent_id) FROM agent_profile a JOIN role r ON r.role_id = a.role_id`
 
+func listAgentsTx(ctx context.Context, tx *sql.Tx) ([]model.AgentProfile, error) {
+	rows, err := tx.QueryContext(ctx, agentSelect+` ORDER BY a.agent_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	agents := []model.AgentProfile{}
+	for rows.Next() {
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
 func scanAgent(row rowScanner) (model.AgentProfile, error) {
 	var agent model.AgentProfile
 	var data, roleData []byte

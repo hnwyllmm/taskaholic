@@ -1,5 +1,6 @@
 // Package tasksource contains replaceable, read-only event producers.
-// Providers never choose an agent or start a Run; the durable inbox does that.
+// Providers and the polling engine only persist observations. The Manager
+// consumes the durable inbox and asks the Router to plan and assign work.
 package tasksource
 
 import (
@@ -95,12 +96,6 @@ func (e *Engine) Tick(ctx context.Context) error {
 	if maintenance != "" {
 		return nil
 	}
-	if err := e.Store.CollectSourceReviews(ctx); err != nil {
-		return err
-	}
-	if err := e.Store.ProcessSourceEvents(ctx); err != nil {
-		return err
-	}
 	sources, err := e.Store.ListTaskSources(ctx)
 	if err != nil {
 		return err
@@ -170,7 +165,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 			break
 		}
 	}
-	return e.Store.ProcessSourceEvents(ctx)
+	return nil
 }
 
 func digest(value any) string {

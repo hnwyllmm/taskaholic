@@ -62,9 +62,9 @@ func TestSourceInboxAndCursorSurviveDatabaseReopen(t *testing.T) {
 	}
 }
 
-func saveTestSource(t *testing.T, s *Store, kind string, roles ...string) model.TaskSource {
+func saveTestSource(t *testing.T, s *Store, kind string) model.TaskSource {
 	t.Helper()
-	source := model.TaskSource{ID: kind, Kind: kind, Name: kind, Enabled: true, IntervalSeconds: 5, Config: model.SourceConfig{ReviewerRoleIDs: roles}}
+	source := model.TaskSource{ID: kind, Kind: kind, Name: kind, Enabled: true, IntervalSeconds: 5}
 	if kind == "antmultica" {
 		source.Config = model.SourceConfig{WorkspaceID: "workspace", WorkspaceSlug: "seekdb", AssigneeID: "user", IterationKey: "迭代", IterationValue: "1.5.0"}
 	}
@@ -239,17 +239,15 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 	run := startWork(t, s, author, parent)
 	finishWork(t, s, run, 1, "review", "PR submitted")
 	var reviewers []model.AgentProfile
-	var roles []string
 	for i := range 3 {
-		role := publishTestRole(t, s, fmt.Sprintf("review.%d", i))
+		role := publishTestRole(t, s, []string{"architecture.review", "qa.review", "code.review"}[i])
 		a, err := s.CreateAgent(ctx, model.AgentProfile{Name: fmt.Sprintf("reviewer-%d", i), RoleID: role.ID, RuntimeID: author.RuntimeID, AdapterID: author.AdapterID, ModelID: author.ModelID, MaxConcurrent: 1})
 		if err != nil {
 			t.Fatal(err)
 		}
 		reviewers = append(reviewers, a)
-		roles = append(roles, role.ID)
 	}
-	source := saveTestSource(t, s, "github", roles...)
+	source := saveTestSource(t, s, "github")
 	target, err := s.RegisterPR(ctx, parent.ID, source.ID, "https://github.com/oceanbase/seekdb/pull/123")
 	if err != nil {
 		t.Fatal(err)
@@ -267,6 +265,11 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 	}
 	for i, review := range reviews {
 		task, _ := s.GetTask(ctx, review.TaskID)
+		parentConfig, _ := s.GetWorkConfig(ctx, parent.ID)
+		childConfig, err := s.GetWorkConfig(ctx, task.ID)
+		if err != nil || childConfig.Project != parentConfig.Project || childConfig.AgentID != "" || task.AssignedAgentID != "" {
+			t.Fatal("review must inherit task context but remain unassigned until Router selection", childConfig, err)
+		}
 		if len(task.Requirements.ExcludedAgentIDs) != 1 || task.Requirements.ExcludedAgentIDs[0] != author.ID {
 			t.Fatal("author not excluded")
 		}
@@ -285,6 +288,11 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 		if _, err = s.GetLatestTaskSummary(ctx, task.ID); err != nil {
 			t.Fatal("missing reviewer summary", err)
 		}
+	}
+	source.Enabled = false
+	source, err = s.SaveTaskSource(ctx, source, source.Version)
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err = s.CollectSourceReviews(ctx); err != nil {
 		t.Fatal(err)
@@ -310,6 +318,11 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 		t.Fatal("author memory lost")
 	}
 	finishWork(t, s, continued, 8, "review", "addressed")
+	source.Enabled = true
+	source, err = s.SaveTaskSource(ctx, source, source.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
 	newHead := strings.Repeat("b", 40)
 	e.Key = "head:" + newHead
 	e.HeadSHA = newHead

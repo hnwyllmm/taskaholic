@@ -198,6 +198,14 @@ func (s *Server) workLoop(ctx context.Context) {
 	}
 }
 func (s *Server) scheduleWork(ctx context.Context) {
+	// Manager work is independent of polling latency or source enablement.
+	// Sources cannot invoke routing, fan-out, fan-in, or start an Agent.
+	if err := s.store.CollectSourceReviews(ctx); err != nil {
+		s.log.Error("collect PR review results", "error", err)
+	}
+	if err := s.store.ProcessSourceEvents(ctx, s.reviewPlanner); err != nil {
+		s.log.Error("process task events", "error", err)
+	}
 	s.scheduleReviewTurns(ctx)
 	ids, err := s.store.PendingWork(ctx)
 	if err != nil {

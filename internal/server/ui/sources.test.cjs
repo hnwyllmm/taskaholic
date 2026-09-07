@@ -48,7 +48,18 @@ test('Task sources editor preserves CAS and exact identity while changing iterat
   const request=calls.find(c=>c.method==='PUT');
   assert.equal(request.route,'/sources/antmultica');
   assert.equal(request.body.expected_version,4);assert.equal(request.body.source.config.iteration_value,'1.6.0');
-  assert.equal(request.body.source.config.assignee_id,'me');assert.equal(request.body.source.config.role_id,'dev');
+  assert.equal(request.body.source.config.assignee_id,'me');assert.equal(request.body.source.config.role_id,undefined);
+  assert.equal(request.body.source.config.defer_assignment,undefined);assert.equal(request.body.source.config.project_id,undefined);
+});
+test('GitHub source edits only collection settings, never reviewer assignments',async()=>{
+  const {$,calls,settle}=await fixture();$('sources').children[2].children.at(-1).onclick();
+  $('ignore-logins').value='bot-one, bot-two';$('source-form').onsubmit({preventDefault(){}});await settle();
+  const request=calls.find(c=>c.method==='PUT');
+  assert.deepEqual(structuredClone(request.body.source.config),{ignore_logins:['bot-one','bot-two']});
+  assert.equal(request.body.expected_version,2);assert.ok(!calls.some(c=>c.route==='/projects'));
+  const html=fs.readFileSync(path.join(__dirname,'sources.html'),'utf8');
+  for(const id of ['reviewer-roles','source-role','source-project','defer-assignment'])assert.ok(!html.includes('id="'+id+'"'));
+  assert.match(html,/执行成员及评审分工由 Router 决定/);
 });
 test('PR registration offers only owned tasks and preserves the original task id',async()=>{
   const {$,calls,settle}=await fixture();$('register-pr').onclick();

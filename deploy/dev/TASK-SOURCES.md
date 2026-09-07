@@ -1,6 +1,8 @@
 # 任务源（阶段一）
 
-入口：`/sources`。人工录入仍在首页和工作列表。任务源页可以修改迭代、轮询间隔、执行角色、评审角色和启停状态；查看轮询失败、下次尝试时间、事件与对应任务。
+入口：`/sources`。人工录入仍在首页和工作列表。任务源页只配置采集范围、迭代、轮询间隔、忽略账号和启停状态；查看轮询失败、下次尝试时间、事件与对应任务。不在任务源配置执行角色、评审角色、成员、团队资料或调度暂停。
+
+职责边界：`Provider / Poller → 持久化事件 → Manager → Router → 一个或多个待分派任务 → Agent`。已有归属的任务更新直接进入原任务消息队列，调度继续原 Agent / Session，不做重新分派。
 
 ## 当前接入
 
@@ -9,7 +11,7 @@ AntMultica 使用 dev 上已有的 `multica` CLI 登录态，只调用 `property
 - 工作区：`https://antmultica.alipay.com/seekdb`，UUID `44029359-53fc-4a6a-bd6f-aae91c2bd754`。
 - 指派人：宁封，UUID `51410f21-5e32-490e-875d-eb3f28fb4095`；只匹配 member 类型的精确 ID。
 - 迭代字段：`迭代`，当前值 `1.5.0`。每次读取属性定义，把名称解析为选项 ID；不存在或有歧义时停止导入，不放宽筛选。
-- 未完成工单导入为普通工作任务，默认交给 SeekDB / seekdb-bindings 开发者角色，再由既有 Router 选成员。可改为先入等待队列。
+- 未完成工单导入为普通、未预设角色/成员的工作任务，由既有 Router 根据任务内容与成员能力选择执行者。系统岗位使用 AI 路由时会生成持久化 AI 路由决策；规则模式继续使用原有能力约束与负载选择。人工暂停和指定成员是任务操作，不是采集配置。
 - 修改迭代不删除旧任务。工单身份与任务映射持久化；标题、描述、状态等相关内容改变时更新原任务。已完成任务仅记录新事件，不自动重开。
 - 不自动关闭、改派或评论 AntMultica 工单，不自动下载附件；原文中的链接作为材料保留。
 
@@ -49,7 +51,11 @@ Agent 的结构化交付可包含：
 
 ## 版本评审
 
-每个新观测到的 head SHA 建立一个评审批次；每个配置的 reviewer 角色产生一个独立任务，并排除原作者。任务通过原 Router/Manager 分配。默认配置架构、QA/测试、通用代码三类角色，各自既有职责和 skill 要求保持不变。
+每个新观测到的 head SHA 产生评审请求。Manager 调用 `router.ReviewPlanner`，将 Router 计划、独立子任务、父子关系和事件处理状态原子提交；计划含角色和理由，存入 `PRReviewRouted` 审计事件。每个子任务仍走现有规则 / AI 成员路由，排除原作者，不由任务源选人。
+
+默认 `CapabilityReviews` 按成员声明的 `<repository>.review` 能力匹配仓库专属评审；同类角色有多个成员时只创建一项待分派任务。没有仓库专属成员时才使用通用 `code.review / architecture.review / qa.review` 等评审能力；不会将其它仓库专属成员混入。当前 SeekDB 与 seekdb-bindings 的架构、QA/测试、通用评审成员均符合匹配规则，职责和 skill 要求不变。该规划是可替换的规则策略，具体成员选择仍遵循系统岗位配置，不声称规划本身由 AI 完成。
+
+暂时繁忙或离线不减少本轮评审职责，任务排队等待。没有独立候选成员时保留 PENDING 事件并显示 Router 错误，延迟重试，不把“无人评审”算作通过。默认每批最多 8 个角色；超限明确报错，不静默截断。评审子任务继承原任务冻结的团队资料。
 
 评审输入包含固定 SHA、PR 地址和有大小上限的 diff 材料。读取不足时 reviewer 必须明确 blocked，不能把缺失的 patch 或文件当作已验证。交付后内部评审任务自动完成并生成总结；所有评审完成后把结论和报告摘录送回原 Agent。完整报告保留在各评审任务；摘录不是完整原文。
 
@@ -59,7 +65,7 @@ Agent 的结构化交付可包含：
 
 ## 持久化与进程
 
-控制端 schema 12 → 13，仅增加表和索引，不改写历史任务、Run、Session、成员或对话。
+初版 schema 12 → 13 增加下列表和索引。职责修正 schema 13 → 14 只移除任务源中的旧执行配置，并提升配置版本防止旧表单覆盖；完整旧配置写入 `SourceExecutionSettingsRetired` 审计事件。历史任务要求、Run、Session、成员、对话、评审记录及游标不改写。
 
 | 表 | 作用 |
 |---|---|
@@ -67,17 +73,19 @@ Agent 的结构化交付可包含：
 | source_target | 每个工作区/PR 的独立游标、原任务关联、启停、错误与下次轮询 |
 | source_event | 稳定 ID 去重的 inbox、处理状态、失败重试时间、原始规范化事件 |
 | source_entity | 外部工单与原任务的稳定映射 |
-| source_review | 按目标 / SHA / 角色去重的评审任务与汇总状态 |
+| source_review | Manager 管理的版本评审任务与汇总状态；保留原表名以兼容历史数据 |
 
 完整的一次外部快照、所有事件和游标在同一个 SQLite 事务提交；分页失败不推进游标。事件处理和创建/更新工作也在同一事务。进程崩溃后重读游标和 inbox，不依靠内存队列。事件处理失败保留记录并延迟重试，避免单个错误阻塞后续事件。
 
-轮询由既有 assistant-local / assistantd 控制进程维护，复用 systemd → supervisor 生命周期。升级维护期间停止拉取和派发源事件；关闭时取消请求并等待源循环结束。无需增加独立 cron、消息队列或数据库服务。
+轮询由既有 assistant-local / assistantd 控制进程维护，复用 systemd → supervisor 生命周期。`Engine.Tick` 只采集和保存，不调用 Router，不创建任务、不执行 fan-out/fan-in。Manager 的工作循环独立消费事件和汇总评审，不受一次远程轮询延迟阻塞。停用任务源只停止采集；已接收事件继续处理，内部评审结果直接由 Manager 回传，即使任务源停用也不会卡住。升级维护期间停止拉取和派发源事件；关闭时取消请求并等待源循环结束。无需增加独立 cron、消息队列或数据库服务。
 
 所有新增表随控制 SQLite 的既有校验备份保存。备份仍不包含 gh/multica 凭据、外部仓库、原生 CLI Session 文件；同主机备份也不等于异地备份。
 
 ## 扩展与接口
 
 `internal/tasksource.Provider` 是只读生产者接口；`Engine.Providers` 是插件注册表。后续 MCP/API/webhook 适配器应输出同一种 SourceEvent，复用持久化、归属、调度和汇总，不直接调用 Agent。配置验证与 UI 按插件 schema 扩展；本阶段不允许网页配置任意 shell 命令、Token 或任意认证 URL。
+
+Router 插件独立：`server.Config.ReviewPlanner` 替换评审分工策略，`AgentSelector` 替换成员选择策略。同步 ReviewPlanner 必须纯计算、耗时有界，不在数据库事务中执行网络请求或模型推理；需要异步 AI 规划时应仿照已有 routing_decision / Run outbox 持久化决策后再应用。Manager 会复核计划的去重、成员有效性和作者排除约束。
 
 - `GET /api/v1/sources`：配置、目标、最近 200 条事件、最近 500 条评审。
 - `PUT /api/v1/sources/{id}`：`{"source":{...},"expected_version":N}`，首次创建 N=0。

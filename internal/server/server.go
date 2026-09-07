@@ -36,6 +36,7 @@ type Config struct {
 	WorkContract             workflow.Contract
 	ReviewContract           workflow.Contract
 	AgentSelector            router.AgentSelector
+	ReviewPlanner            router.ReviewPlanner
 	RoleBuilder              rolebuilder.Builder
 	Listen                   string
 	RuntimeToken             string
@@ -57,6 +58,7 @@ type Server struct {
 	hub           *runtimeHub
 	router        router.Selector
 	agentRouter   router.AgentSelector
+	reviewPlanner router.ReviewPlanner
 	roleBuilder   rolebuilder.Builder
 	http          *http.Server
 	sources       *tasksource.Engine
@@ -79,6 +81,10 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	server.agentRouter, server.roleBuilder = config.AgentSelector, config.RoleBuilder
 	if server.agentRouter == nil {
 		server.agentRouter = router.LeastLoaded{}
+	}
+	server.reviewPlanner = config.ReviewPlanner
+	if server.reviewPlanner == nil {
+		server.reviewPlanner = router.CapabilityReviews{}
 	}
 	if server.roleBuilder == nil {
 		server.roleBuilder = rolebuilder.JSONBuilder{}

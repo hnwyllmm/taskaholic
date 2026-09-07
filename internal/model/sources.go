@@ -22,16 +22,12 @@ type TaskSource struct {
 }
 
 type SourceConfig struct {
-	WorkspaceID     string   `json:"workspace_id,omitempty"`
-	WorkspaceSlug   string   `json:"workspace_slug,omitempty"`
-	AssigneeID      string   `json:"assignee_id,omitempty"`
-	IterationKey    string   `json:"iteration_key,omitempty"`
-	IterationValue  string   `json:"iteration_value,omitempty"`
-	RoleID          string   `json:"role_id,omitempty"`
-	ProjectID       string   `json:"project_id,omitempty"`
-	DeferAssignment bool     `json:"defer_assignment,omitempty"`
-	ReviewerRoleIDs []string `json:"reviewer_role_ids,omitempty"`
-	IgnoreLogins    []string `json:"ignore_logins,omitempty"`
+	WorkspaceID    string   `json:"workspace_id,omitempty"`
+	WorkspaceSlug  string   `json:"workspace_slug,omitempty"`
+	AssigneeID     string   `json:"assignee_id,omitempty"`
+	IterationKey   string   `json:"iteration_key,omitempty"`
+	IterationValue string   `json:"iteration_value,omitempty"`
+	IgnoreLogins   []string `json:"ignore_logins,omitempty"`
 }
 
 // A target has its own durable cursor and retry schedule. One inaccessible PR
@@ -103,15 +99,8 @@ func ValidateTaskSource(s TaskSource) error {
 	}
 	switch s.Kind {
 	case "github":
-		if len(s.Config.ReviewerRoleIDs) > 8 || len(s.Config.IgnoreLogins) > 50 {
-			return fmt.Errorf("%w: 最多配置 8 个评审角色、50 个忽略账号", ErrValidation)
-		}
-		seen := map[string]bool{}
-		for _, role := range s.Config.ReviewerRoleIDs {
-			if !sourceKey.MatchString(role) || seen[role] {
-				return fmt.Errorf("%w: 评审角色无效或重复", ErrValidation)
-			}
-			seen[role] = true
+		if len(s.Config.IgnoreLogins) > 50 {
+			return fmt.Errorf("%w: 最多配置 50 个忽略账号", ErrValidation)
 		}
 		for _, login := range s.Config.IgnoreLogins {
 			if len(login) > 100 || strings.ContainsAny(login, "\r\n\x00") {

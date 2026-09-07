@@ -1,7 +1,7 @@
 'use strict';
 const {el,api,notice,link,date}=WA;
 const $=id=>document.getElementById(id);
-const state={sources:[],targets:[],events:[],reviews:[],roles:[],projects:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set()};
+const state={sources:[],targets:[],events:[],reviews:[],roles:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set()};
 const eventLabels={'antmultica.issue':'工单新增 / 更新','github.head':'PR 新版本','github.comment':'PR 评论 / 评审意见','github.ci_failed':'CI 失败','github.review_result':'Agent 评审汇总','github.merged':'PR 已合并','github.closed':'PR 已关闭'};
 const stateLabels={PENDING:'待处理',APPLIED:'已处理',RECORDED:'仅记录',SUPERSEDED:'旧版本',COMPLETED:'已交付'};
 function options(select,items,idKey,empty){
@@ -24,9 +24,9 @@ async function refresh(){
   if(state.loading)return;
   state.loading=true;
   try{
-    const [data,roles,projects,tasks]=await Promise.all([api('/sources'),api('/roles'),api('/projects'),api('/work/tasks')]);
+    const [data,roles,tasks]=await Promise.all([api('/sources'),api('/roles'),api('/work/tasks')]);
     for(const name of ['sources','targets','events','reviews'])state[name]=data[name]||[];
-    state.roles=roles.roles||[];state.projects=projects.projects||[];state.tasks=tasks.tasks||[];
+    state.roles=roles.roles||[];state.tasks=tasks.tasks||[];
     $('connection').textContent='已连接';render();
   }finally{state.loading=false;}
 }
@@ -36,7 +36,7 @@ function render(){
   $('sources').append(manual);
   for(const s of state.sources){
     const c=el('article',null,'card');
-    c.append(el('span',s.enabled?'已启用':'已停用','eyebrow'),el('h2',s.name),el('p',s.kind==='antmultica'?s.config.workspace_slug+' · 迭代 '+s.config.iteration_value+' · 精确指派人过滤':'跟踪已登记的 PR · '+(s.config.reviewer_role_ids?.length||0)+' 个评审角色'),el('p','每 '+s.interval_seconds+' 秒检查 · 错误或限流时自动退避'));
+    c.append(el('span',s.enabled?'已启用':'已停用','eyebrow'),el('h2',s.name),el('p',s.kind==='antmultica'?s.config.workspace_slug+' · 迭代 '+s.config.iteration_value+' · 精确指派人过滤':'跟踪已登记的 PR · 采集版本、评论和 CI 更新'),el('p','每 '+s.interval_seconds+' 秒检查 · 错误或限流时自动退避'));
     const b=el('button','修改配置');b.onclick=()=>editSource(s);c.append(b);$('sources').append(c);
   }
   renderTargets();
@@ -49,7 +49,7 @@ function render(){
     for(const r of batch){const line=el('p');line.append(link(state.roles.find(x=>x.role_id===r.role_id)?.name||r.role_id,'/tasks#'+encodeURIComponent(r.task_id)),el('span',' · '+(stateLabels[r.state]||r.state),'source-meta'));c.append(line);}
     $('reviews').append(c);
   }
-  if(!batches.size)$('reviews').append(el('p','PR 出现新版本后，这里会列出邀请的评审角色、任务和结果。','empty-state'));
+  if(!batches.size)$('reviews').append(el('p','PR 出现新版本后，Router 按仓库和成员能力规划评审；这里展示 Manager 创建的评审任务与结果。','empty-state'));
   $('events').replaceChildren();
   for(const e of state.events){
     const c=el('article',null,'card source-row'),body=el('div');
@@ -103,27 +103,22 @@ function editSource(source){
   $('multica-fields').hidden=source.kind!=='antmultica';$('github-fields').hidden=source.kind!=='github';
   for(const [id,key] of [['workspace-id','workspace_id'],['workspace-slug','workspace_slug'],['assignee-id','assignee_id'],['iteration-key','iteration_key'],['iteration-value','iteration_value']])$(id).value=c[key]||'';
   $('workspace-id').readOnly=!!source.version;$('assignee-id').readOnly=!!source.version;
-  options($('source-role'),state.roles,'role_id','自动判断合适角色');$('source-role').value=c.role_id||'';
-  options($('source-project'),state.projects,'project_id','不附加团队资料');$('source-project').value=c.project_id||'';
-  $('defer-assignment').value=String(!!c.defer_assignment);$('ignore-logins').value=(c.ignore_logins||[]).join(', ');
-  $('reviewer-roles').replaceChildren();
-  for(const role of state.roles){const label=el('label'),input=el('input');input.type='checkbox';input.value=role.role_id;input.checked=(c.reviewer_role_ids||[]).includes(role.role_id);label.append(input,el('span',role.name));$('reviewer-roles').append(label);}
+  $('ignore-logins').value=(c.ignore_logins||[]).join(', ');
   $('source-dialog').showModal();
 }
 function newSource(kind){editSource({source_id:kind+'-'+WA.key(),kind,name:kind==='github'?'GitHub PR 跟踪':'AntMultica 工单',enabled:false,version:0,interval_seconds:kind==='github'?10:60,config:{workspace_slug:'seekdb',iteration_key:'迭代',iteration_value:'1.5.0'}});}
 $('add-multica').onclick=()=>newSource('antmultica');$('add-github').onclick=()=>newSource('github');
 $('close-source').onclick=()=>$('source-dialog').close();
 $('source-form').onsubmit=e=>{e.preventDefault();action(async()=>{
-  const original=state.editing,config={project_id:$('source-project').value};
+  const original=state.editing,config={};
   if(original.kind==='antmultica'){
-    Object.assign(config,{workspace_id:$('workspace-id').value.trim(),workspace_slug:$('workspace-slug').value.trim(),assignee_id:$('assignee-id').value.trim(),iteration_key:$('iteration-key').value.trim(),iteration_value:$('iteration-value').value.trim(),role_id:$('source-role').value,defer_assignment:$('defer-assignment').value==='true'});
+    Object.assign(config,{workspace_id:$('workspace-id').value.trim(),workspace_slug:$('workspace-slug').value.trim(),assignee_id:$('assignee-id').value.trim(),iteration_key:$('iteration-key').value.trim(),iteration_value:$('iteration-value').value.trim()});
   }else{
-    config.reviewer_role_ids=Array.from($('reviewer-roles').querySelectorAll('input:checked'),n=>n.value);
     config.ignore_logins=$('ignore-logins').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
   }
   const source={...original,name:$('source-name').value.trim(),enabled:$('source-enabled').value==='true',interval_seconds:Number($('source-interval').value),config};
   await api('/sources/'+encodeURIComponent(source.source_id),'PUT',{source,expected_version:original.version});
-  $('source-dialog').close();await refresh();notice('任务源配置已保存。停用不会删除记录；修改迭代不会删除旧任务。');
+  $('source-dialog').close();await refresh();notice('任务源配置已保存。停用仅停止采集，已接收事件继续处理；修改迭代不删除旧任务。');
 });};
 $('register-pr').onclick=()=>{
   $('pr-form').reset();$('pr-error').hidden=true;
