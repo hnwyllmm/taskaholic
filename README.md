@@ -60,7 +60,7 @@ Codex 列表来自已安装 CLI 的 `codex app-server --listen stdio://`，按 `
 
 组合部署可用 `--adapter cursor-agent --extra-adapters codex-agent --codex-binary /path/to/codex` 启用第二种 Agent。主 Adapter 决定首次引导成员和默认升级构建器；额外 Adapter 不改绑现有成员，不增加数据库或服务端口。显式配置的 Adapter 不可用时启动失败，不静默替换；systemd/守护进程重启和升级保留该设置。
 
-dev 的六个开发/评审角色定义在 `deploy/dev/seekdb-roles.mjs`，可通过 `seed-seekdb-roles.mjs` 预览或增量发布。角色模板与成员配置分离；通用代码 Reviewer 明确优先阅读和遵守目标仓库的 `code-review` skill。角色不授予仓库写入、PR 或合并权限。
+dev 的五个开发/评审角色定义在 `deploy/dev/seekdb-roles.mjs`，可通过 `seed-seekdb-roles.mjs` 预览或增量发布。SeekDB 与 seekdb-bindings 由同一个开发者角色负责，涵盖内核、语言绑定和跨仓库交付。角色模板与成员配置分离；通用代码 Reviewer 明确优先阅读和遵守目标仓库的 `code-review` skill。角色不授予仓库写入、PR 或合并权限。
 
 ### 首页助理对话
 

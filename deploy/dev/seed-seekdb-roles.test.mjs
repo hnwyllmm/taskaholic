@@ -31,8 +31,14 @@ function fixture(){
 }
 
 test('role pack covers requested responsibilities and does not grant permissions',()=>{
-  assert.equal(rolePack.length,6);
-  assert.equal(new Set(rolePack.map(r=>r.key)).size,6);
+  assert.equal(rolePack.length,5);
+  assert.equal(new Set(rolePack.map(r=>r.key)).size,5);
+  const developer=rolePack.find(r=>r.key==='seekdb-developer').spec;
+  assert.equal(developer.name,'SeekDB / seekdb-bindings 开发者');
+  assert.ok(developer.capabilities.includes('seekdb.develop'));
+  assert.ok(developer.capabilities.includes('seekdb-bindings.develop'));
+  assert.ok(developer.capabilities.includes('package.validate'));
+  assert.equal(rolePack.filter(r=>r.key==='seekdb-bindings-developer').length,0);
   for(const {spec} of rolePack){
     assert.ok(Buffer.byteLength(spec.name)<=200);
     assert.ok(Buffer.byteLength(spec.instructions)<=32000);
@@ -46,11 +52,11 @@ test('role pack covers requested responsibilities and does not grant permissions
   const qa=rolePack.find(r=>r.key==='seekdb-qa-reviewer').spec.instructions;
   for(const term of ['可测试性','实际命令','最终二进制','证据','测试场景'])assert.ok(qa.includes(term));
 });
-test('seed defaults to read-only preview, creates six roles/members, and replays without writes',async()=>{
+test('seed defaults to read-only preview, creates five roles/members, and replays without writes',async()=>{
   const f=fixture(),opts={members:true,modelID:'fixture-model'};
-  assert.equal((await seedRoles(f.api,opts)).length,6);assert.equal(f.writes.length,0);
-  assert.equal((await seedRoles(f.api,{...opts,apply:true})).length,6);
-  assert.equal(f.roles.length,6);assert.equal(f.agents.length,6);
+  assert.equal((await seedRoles(f.api,opts)).length,5);assert.equal(f.writes.length,0);
+  assert.equal((await seedRoles(f.api,{...opts,apply:true})).length,5);
+  assert.equal(f.roles.length,5);assert.equal(f.agents.length,5);
   const count=f.writes.length;
   await seedRoles(f.api,{...opts,apply:true});assert.equal(f.writes.length,count);
   assert.ok(f.agents.every(a=>a.adapter_id==='codex-agent'&&a.max_concurrent===1));
@@ -59,7 +65,7 @@ test('user edits and unverified models fail before any writes',async()=>{
   const f=fixture();
   await assert.rejects(seedRoles(f.api,{apply:true,members:true,modelID:'unknown'}),/live Codex catalog/);
   assert.equal(f.writes.length,0);
-  f.roles.push({...rolePack[5].spec,instructions:'user customized',role_id:'existing'});
+  f.roles.push({...rolePack.find(r=>r.key==='seekdb-general-reviewer').spec,instructions:'user customized',role_id:'existing'});
   await assert.rejects(seedRoles(f.api,{apply:true}),/Existing role differs/);
   assert.equal(f.writes.length,0);
 });

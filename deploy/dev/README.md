@@ -37,7 +37,9 @@ node deploy/dev/api.mjs /admin/backups POST '{}'
 
 ## SeekDB 开发与评审成员
 
-提供六个独立角色：SeekDB 开发者、seekdb-bindings 开发者、通用代码仓库开发者，以及 SeekDB / seekdb-bindings 共用的架构 Reviewer、QA / 测试 Reviewer、通用 Reviewer。职责模板位于 `seekdb-roles.mjs`；每个角色对应一位带 `· Codex` 后缀的 dev 成员，并发上限 1。模型显式沿用本次 dev 的 `gpt-5.6-sol` 配置，后续可在成员管理中分别修改，已有 Session 不切换模型。
+提供五个工作角色：SeekDB / seekdb-bindings 开发者（同一位开发者同时负责两个仓库）、通用代码仓库开发者，以及 SeekDB / seekdb-bindings 共用的架构 Reviewer、QA / 测试 Reviewer、通用 Reviewer。职责模板位于 `seekdb-roles.mjs`；每个角色对应一位带 `· Codex` 后缀的 dev 成员，并发上限 1。模型显式沿用本次 dev 的 `gpt-5.6-sol` 配置，后续可在成员管理中分别修改，已有 Session 不切换模型。
+
+最初误建的独立 seekdb-bindings 成员已停用，角色标记“已合并”并保留旧版本及事件以供追溯，不再作为独立执行成员参与分派。合并后原 SeekDB 成员和角色 ID 保持不变，统一承担两个仓库的能力；种子模板不再创建第二位 bindings 开发者。
 
 三个评审角色分别使用 architecture.review、qa.review/test.review、code.review 等能力标签，也可在创建任务时直接指定成员或角色。不预置固定 Task Graph，不自动替人批准合并。通用 Reviewer 必须检查仓库的 code-review skill 并完整读取其要求；dev 的 SeekDB 当前有 `.agents/skills/code-review/SKILL.md`，seekdb-bindings 本次未发现该 skill，后续任务仍需按实际仓库版本重新查找。
 

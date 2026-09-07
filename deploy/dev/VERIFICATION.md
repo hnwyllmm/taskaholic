@@ -158,3 +158,13 @@ Codex 连接修复：
 - Codex 网络仍依赖这台 Mac 的现有代理在线；Mac 网络地址变化、退出登录或重启后需重新检查/恢复该链路。这不是 dev 完全独立的出网方案。Mac 正式 Work Assistant 实例、数据库和成员未改。
 
 协议依据：[Codex 非交互执行与恢复](https://learn.chatgpt.com/docs/non-interactive-mode)、[App Server 模型发现](https://learn.chatgpt.com/docs/app-server)。实际命令同时以 dev 已安装版本的 help 和真实调用校验。
+
+## 补充：统一 SeekDB / seekdb-bindings 开发者
+
+2026-09-07 11:15（Asia/Shanghai），按用户纠正，两个仓库由同一位开发者负责，不再分别设置开发岗位。此节修正上节的六角色配置，历史记录保留。
+
+- 保留原 SeekDB 角色和成员 ID，名称更新为“SeekDB / seekdb-bindings 开发者”和对应的 `· Codex` 成员；合并内核、绑定 API、跨仓库契约、构建打包与制品验证职责。成员仍为 `codex-agent`、`gpt-5.6-sol`、并发 1，权限边界不变。
+- 误建的独立 bindings 成员停用，角色和成员均标记“已合并”，保留 ID、原配置内容和版本历史。变更前确认这两个成员均无任务执行或 Session 引用，也没有任务指定重复角色；未删除或迁移历史记录。
+- 角色模板和种子测试改为五个工作角色。其它四个工作角色、两个原有成员及四个系统岗位绑定不变。通过带版本校验的配置 API 完成变更，无数据库迁移、无程序替换、无需服务重启。
+- Mac 与 dev 的三个种子测试通过；变更后核对 task、run、session、task_session、home_chat 的完整记录摘要均与变更前一致。审计记录和一次性修正脚本保留于 `.deploy/developer-merge-20260907/`，不进入 Git。
+- 同一备份根目录下，变更前 `snapshot-20260907T031506.802161250Z-3724103075`、变更后 `snapshot-20260907T031506.985999178Z-2660715458` 均通过 `assistantctl backup-verify`。保留历史配置后仍有 8 条成员记录，其中 7 位启用、1 位停用，不将历史记录数误报为当前团队配置数。
