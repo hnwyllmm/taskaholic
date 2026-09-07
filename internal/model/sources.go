@@ -79,6 +79,15 @@ var repoPart = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$`)
 var sourceKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,199}$`)
 var CommitSHA = regexp.MustCompile(`^[a-f0-9]{40,64}$`)
 
+// Route verified against AntMultica's deployed workspace route builder.
+// Keep the stable issue ID instead of a mutable title/identifier slug.
+func AntMulticaIssueURL(workspace, issueID string) (string, error) {
+	if !sourceKey.MatchString(workspace) || !sourceKey.MatchString(issueID) {
+		return "", fmt.Errorf("%w: invalid AntMultica issue reference", ErrValidation)
+	}
+	return "https://antmultica.alipay.com/" + url.PathEscape(workspace) + "/issues/" + url.PathEscape(issueID), nil
+}
+
 // Only github.com is accepted in v1. Host adapters can be added explicitly;
 // user-controlled URLs must never become arbitrary authenticated HTTP calls.
 func ParseGitHubPR(raw string) (owner, repo string, number int, canonical string, err error) {

@@ -133,10 +133,26 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
-	TestPipelines []TestPipeline `json:"test_pipelines"`
-	ReviewTurns   []ReviewTurn   `json:"review_turns"`
-	Config        WorkConfig     `json:"config"`
-	Messages      []TaskMessage  `json:"messages"`
-	Artifacts     []Artifact     `json:"artifacts"`
-	Reviews       []Review       `json:"reviews"`
+	References    []TaskReference `json:"references"`
+	ReviewBrief   *ReviewBrief    `json:"review_brief,omitempty"`
+	TestPipelines []TestPipeline  `json:"test_pipelines"`
+	ReviewTurns   []ReviewTurn    `json:"review_turns"`
+	Config        WorkConfig      `json:"config"`
+	Messages      []TaskMessage   `json:"messages"`
+	Artifacts     []Artifact      `json:"artifacts"`
+	Reviews       []Review        `json:"reviews"`
+}
+
+// References resolve persisted source identities. Historical Run inputs and
+// task summaries are never rewritten to change their presentation.
+type TaskReference struct {
+	Kind     string `json:"kind"`
+	Label    string `json:"label"`
+	URL      string `json:"url"`
+	Revision string `json:"revision,omitempty"`
+}
+
+type ReviewBrief struct {
+	Title string `json:"title"`
+	Goal  string `json:"goal"`
 }

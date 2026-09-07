@@ -44,7 +44,7 @@ async function page({initialTasks=[],hierarchies={},hash=''}={}){
   const document={getElementById:$,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[],body:new Element('body')};
   const ctx=vm.createContext({document,fetch,console,URLSearchParams,Uint8Array,crypto:{getRandomValues:array=>array.fill(1)},location:{hash,search:''},history:{replaceState:noop},confirm:()=>true,setTimeout:()=>1,clearTimeout:noop,addEventListener:noop,WA:{token:()=>'',el:(tag,text,cls)=>{const n=new Element(tag);n.textContent=text;n.className=cls;return n;},date:()=>'',badge:state=>{const n=new Element('span');n.textContent=state;return n;},labels:{}},WAActivity:{mount:()=>activity},WAReviewChat:{mount:()=>review}});
   ctx.window=ctx;
-  for(const file of ['assignment.js','task-hierarchy.js','test-pipelines.js','tasks.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),ctx,{filename:file});
+  for(const file of ['assignment.js','task-hierarchy.js','test-pipelines.js','task-references.js','tasks.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),ctx,{filename:file});
   const settle=async()=>{for(let i=0;i<4;i++)await new Promise(setImmediate);};await settle();
   return{$,requests,ctx,settle,tasks,details,hierarchies};
 }
@@ -94,6 +94,40 @@ function hierarchyFixture(){
 }
 const textTree=n=>[n.textContent??'',...(n.children||[]).map(textTree)].join(' ');
 const descendants=(node,cls)=>node.children.flatMap(n=>[...(n.className===cls?[n]:[]),...descendants(n,cls)]);
+
+test('Task references show direct links and a compact legacy review without erasing history',async()=>{
+  const p=await page(hierarchyFixture()),{$,ctx,details}=p;
+  const legacy='LEGACY_PATCH_PAYLOAD @@ -1 +1 @@',sha='a'.repeat(40);
+  details.child.detail.task.goal=legacy;
+  Object.assign(details.child.work,{
+    review_brief:{title:'PR #123 评审 · QA',goal:'请通过 PR 链接读取固定版本 '+sha},
+    references:[
+      {kind:'github.pr',label:'oceanbase/seekdb #123',url:'https://github.com/oceanbase/seekdb/pull/123',revision:sha},
+      {kind:'antmultica.issue',label:'原需求 · SEEK-1',url:'https://antmultica.alipay.com/seekdb/issues/one'},
+      {kind:'github.pr',label:'Untrusted',url:'javascript:alert(1)'}
+    ],
+    messages:[{speaker:'user',content:legacy,created_at_ms:1,run_id:'historical-run'},{speaker:'assistant',content:'Reviewer finding: check file.go:10',created_at_ms:2}]
+  });
+  await vm.runInContext("selectTask('child')",ctx);
+  assert.equal($('title').textContent,'PR #123 评审 · QA');
+  assert.ok(!$('goal').textContent.includes('LEGACY_PATCH_PAYLOAD'));
+  assert.equal($('task-references').hidden,false);
+  assert.equal($('task-references').children.length,2);
+  const link=$('task-references').children[0].children[0];
+  assert.equal(link.tag,'a');assert.equal(link.href,'https://github.com/oceanbase/seekdb/pull/123');assert.equal(link.rel,'noopener noreferrer');
+  assert.match(textTree($('task-references')),new RegExp(sha));
+  assert.ok(!textTree($('messages')).includes('LEGACY_PATCH_PAYLOAD'));
+  assert.match(textTree($('messages')),/Reviewer finding/);
+  assert.equal(details.child.detail.task.goal,legacy);assert.equal(details.child.work.messages[0].content,legacy);
+  details.child.work.messages.push({speaker:'user',content:legacy,created_at_ms:3});
+  await vm.runInContext("selectTask('child')",ctx);
+  assert.ok(textTree($('messages')).includes('LEGACY_PATCH_PAYLOAD'),'a later human message must remain unchanged');
+  await vm.runInContext("selectTask('other')",ctx);
+  assert.equal($('task-references').hidden,true);assert.equal($('goal').textContent,'goal');
+  const html=fs.readFileSync(path.join(__dirname,'tasks.html'),'utf8');
+  assert.ok(html.indexOf('/assets/task-references.js')<html.indexOf('/tasks/tasks.js'));
+  assert.ok(!fs.readFileSync(path.join(__dirname,'task-references.js'),'utf8').includes('innerHTML'));
+});
 
 test('Work overview and sidebar contain roots only; attention counts the original task once',async()=>{
   const {$,requests,ctx,settle}=await page(hierarchyFixture());

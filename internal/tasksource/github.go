@@ -197,6 +197,13 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 		p.cursor.Seen = map[string]bool{}
 	}
 	prPath := fmt.Sprintf("%spulls/%d", p.prefix, number)
+	// A source records references, not review evidence. Drop legacy diff caches
+	// as cursors advance; reviewers fetch the pinned version themselves.
+	for key := range p.cursor.Cache {
+		if strings.HasPrefix(key, prPath+"/files") {
+			delete(p.cursor.Cache, key)
+		}
+	}
 	var pr githubPR
 	if _, err = p.get(prPath, &pr); err != nil {
 		return result, err
@@ -239,25 +246,7 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 				delete(p.cursor.Cache, key)
 			}
 		}
-		type file struct {
-			Name   string `json:"filename"`
-			Status string `json:"status"`
-			Patch  string `json:"patch"`
-		}
-		files, err := githubPages[file](&p, prPath+"/files?per_page=100")
-		if err != nil {
-			return result, err
-		}
-		var evidence strings.Builder
-		fmt.Fprintf(&evidence, "标题：%s\n下面是 GitHub 返回的此版本变更材料；缺少 patch 的文件和完整上下文需另外读取，不应假装已审查。\n", pr.Title)
-		for _, f := range files {
-			if evidence.Len() > 20000 {
-				evidence.WriteString("\n[剩余文件未内嵌，请读取 PR 的完整 diff]\n")
-				break
-			}
-			fmt.Fprintf(&evidence, "\n文件：%s (%s)\n%s\n", f.Name, f.Status, cutBytes(f.Patch, 7000))
-		}
-		emit(model.SourceEvent{Key: "head:" + pr.Head.SHA, Kind: "github.head", HeadSHA: pr.Head.SHA, Message: cutBytes(evidence.String(), 28000)})
+		emit(model.SourceEvent{Key: "head:" + pr.Head.SHA, Kind: "github.head", HeadSHA: pr.Head.SHA, Title: cutBytes(pr.Title, 400), Message: fmt.Sprintf("PR: %s\n标题: %s\n版本: %s\n请 reviewer 自行读取此版本的完整变更、上下文及 CI。", canonical, cutBytes(pr.Title, 400), pr.Head.SHA)})
 	}
 	ignore := map[string]bool{}
 	for _, login := range s.Config.IgnoreLogins {

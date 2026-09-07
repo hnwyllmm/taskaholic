@@ -404,6 +404,15 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 		Scan(&currentRevision, &taskTitle, &taskGoal); err != nil {
 		return model.Run{}, err
 	}
+	if request.Managed {
+		_, brief, err := taskReferences(ctx, tx, request.TaskID)
+		if err != nil {
+			return model.Run{}, err
+		}
+		if brief != nil {
+			taskTitle, taskGoal = brief.Title, brief.Goal
+		}
+	}
 	if request.IdempotencyKey != "" {
 		var existingRunID string
 		scope := "task.run:" + request.TaskID

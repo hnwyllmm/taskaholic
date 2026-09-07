@@ -207,3 +207,8 @@ main{padding:20px 15px}
 .pipeline-table summary{cursor:pointer;color:var(--accent)}
 .pipeline-table details p{margin:8px 0}
 .pipeline-version{display:block;color:var(--muted);margin-top:4px;white-space:nowrap}
+.task-references{display:flex;flex-wrap:wrap;gap:8px 24px;margin:12px 0 20px;padding:12px 16px;border:1px solid var(--border);border-radius:10px;background:#fff}
+.task-references[hidden]{display:none}
+.task-reference{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:baseline;min-width:0;max-width:100%;font-size:14px}
+.task-reference a{color:var(--accent);overflow-wrap:anywhere;text-underline-offset:3px}
+.reference-revision{font-family:monospace;font-size:12px;color:var(--muted);overflow-wrap:anywhere}

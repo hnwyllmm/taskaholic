@@ -57,6 +57,9 @@ func TestAntMulticaExactFilterPaginationAndNoReplay(t *testing.T) {
 	if first.Events[0].Title != "SEEK-1 task" {
 		t.Fatal(first.Events)
 	}
+	if first.Events[0].URL != "https://antmultica.alipay.com/seekdb/issues/one" || !strings.Contains(first.Events[0].Message, first.Events[0].URL) {
+		t.Fatal("missing direct issue link", first.Events)
+	}
 	target.Cursor = first.Cursor
 	second, err := provider.Poll(context.Background(), source, target)
 	if err != nil || len(second.Events) != 0 {
@@ -130,7 +133,7 @@ func TestGitHubConditionalPollingCommentsCIAndNewHead(t *testing.T) {
 		case path == "/repos/o/r/pulls/1":
 			value = map[string]any{"number": 1, "state": "open", "head": map[string]string{"sha": head}, "user": map[string]string{"login": "human"}, "base": map[string]any{"repo": map[string]any{"id": 123, "full_name": "o/r"}}}
 		case strings.Contains(path, "/files"):
-			value = []any{map[string]string{"filename": "main.go", "status": "modified", "patch": "+newCode"}}
+			t.Fatal("source must not download review code", path)
 		case strings.Contains(path, "/issues/1/comments"):
 			if strings.Contains(path, "page=2") {
 				if failSecondPage {

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工作列表 · Work Assistant</title><link rel="stylesheet" href="/tasks/tasks.css"><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/review-chat.js" defer></script><script src="/assets/activity.js" defer></script><link rel="stylesheet" href="/assets/assignment.css"><script src="/assets/assignment.js" defer></script><script src="/assets/task-hierarchy.js" defer></script><script src="/assets/test-pipelines.js" defer></script><script src="/tasks/tasks.js" defer></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工作列表 · Work Assistant</title><link rel="stylesheet" href="/tasks/tasks.css"><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/review-chat.js" defer></script><script src="/assets/activity.js" defer></script><link rel="stylesheet" href="/assets/assignment.css"><script src="/assets/assignment.js" defer></script><script src="/assets/task-hierarchy.js" defer></script><script src="/assets/test-pipelines.js" defer></script><script src="/assets/task-references.js" defer></script><script src="/tasks/tasks.js" defer></script></head>
 <body data-page="tasks">
 <header data-app-shell></header>
 <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -11,6 +11,7 @@
 <button id="back-to-list" class="back-link">← 返回工作列表</button>
 <nav id="task-parents" class="task-parents" aria-label="任务层级导航" hidden></nav>
 <div class="task-heading"><div><span class="eyebrow">TASK WORKSPACE</span><h1 id="title"></h1><div class="row"><span id="status" class="badge"></span><span id="owner" class="muted"></span></div></div><button id="pause">暂停任务</button></div>
+<section id="task-references" class="task-references" aria-label="来源与关联链接" hidden></section>
 <p id="scheduler-error" class="warning" hidden></p>
 <details class="metadata"><summary>目标与执行信息</summary><p id="goal" class="prewrap"></p><pre id="session"></pre></details>
 <section id="assignment-panel" aria-label="任务执行安排"></section>
