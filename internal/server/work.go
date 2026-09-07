@@ -20,6 +20,7 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 		"GET /api/v1/work/summaries":                                                    s.handleWorkSummaries,
 		"POST /api/v1/work/tasks":                                                       s.handleWorkCreate,
 		"GET /api/v1/work/tasks/{task_id}":                                              s.handleWorkDetail,
+		"GET /api/v1/work/tasks/{task_id}/hierarchy":                                    s.handleWorkHierarchy,
 		"POST /api/v1/work/tasks/{task_id}/assignment":                                  s.handleWorkAssignment,
 		"GET /api/v1/work/tasks/{task_id}/activities":                                   s.handleActivities,
 		"GET /api/v1/work/tasks/{task_id}/events":                                       s.handleEventStream,
@@ -38,8 +39,23 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Query().Get("scope") {
+	case "roots":
+		tasks, err := s.store.ListRootWork(r.Context())
+		reply(w, 200, map[string]any{"tasks": tasks}, err)
+		return
+	case "", "all":
+		// Preserve existing callers such as the home inbox and PR registration.
+	default:
+		writeError(w, 400, fmt.Errorf("%w: scope must be roots or all", model.ErrValidation))
+		return
+	}
 	tasks, err := s.store.ListWork(r.Context())
 	reply(w, 200, map[string]any{"tasks": tasks}, err)
+}
+func (s *Server) handleWorkHierarchy(w http.ResponseWriter, r *http.Request) {
+	hierarchy, err := s.store.GetWorkHierarchy(r.Context(), r.PathValue("task_id"))
+	reply(w, 200, hierarchy, err)
 }
 func (s *Server) handleWorkSummaries(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))

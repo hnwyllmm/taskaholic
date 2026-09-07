@@ -63,7 +63,7 @@ func TestWorkbenchSchedulingAndReviewAPI(t *testing.T) {
 			}
 		}
 	}
-	for _, path := range []string{"/api/v1/work/tasks", "/api/v1/work/summaries", "/api/v1/projects", "/api/v1/system"} {
+	for _, path := range []string{"/api/v1/work/tasks", "/api/v1/work/tasks?scope=roots", "/api/v1/work/tasks/missing/hierarchy", "/api/v1/work/summaries", "/api/v1/projects", "/api/v1/system"} {
 		w := httptest.NewRecorder()
 		s.http.Handler.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != 401 {
@@ -77,6 +77,25 @@ func TestWorkbenchSchedulingAndReviewAPI(t *testing.T) {
 	}
 	var task model.Task
 	call("POST", "/api/v1/work/tasks", map[string]any{"title": "Write guide", "goal": "provide guide.md"}, 201, &task)
+	var roots struct {
+		Tasks []model.WorkTaskItem `json:"tasks"`
+	}
+	call("GET", "/api/v1/work/tasks?scope=roots", nil, 200, &roots)
+	if len(roots.Tasks) != 1 || roots.Tasks[0].ID != task.ID {
+		t.Fatal("root work projection missing", roots)
+	}
+	var hierarchy model.WorkHierarchy
+	call("GET", "/api/v1/work/tasks/"+task.ID+"/hierarchy", nil, 200, &hierarchy)
+	if hierarchy.TaskID != task.ID || hierarchy.TaskVersion != task.Version || len(hierarchy.Children) != 0 {
+		t.Fatal("invalid hierarchy", hierarchy)
+	}
+	call("GET", "/api/v1/work/tasks/missing/hierarchy", nil, 404, nil)
+	call("GET", "/api/v1/work/tasks?scope=invalid", nil, 400, nil)
+	ui := httptest.NewRecorder()
+	s.http.Handler.ServeHTTP(ui, httptest.NewRequest("GET", "/assets/task-hierarchy.js", nil))
+	if ui.Code != 200 || ui.Header().Get("Content-Security-Policy") == "" || !strings.Contains(ui.Body.String(), "WATaskHierarchy") {
+		t.Fatal("hierarchy UI asset unavailable")
+	}
 	s.scheduleWork(ctx)
 	config, _ := state.GetWorkConfig(ctx, task.ID)
 	if config.SchedulerError == "" {

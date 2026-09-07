@@ -326,6 +326,20 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 	if old != 3 || current != 3 {
 		t.Fatal("head revisions mixed", reviews)
 	}
+	roots, err := s.ListRootWork(ctx)
+	if err != nil || len(roots) != 1 || roots[0].ID != parent.ID ||
+		roots[0].Subtasks.Total != 3 || roots[0].Subtasks.Superseded != 3 || roots[0].Subtasks.Completed != 0 {
+		t.Fatal("old-version reviews leaked into current work progress", roots, err)
+	}
+	hierarchy, err := s.GetWorkHierarchy(ctx, parent.ID)
+	if err != nil || len(hierarchy.Children) != 6 {
+		t.Fatal("historical review workbenches disappeared", len(hierarchy.Children), err)
+	}
+	for _, child := range hierarchy.Children {
+		if child.ReviewHeadSHA == "" || child.SourceReviewState == "" {
+			t.Fatal("review version metadata missing", child)
+		}
+	}
 	// A delayed failure for the previous SHA is retained but never sent.
 	before, _ := s.GetWorkDetail(ctx, parent.ID)
 	pollStore(t, s, source, targetByID(t, s, target.ID), newHead, model.SourceEvent{Key: "late-ci", Kind: "github.ci_failed", HeadSHA: head, Message: "old failure"})

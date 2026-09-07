@@ -108,6 +108,25 @@ dialog label{margin:14px 0}
 dialog h2{font-size:20px}
 .empty{font-size:12px;color:var(--muted);padding:20px 5px}
 .activity-panel{margin:0 0 22px}
+.task-parents{display:flex;flex-wrap:wrap;gap:8px;margin:-6px 0 20px}
+.hierarchy-link{font-size:12px;text-align:left;overflow-wrap:anywhere;padding:6px 10px;background:#edf3e9;border-color:#dce6d6}
+.task-hierarchy{margin:0 0 22px}
+.subtask-note{font-size:12px;color:var(--muted);margin:12px 18px}
+.subtask-list{display:grid}
+.subtask-row{display:grid;grid-template-columns:minmax(0,1fr) auto 52px;align-items:center;gap:15px;width:100%;text-align:left;padding:14px 18px;border:0;border-top:1px solid #edf0e8;border-radius:0}
+.subtask-title{min-width:0}
+.subtask-title strong{font-size:13px;font-weight:600;overflow-wrap:anywhere}
+.subtask-title small{display:block;font-size:11px;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}
+.subtask-status{display:grid;justify-items:end;gap:4px}
+.subtask-open{font-size:11px;color:var(--accent);white-space:nowrap}
+.hierarchy-attention{font-size:11px;color:#965e26}
+.subtask-history{border-top:1px solid var(--border);background:#fafbf8}
+.subtask-history>summary{padding:12px 18px;font-size:12px;color:var(--muted)}
+.subtask-history .subtask-row{background:transparent}
+.work-subtasks{display:block;margin-top:5px;font-size:11px;color:var(--accent)}
+.work-subtasks[data-attention="true"]{color:#965e26}
+.work-task-status{display:grid;justify-items:start;gap:5px}
+@media(max-width:650px){.subtask-row{grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:12px}.subtask-open{display:none}.task-parents{margin-top:0}.subtask-status{max-width:125px}.task-hierarchy .panel-head{align-items:start}.task-hierarchy .panel-head>span{text-align:right}}
 .activity-connection{white-space:nowrap;color:#91682f}
 .activity-connection[data-connected="true"]{color:#276b56}
 .activity-connection::before{content:'●';font-size:9px;margin-right:6px}

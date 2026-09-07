@@ -37,6 +37,8 @@ func (s *Server) handlePageUI(w http.ResponseWriter, r *http.Request) {
 		path, contentType = "models.css", "text/css; charset=utf-8"
 	case "/assets/assignment.js":
 		path, contentType = "assignment.js", "text/javascript; charset=utf-8"
+	case "/assets/task-hierarchy.js":
+		path, contentType = "task-hierarchy.js", "text/javascript; charset=utf-8"
 	case "/assets/assignment.css":
 		path, contentType = "assignment.css", "text/css; charset=utf-8"
 	case "/assets/home.js":

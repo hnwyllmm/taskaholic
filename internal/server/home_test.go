@@ -109,17 +109,17 @@ func TestWorkQueueSummary(t *testing.T) {
 	}
 	body := string(data)
 	for _, group := range []string{
-		"['等待队列',['NEW','QUEUED']]",
-		"['推进中',['IN_PROGRESS','WAITING_SUBTASKS']]",
-		"['需要你',['WAITING_REVIEW','WAITING_INPUT','BLOCKED']]",
-		"['已完成',['COMPLETED']]",
+		"['等待队列','queued']",
+		"['推进中','active']",
+		"['需要你','attention']",
+		"['已完成','completed']",
 	} {
 		if !strings.Contains(body, group) {
 			t.Fatalf("missing work summary group %s", group)
 		}
 	}
-	if strings.Contains(body, "['推进中',['QUEUED'") {
-		t.Fatal("queued work must not also count as in progress")
+	if !strings.Contains(body, "WATaskHierarchy.bucket(t)===bucket") {
+		t.Fatal("work summary must categorize each original task once")
 	}
 	data, err = roleUI.ReadFile("ui/tasks.html")
 	if err != nil {
