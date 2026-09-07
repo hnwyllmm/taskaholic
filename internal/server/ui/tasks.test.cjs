@@ -49,6 +49,20 @@ async function page({initialTasks=[],hierarchies={},hash=''}={}){
   return{$,requests,ctx,settle,tasks,details,hierarchies};
 }
 
+test('Plan approval is explicit and different from final delivery acceptance',async()=>{
+ const task={task_id:'plan-task',title:'Plan',goal:'Implement',state:'WAITING_REVIEW',version:5};
+ const p=await page({initialTasks:[task]});
+ p.details[task.task_id].work.development={phase:'HUMAN_REVIEW',version:2,repository:'oceanbase/seekdb',base_branch:'master',plan_hash:'a'.repeat(64),reviewer_task_id:'reviewer'};
+ p.details[task.task_id].work.reviews=[{review_id:'plan-review',kind:'plan',state:'PENDING',artifact_ids:[],discussion_version:0}];
+ await vm.runInContext('selectTask("plan-task")',p.ctx);await p.settle();
+ assert.equal(p.$('approve').textContent,'批准方案，开始开发');
+ assert.equal(p.$('review-heading').textContent,'方案待你确认');
+ p.$('approve').onclick();await p.settle();
+ const request=p.requests.find(x=>x.method==='POST'&&x.route.endsWith('/reviews/plan-review'));
+ assert.equal(request.body.decision,'PLAN_APPROVED');
+ assert.equal(p.$('notice').textContent,'方案已批准，原 Agent 将开始隔离开发。');
+});
+
 test('Task page defaults to save first, then submits manual and automatic assignments',async()=>{
   const {$,requests,ctx,settle}=await page();
   $('new').onclick();assert.equal($('new-role').value,'');assert.equal($('new-agent').disabled,true);

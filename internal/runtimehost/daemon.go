@@ -21,6 +21,7 @@ import (
 	"work-assistant/internal/id"
 	"work-assistant/internal/model"
 	"work-assistant/internal/rpcpeer"
+	"work-assistant/internal/workflow"
 )
 
 type Config struct {
@@ -374,7 +375,16 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 		return
 	}
 
-	result := adapter.Run(ctx, spec, workingDir, active.directives, func(event agent.Event) {
+	var workspace developmentWorkspace
+	var receipt string
+	var preparationErr error
+	if spec.ExecutionGrant != nil {
+		workspace, receipt, preparationErr = d.prepareDevelopment(ctx, spec, workingDir)
+		if preparationErr == nil {
+			spec.Instructions += "\n本轮已批准隔离源码目录：" + workspace.Directory + "\n只在该目录修改代码。Git 元数据由 runtime 维护；不得修改 .git、调用外部发布或更改批准范围。代码和验证完成后，publish_request={title:PR标题,body:实现说明、测试证据和风险}，由 runtime 提交到任务专用分支并创建 PR。plan_scope=null。"
+		}
+	}
+	emit := func(event agent.Event) {
 		eventType := event.Type
 		if eventType == "" {
 			eventType = "run.progress"
@@ -391,7 +401,30 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 			Activity:  event.Activity,
 			Execution: event.Execution,
 		})
-	})
+	}
+	result := agent.Result{ExitCode: -1, Err: preparationErr}
+	if preparationErr == nil {
+		result = adapter.Run(ctx, spec, workingDir, active.directives, emit)
+	}
+	if result.Err == nil && spec.ExecutionGrant != nil && ctx.Err() == nil {
+		parsed, err := workflow.Parse(result.Output)
+		if err == nil && parsed.PublishRequest != nil {
+			if err = publishDevelopment(ctx, &workspace, receipt, spec, &parsed); err != nil {
+				parsed.Outcome = "blocked"
+				parsed.PublishRequest = nil
+				parsed.Message += "\n受控 PR 发布未完成：" + err.Error()
+				if parsed.TaskUpdate != nil {
+					parsed.TaskUpdate.BlockedReason = err.Error()
+				}
+			}
+			raw, marshalErr := json.Marshal(parsed)
+			if marshalErr != nil {
+				result.Err = marshalErr
+			} else {
+				result.Output = string(raw)
+			}
+		}
+	}
 	exitCode := result.ExitCode
 	terminal := model.RuntimeEvent{
 		Output:    result.Output,
@@ -540,6 +573,7 @@ func (d *Daemon) capabilities() map[string]any {
 			caps[key] = value
 		}
 		_, caps["model_catalog"] = adapter.(agent.ModelProvider)
+		caps["approved_development"] = name == "codex-agent"
 		adapterCaps[name] = caps
 	}
 	return result

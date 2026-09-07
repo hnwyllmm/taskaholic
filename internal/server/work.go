@@ -15,6 +15,7 @@ import (
 )
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/restart", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRestart)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
 	for pattern, handler := range map[string]http.HandlerFunc{
 		"GET /api/v1/work/tasks":                                                        s.handleWorkList,
@@ -199,6 +200,9 @@ func (s *Server) workLoop(ctx context.Context) {
 	}
 }
 func (s *Server) scheduleWork(ctx context.Context) {
+	if err := s.store.RoutePlanReviews(ctx); err != nil {
+		s.log.Error("route plan reviews", "error", err)
+	}
 	// Manager work is independent of polling latency or source enablement.
 	// Sources cannot invoke routing, fan-out, fan-in, or start an Agent.
 	if err := s.store.CollectSourceReviews(ctx); err != nil {
@@ -222,6 +226,17 @@ func (s *Server) scheduleWork(ctx context.Context) {
 			}
 		}
 	}
+}
+func (s *Server) handleDevelopmentRestart(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64 `json:"expected_version"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	d, err := s.store.RestartDevelopment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion)
+	reply(w, http.StatusAccepted, d, err)
 }
 func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 	task, err := s.store.GetTask(ctx, taskID)
@@ -320,6 +335,21 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 			return e
 		}
 		req.AgentID, req.RuntimeID, req.AdapterID, req.ModelID = a.ID, a.RuntimeID, a.AdapterID, a.ModelID
+	}
+	d, devErr := s.store.GetDevelopment(ctx, taskID)
+	if devErr != nil && devErr != sql.ErrNoRows {
+		return devErr
+	}
+	if devErr == nil && d.Phase == "IMPLEMENTING" {
+		supported := false
+		for _, rt := range runtimes {
+			if rt.ID == req.RuntimeID && router.SupportsFeature(rt, req.AdapterID, "approved_development") {
+				supported = true
+			}
+		}
+		if !supported {
+			return fmt.Errorf("%w: 原 runtime/adapter 尚不支持已审批隔离开发，请先升级；不会更换原 Session", model.ErrConflict)
+		}
 	}
 	_, err = s.store.StartWorkRun(ctx, req, s.workContract)
 	return err

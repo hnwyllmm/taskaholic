@@ -144,3 +144,41 @@ printf '%s\n' '{"type":"turn.completed"}'
 		t.Fatalf("unexpected resume arguments:\n%s", log)
 	}
 }
+
+func TestApprovedDevelopmentPinsSandboxOnNativeResume(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_LOG"; done
+printf '%s\n' '{"type":"thread.started","thread_id":"original"}' '{"type":"turn.completed"}'
+`
+	if e := os.WriteFile(binary, []byte(script), 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Setenv("CODEX_FAKE_LOG", logPath)
+	adapter, e := NewCodexAdapter(binary, "danger-full-access")
+	if e != nil {
+		t.Fatal(e)
+	}
+	result := adapter.Run(context.Background(), model.RunSpec{TaskGoal: "implement", AgentSessionRef: "codex:original", RequireNativeSession: true, ExecutionGrant: &model.ExecutionGrant{ReviewID: "approved"}}, dir, nil, func(Event) {})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	raw, e := os.ReadFile(logPath)
+	if e != nil {
+		t.Fatal(e)
+	}
+	args := string(raw)
+	for _, s := range []string{"resume", "original", `sandbox_mode="workspace-write"`, "sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
+		if !strings.Contains(args, s) {
+			t.Fatal("missing sandbox boundary", s)
+		}
+	}
+	if strings.Contains(args, "danger-full-access") {
+		t.Fatal("inherited unsafe default")
+	}
+}

@@ -51,6 +51,8 @@ type Artifact struct {
 }
 
 type Review struct {
+	Kind              string   `json:"kind,omitempty"`
+	PlanHash          string   `json:"plan_hash,omitempty"`
 	DiscussionVersion int64    `json:"discussion_version"`
 	ID                string   `json:"review_id"`
 	TaskID            string   `json:"task_id"`
@@ -133,6 +135,7 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
+	Development   *Development    `json:"development,omitempty"`
 	Publications  []Publication   `json:"publications"`
 	References    []TaskReference `json:"references"`
 	ReviewBrief   *ReviewBrief    `json:"review_brief,omitempty"`

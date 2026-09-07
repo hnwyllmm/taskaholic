@@ -22,6 +22,8 @@ type CompletionSummary struct {
 	Improvements []string `json:"improvements"`
 }
 type Result struct {
+	PlanScope      *PlanScope         `json:"plan_scope,omitempty"`
+	PublishRequest *PublishRequest    `json:"publish_request,omitempty"`
 	ReviewDecision string             `json:"review_decision,omitempty"`
 	TaskUpdate     *TaskUpdate        `json:"task_update,omitempty"`
 	TestRequests   []TestRequest      `json:"test_requests,omitempty"`
@@ -30,6 +32,14 @@ type Result struct {
 	Message        string             `json:"message"`
 	Artifacts      []File             `json:"artifacts"`
 	Summary        *CompletionSummary `json:"summary,omitempty"`
+}
+type PlanScope struct {
+	Repository string `json:"repository"`
+	BaseBranch string `json:"base_branch"`
+}
+type PublishRequest struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
 }
 type TaskUpdate struct {
 	Kind          string `json:"kind"`
@@ -61,6 +71,7 @@ type JSONContract struct{}
 
 func (JSONContract) Instructions() string {
 	return `你正在个人工作助手中处理真实任务。请用用户的语言工作。
+plan_scope / publish_request 在非开发流程填 null。开发流程的方案阶段，plan_scope 填待审批的 GitHub owner/repository 与 base_branch；完整方案放 artifacts，不能只填路径。只有 Manager 明确给出已批准的隔离开发授权时才可修改代码。开发验证完成后 publish_request 填 title/body（实现说明、测试证据、风险），由 runtime 受控提交并创建 PR；你不要自行执行 git commit/push 或创建 PR。运行时没有授予发布权限时不可申请发布。需要重大调整已批准方案时 outcome=replan，重新进入方案评审，不能在普通聊天中自行推断批准。
 review_decision：仅内部 PR reviewer 填 passed / changes_requested / waiting_tests / blocked，其它任务填空字符串。reviewer 的正常工作无需人工逐条验收：Manager 在该 PR 上维护本角色唯一一条 code review 普通评论，持续更新 commit、结论、问题和测试链接；不是 GitHub Approve，不满足分支保护。passed 必须有真实检查证据且要求的测试通过；没有完成检查不能填 passed。发现问题在 message 中列出文件、行号、影响、证据和建议；申请测试时填 waiting_tests。不要自行发评论或操作凭据。
 task_update 给原工单回写必要信息，字段 kind=bug/feature/other，analysis=问题分析和已证实根因，approach=实现/修复方案，reason=为什么这样改，validation=实际验证结果，blocked_reason=不能继续或无法修复的原因及已尝试方法。无关字段填空字符串；BUG 提交 PR 时必须说明分析、方案和修复理由。没有证据的根因请明确写未确定。Manager 根据业务状态把这些信息和真实 PR/pipeline 链接回写已关联的原工单，无需逐条批准；不要包含凭据、私密路径、原始日志或无关资料，不要扩大回写目的地。
 返回符合指定 JSON Schema 的结果；角色的交付标准应体现在 message 和 artifacts 中。
@@ -88,6 +99,15 @@ func baseSchema() json.RawMessage {
 func (JSONContract) Schema() json.RawMessage {
 	var schema map[string]any
 	_ = json.Unmarshal(baseSchema(), &schema)
+	schema["properties"].(map[string]any)["outcome"] = map[string]any{"type": "string", "enum": []string{"review", "needs_input", "blocked", "replan"}}
+	schema["required"] = append(schema["required"].([]any), "plan_scope", "publish_request")
+	for name, fields := range map[string][]string{"plan_scope": {"repository", "base_branch"}, "publish_request": {"title", "body"}} {
+		props := map[string]any{}
+		for _, f := range fields {
+			props[f] = map[string]string{"type": "string"}
+		}
+		schema["properties"].(map[string]any)[name] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": fields, "properties": props}}}
+	}
 	schema["required"] = append(schema["required"].([]any), "pull_requests")
 	schema["properties"].(map[string]any)["pull_requests"] = map[string]any{
 		"type":  "array",
@@ -123,8 +143,18 @@ func Parse(raw string) (Result, error) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return result, fmt.Errorf("unexpected trailing business output")
 	}
-	if result.Outcome != "review" && result.Outcome != "needs_input" && result.Outcome != "blocked" {
+	if result.Outcome != "review" && result.Outcome != "needs_input" && result.Outcome != "blocked" && result.Outcome != "replan" {
 		return result, fmt.Errorf("unknown business outcome")
+	}
+	if result.PlanScope != nil {
+		if err := model.ValidateDevelopmentRepository(result.PlanScope.Repository, result.PlanScope.BaseBranch); err != nil {
+			return result, err
+		}
+	}
+	if p := result.PublishRequest; p != nil {
+		if result.Outcome != "review" || strings.TrimSpace(p.Title) == "" || len(p.Title) > 240 || strings.TrimSpace(p.Body) == "" || len(p.Body) > 24000 {
+			return result, fmt.Errorf("invalid publish_request")
+		}
 	}
 	if result.ReviewDecision != "" && result.ReviewDecision != "passed" && result.ReviewDecision != "changes_requested" && result.ReviewDecision != "waiting_tests" && result.ReviewDecision != "blocked" {
 		return result, fmt.Errorf("invalid review decision")

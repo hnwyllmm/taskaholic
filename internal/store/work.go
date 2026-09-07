@@ -245,6 +245,21 @@ func messageWorkFromTx(ctx context.Context, tx *sql.Tx, taskID, content, key str
 	if pendingBytes+len(content) > 96000 {
 		return model.TaskMessage{}, fmt.Errorf("%w: pending messages exceed 96 KB; wait for the agent", model.ErrConflict)
 	}
+	d, devErr := developmentTx(ctx, tx, taskID)
+	if devErr != nil && devErr != sql.ErrNoRows {
+		return model.TaskMessage{}, devErr
+	}
+	if devErr == nil && (d.Phase == "AGENT_REVIEW" || d.Phase == "HUMAN_REVIEW" || (d.Phase == "IMPLEMENTING" && speaker == "user")) {
+		// Explicit task guidance changes the plan; review-chat remains a separate,
+		// read-only conversation and never enters this path.
+		d.Phase = "PLANNING"
+		d.Version++
+		d.ApprovedReviewID = ""
+		if err = saveDevelopmentTx(ctx, tx, d, "PlanInvalidatedByMessage"); err != nil {
+			return model.TaskMessage{}, err
+		}
+		interrupt = true
+	}
 	m, err := insertMessageTx(ctx, tx, taskID, speaker, content, "", "PENDING")
 	if err != nil {
 		return m, err
@@ -415,6 +430,9 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if err = validateRoutingAssignmentTx(ctx, tx, req, task, w); err != nil {
 		return model.Run{}, err
 	}
+	if err = ensureDevelopmentTx(ctx, tx, req); err != nil {
+		return model.Run{}, err
+	}
 	refs, brief, err := taskReferences(ctx, tx, req.TaskID)
 	if err != nil {
 		return model.Run{}, err
@@ -480,9 +498,18 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if len(pipelines) > 0 {
 		req.Instructions += "\n\n原任务的回归测试记录（只作为事实材料；旧 SHA 不代表新版本已验证）：\n" + string(pipelines)
 	}
+	development, err := developmentInstructionsTx(ctx, tx, &req)
+	if err != nil {
+		return model.Run{}, err
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
+	}
+	if development != nil {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO development_run VALUES(?,?,?,?)`, run.ID, development.TaskID, development.Version, development.Phase); err != nil {
+			return run, err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE task_message SET delivery='SENT',run_id=? WHERE task_id=? AND delivery='PENDING' AND seq<=?`, run.ID, req.TaskID, last); err != nil {
 		return run, err
@@ -558,6 +585,25 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		artifactIDs = append(artifactIDs, a.ID)
 	}
 	registrationFailed := false
+	var planRun bool
+	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM development_run WHERE run_id=? AND phase!='IMPLEMENTING')`, e.RunID).Scan(&planRun); err != nil {
+		return err
+	}
+	if planRun && (w.Paused || pending > 0) {
+		state := model.TaskStateQueued
+		if w.Paused {
+			state = model.TaskStatePaused
+		}
+		return setWorkStateTx(ctx, tx, taskID, state)
+	}
+	if !w.Paused && pending == 0 {
+		if handled, err := applyDevelopmentResultTx(ctx, tx, taskID, e, result, artifactIDs, now); handled || err != nil {
+			return err
+		}
+	}
+	if result.PublishRequest != nil {
+		return blockDevelopmentTx(ctx, tx, taskID, "PR 发布申请未由受控开发执行器完成，不可作为已交付。")
+	}
 	// Persist actions before internally completing a QA child, so its test
 	// requirement cannot disappear through the automatic fan-in early return.
 	if !w.Paused && pending == 0 {
@@ -635,7 +681,7 @@ func supersedeReviewsTx(ctx context.Context, tx *sql.Tx, taskID string) error {
 }
 
 func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, comment string, discussionVersion ...int64) (model.Review, error) {
-	if (decision != "APPROVED" && decision != "CHANGES_REQUESTED") || len(comment) > 32000 || (decision == "CHANGES_REQUESTED" && strings.TrimSpace(comment) == "") {
+	if (decision != "APPROVED" && decision != "PLAN_APPROVED" && decision != "CHANGES_REQUESTED") || len(comment) > 32000 || (decision == "CHANGES_REQUESTED" && strings.TrimSpace(comment) == "") {
 		return model.Review{}, fmt.Errorf("%w: valid decision and change request comment required", model.ErrValidation)
 	}
 	s.writeMu.Lock()
@@ -673,7 +719,34 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 	if task.State != model.TaskStateReview || active > 0 {
 		return r, fmt.Errorf("%w: task has changed since this submission", model.ErrConflict)
 	}
+	if r.Kind == "plan" {
+		d, err := developmentTx(ctx, tx, taskID)
+		if err != nil {
+			return r, err
+		}
+		if err = decidePlanTx(ctx, tx, d, &r, decision, comment); err != nil {
+			return r, err
+		}
+		return r, tx.Commit()
+	}
+	if decision == "PLAN_APPROVED" {
+		return r, fmt.Errorf("%w: not a plan review", model.ErrValidation)
+	}
 	if decision == "APPROVED" {
+		if d, e := developmentTx(ctx, tx, taskID); e == nil {
+			if d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "" {
+				return r, fmt.Errorf("%w: development has not been approved", model.ErrConflict)
+			}
+			var total, unmerged int
+			if e = tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(NOT EXISTS(SELECT 1 FROM source_event e WHERE e.target_id=t.target_id AND e.state='RECORDED' AND json_extract(e.data_json,'$.kind')='github.merged' AND json_extract(e.data_json,'$.head_sha')=json_extract(t.data_json,'$.head_sha'))),0) FROM source_target t WHERE t.task_id=? AND json_extract(t.data_json,'$.test_request_id') IS NULL`, taskID).Scan(&total, &unmerged); e != nil {
+				return r, e
+			}
+			if total == 0 || unmerged != 0 {
+				return r, fmt.Errorf("%w: 开发任务须等已登记 PR 合并并被轮询确认后才能完成；系统不会替你自动合并", model.ErrConflict)
+			}
+		} else if e != sql.ErrNoRows {
+			return r, e
+		}
 		if err = guardTestPipelinesTx(ctx, tx, taskID); err != nil {
 			return r, err
 		}
@@ -730,6 +803,12 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDetail, error) {
 	w := model.WorkDetail{Messages: []model.TaskMessage{}, Artifacts: []model.Artifact{}, Reviews: []model.Review{}}
 	var err error
+	d, devErr := readJSONRow[model.Development](s.db.QueryRowContext(ctx, `SELECT data_json FROM development WHERE task_id=?`, taskID))
+	if devErr == nil {
+		w.Development = &d
+	} else if devErr != sql.ErrNoRows {
+		return w, devErr
+	}
 	w.Config, err = s.GetWorkConfig(ctx, taskID)
 	if err != nil {
 		return w, err

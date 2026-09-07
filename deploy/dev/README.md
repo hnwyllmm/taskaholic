@@ -52,7 +52,7 @@ node deploy/dev/seed-seekdb-roles.mjs --members --model gpt-5.6-sol
 node deploy/dev/seed-seekdb-roles.mjs --apply --members --model gpt-5.6-sol
 ```
 
-这些仍是只读工作成员，可以分析代码、交付文档/评审报告和文本补丁；角色或团队资料中的路径不是仓库写权限。Git worktree 写入、PR 创建和合并尚未接入，不能把开发角色上线等同于已实现自动代码交付闭环。
+新建且分派给 code.implement 成员的根任务进入方案流程：方案 → 独立 Agent 互审 → 人工批准 → 隔离开发 → PR。历史任务不自动转换，可通过 development/restart 显式重新走流程。开发目前要求 Codex；Cursor 仍只读，不会自动更换已有 Session。源码使用 Session 下的独立 checkout，Git 元数据与 PR 发布回执由 runtime 保存在可写 Session 之外。发布需要当前 gh 账号已有的 fork，不自动建 fork、强推或合并。详情见 docs/development-workflow.md。
 
 ## 通过聊天升级
 

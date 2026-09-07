@@ -272,9 +272,19 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		for _, pipeline := range pipelines {
 			fmt.Fprintf(&links, "\n- Pipeline #%d：%s · %s · 被测 commit %s", pipeline.PipelineID, pipeline.State, pipeline.URL, pipeline.HeadSHA)
 		}
+		lifecycle := ""
+		if d, e := developmentTx(ctx, tx, b.task); e == nil {
+			lifecycle = "\n开发阶段：" + d.Phase + "（方案批准前不开发；方案通过不代表工单完成）"
+		} else if e != sql.ErrNoRows {
+			return e
+		}
 		key := publicationKey("issue-progress", b.entity, b.task, runID, task.State, links.String())
+		if lifecycle != "" {
+			key = publicationKey(key, lifecycle)
+		}
 		body := fmt.Sprintf("<!-- work-assistant:progress:%s -->\n工作助手处理进展\n\n状态：%s\n任务类型：%s\n\n以下是最近一轮已提交的分析，正在进行的后续修改尚不包含在此报告内。\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n验证结果：%s\n\n阻塞/无法修复说明：%s\n\n关联交付：%s\n\n状态为工作助手记录；提交 PR 不代表已合并或工单已解决。", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
 		p.Key = key
+		body += lifecycle
 		p.Body = body
 		if err = queuePublicationTx(ctx, tx, p); err != nil {
 			return err

@@ -23,8 +23,9 @@ const codexSessionPrefix = "codex:"
 // Session to a persisted Codex thread. A message Directive received while a
 // turn is running is applied as a follow-up turn after that turn finishes.
 type CodexAdapter struct {
-	binary  string
-	sandbox string
+	binary              string
+	sandbox             string
+	approvedDevelopment bool
 }
 
 func NewCodexAdapter(binary, sandbox string) (*CodexAdapter, error) {
@@ -72,6 +73,15 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 		readOnly := *a
 		readOnly.sandbox = "read-only"
 		a = &readOnly
+	}
+	if spec.ExecutionGrant != nil {
+		if spec.ReadOnly {
+			return Result{ExitCode: -1, Err: errors.New("execution grant cannot be combined with read-only")}
+		}
+		writable := *a
+		writable.sandbox = "workspace-write"
+		writable.approvedDevelopment = true
+		a = &writable
 	}
 	prompt := codexPrompt(spec)
 	if prompt == "" {
@@ -151,6 +161,11 @@ type codexTurnResult struct {
 
 func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
 	args := []string{"exec", "-c", "approval_policy=\"never\""}
+	if a.approvedDevelopment {
+		for _, setting := range []string{"sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
+			args = append(args, "-c", setting)
+		}
+	}
 	if effort != "" {
 		args = append(args, "-c", "model_reasoning_effort=\""+effort+"\"")
 	}
