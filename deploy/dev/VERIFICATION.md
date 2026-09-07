@@ -184,3 +184,27 @@ Codex 连接修复：
 - 最终真实 HTTP/Runtime 模型查询：Cursor 24 个、Codex 7 个选项，均 ready。Mac 直连成员页返回新的两个 select 控件。Browser 自动连接超时，未声称完成真实浏览器视觉验收。
 - 修复阶段逐表检查改名前所有原有业务记录；最终 UI 发布再次对最新业务基线逐表检查，除正常 Runtime 心跳外无变化。最终 task=12、run=12、session=4、task_session=4、agent_profile=8、home_chat=1；两库完整性和外键检查正常。运行服务仍由后台 supervisor 维护，不依赖 SSH 会话。
 - 同一备份根目录中，更名前恢复点 `snapshot-20260907T034508.709759416Z-4122543421`、最终页面发布前 `snapshot-20260907T035501.175961887Z-2232169319`、发布后 `snapshot-20260907T035507.046740320Z-1445967243` 均通过 `assistantctl backup-verify`。演练、失败尝试、源码/程序备份和逐表快照留在 `.deploy/runtime-dev-20260907/`，不进入 Git；没有向 GitHub 推送。
+
+## 补充：成员推理强度
+
+2026-09-07 12:43（Asia/Shanghai），源码 `b4c3135` 已部署到 dev。用户级 supervisor active/running，MainPID=150411，NRestarts=0；Mac 直连 `/health/ready` 返回 ready。原服务单元、认证策略和 Cursor/Codex 权限不变。
+
+- 创建与修改成员支持“推理强度”；选项按 Adapter/模型能力显示。Codex 使用 `supportedReasoningEfforts`；Cursor 只映射实际目录里的同系列模型变体，Fast 与普通变体分开。未提供档位的 auto、自定义模型或旧插件保留原默认，不虚构支持。
+- 成员配置传递到工作、系统岗位、验收聊天和升级构建器。每个 Run 单独持久化请求配置、来源及 CLI 启动后的执行模型，已排队/运行快照不受成员编辑影响。任务总结记录交付 Run 的配置，不被后来聊天覆盖。产品说明见 [REASONING.md](REASONING.md)。
+- 原有成员不补填强度，也不改变姓名、模型、并发、角色或岗位。后续同模型执行可使用更新的强度并继续原 Session；成员换模型时，旧 Session 保留初始模型/强度组合。
+- 控制库 schema 11 → 12，事务化新增 `run.execution_json`，历史值为 `{}`。实际备份副本经本版 `Store.Open` 迁移，逐表验证除新增字段和 schema 版本之外没有变化；正式切换后再次逐条核对全部原有记录，原 Runtime spool 完全一致。
+
+验证：
+
+- Mac / dev 最终全量 Go race、Go vet 通过，43 项 Node 检查通过，dev 五个程序构建完成。Mac 第一次全量并行检查遇到原 supervisor 夹具的健康启动超时；该测试单独重跑及之后全量 race 均通过，没有为此放宽生产健康检查。
+- 新回归覆盖能力元数据、未知档位拒绝、Codex 新建/resume/Directive 参数、Cursor 变体与原生会话、配置优先级、成员更新不改旧 Run、验收结果不变、交付总结快照和备份重开。
+- `node deploy/dev/reasoning-smoke.mjs` 实际通过：隔离实例创建/更新成员、拒绝无效值；真实 Codex `gpt-5.6-sol` 用 low 完成文档交付，改为 high 后验收聊天找回前轮随机标记，原生 Session 相同、交付文件不变、总结仍记录 low。隔离数据位于 `/data/wangyunlai.wyl/tmp/wa-reasoning-smoke-ImTiia`，测试服务已停止，正式库没有测试任务。
+- 正式 HTTP/Runtime 查询 ready：本次 Codex 返回 6 个模型且均带档位，Cursor 返回 24 个模型，其中 19 个可映射档位。数量是当时 CLI 目录快照，不是硬编码清单。
+- Browser 页面连接超时，未完成真实浏览器视觉验收。正式成员脚本 HTTP 返回新控件逻辑，交互行为通过 DOM 自动测试；不把这些当作截图验收。
+
+正式切换前后 task=12、run=12、session=4、task_session=4、agent_profile=8、home_chat=1；原始业务数据及最新用户配置保留。备份根目录 `/data/wangyunlai.wyl/work-assistant-backups/dev/e688631bf5cc20df2aa521fd/` 下的两个完整恢复点均验证通过：
+
+- 发布前：`snapshot-20260907T044332.240991705Z-2983994710`
+- 发布后：`snapshot-20260907T044344.347696939Z-2649053410`
+
+旧源码、五个旧程序、迁移演练和完整前后审计保存在 `.deploy/reasoning-20260907-JXZhif/`。部署前置检查曾因演练工具尚未复制到位、以及把 maintenance 常驻空行误判为活动锁而退出，均发生在停服/迁移之前，修正后才正式安装。没有恢复、清空或覆盖业务数据库，未向 GitHub 推送，也未改 Mac 正式实例。schema 12 会被旧程序的降级保护拒绝；回退必须保持数据兼容，不能直接恢复旧库丢弃新记录。
