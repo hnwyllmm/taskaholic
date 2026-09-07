@@ -60,7 +60,7 @@ func (c *Client) GetRole(ctx context.Context, id string) (model.Role, error) {
 }
 func (c *Client) CreateAgent(ctx context.Context, agent model.AgentProfile) (model.AgentProfile, error) {
 	var result model.AgentProfile
-	err := c.json(ctx, http.MethodPost, "/api/v1/agents", map[string]any{"name": agent.Name, "role_id": agent.RoleID, "runtime_id": agent.RuntimeID, "adapter_id": agent.AdapterID, "model_id": agent.ModelID, "max_concurrent": agent.MaxConcurrent}, &result)
+	err := c.json(ctx, http.MethodPost, "/api/v1/agents", map[string]any{"name": agent.Name, "role_id": agent.RoleID, "runtime_id": agent.RuntimeID, "adapter_id": agent.AdapterID, "model_id": agent.ModelID, "reasoning_effort": agent.ReasoningEffort, "max_concurrent": agent.MaxConcurrent}, &result)
 	return result, err
 }
 func (c *Client) ListAgents(ctx context.Context) ([]model.AgentProfile, error) {

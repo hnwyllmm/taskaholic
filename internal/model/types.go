@@ -40,6 +40,7 @@ type TaskRevision struct {
 }
 
 type Run struct {
+	ExecutionSettings
 	Role         *Role    `json:"role_snapshot,omitempty"`
 	Output       string   `json:"output,omitempty"`
 	ID           string   `json:"run_id"`
@@ -142,6 +143,7 @@ type Runtime struct {
 }
 
 type RunSpec struct {
+	ExecutionSettings
 	RequireNativeSession bool            `json:"require_native_session,omitempty"`
 	ReadOnly             bool            `json:"read_only,omitempty"`
 	Instructions         string          `json:"instructions,omitempty"`
@@ -173,24 +175,25 @@ type RuntimeHello struct {
 }
 
 type RuntimeEvent struct {
-	Activity        *Action        `json:"activity,omitempty"`
-	Output          string         `json:"output,omitempty"`
-	RuntimeID       string         `json:"runtime_id"`
-	Epoch           string         `json:"epoch"`
-	RuntimeSeq      int64          `json:"runtime_seq"`
-	RunID           string         `json:"run_id"`
-	TaskID          string         `json:"task_id"`
-	SessionID       string         `json:"session_id,omitempty"`
-	DirectiveID     string         `json:"directive_id,omitempty"`
-	AgentSessionRef string         `json:"agent_session_ref,omitempty"`
-	Type            string         `json:"type"`
-	OccurredAt      int64          `json:"occurred_at_ms"`
-	Message         string         `json:"message,omitempty"`
-	Stream          string         `json:"stream,omitempty"`
-	ExitCode        *int           `json:"exit_code,omitempty"`
-	Error           string         `json:"error,omitempty"`
-	Attributes      map[string]any `json:"attributes,omitempty"`
-	CausationID     string         `json:"causation_id,omitempty"`
+	Execution       *ExecutionSettings `json:"execution,omitempty"`
+	Activity        *Action            `json:"activity,omitempty"`
+	Output          string             `json:"output,omitempty"`
+	RuntimeID       string             `json:"runtime_id"`
+	Epoch           string             `json:"epoch"`
+	RuntimeSeq      int64              `json:"runtime_seq"`
+	RunID           string             `json:"run_id"`
+	TaskID          string             `json:"task_id"`
+	SessionID       string             `json:"session_id,omitempty"`
+	DirectiveID     string             `json:"directive_id,omitempty"`
+	AgentSessionRef string             `json:"agent_session_ref,omitempty"`
+	Type            string             `json:"type"`
+	OccurredAt      int64              `json:"occurred_at_ms"`
+	Message         string             `json:"message,omitempty"`
+	Stream          string             `json:"stream,omitempty"`
+	ExitCode        *int               `json:"exit_code,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Attributes      map[string]any     `json:"attributes,omitempty"`
+	CausationID     string             `json:"causation_id,omitempty"`
 }
 
 type OutboxMessage struct {

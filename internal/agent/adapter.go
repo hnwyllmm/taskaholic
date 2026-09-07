@@ -9,6 +9,7 @@ import (
 // Event is an adapter-local observation. The runtime wraps it in its own
 // durable, monotonically sequenced event envelope before sending it upstream.
 type Event struct {
+	Execution       *model.ExecutionSettings
 	Activity        *model.Action
 	Type            string
 	Message         string

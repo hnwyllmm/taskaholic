@@ -24,7 +24,7 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // OpenProtected is the production entrypoint. Open remains available for
 // explicit first-time test fixtures and offline tools.
@@ -334,6 +334,7 @@ type CreateRunRequest struct {
 	AgentID              string
 	AdapterID            string
 	ModelID              string
+	ReasoningEffort      *string // nil inherits; an explicit empty value uses the native default.
 	Command              []string
 	WorkingDir           string
 	IdempotencyKey       string
@@ -433,8 +434,12 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	if err != nil {
 		return model.Run{}, err
 	}
-	if role != nil && created {
-		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding})
+	execution, err := resolveExecutionTx(ctx, tx, session, request.ReasoningEffort)
+	if err != nil {
+		return model.Run{}, err
+	}
+	if created {
+		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding, "execution_defaults": execution})
 		if _, err := tx.ExecContext(ctx, `UPDATE session SET metadata_json = ? WHERE session_id = ?`, session.Metadata, session.ID); err != nil {
 			return model.Run{}, err
 		}
@@ -467,17 +472,19 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	}
 	runID := id.New("run")
 	run := model.Run{
-		Role: role,
-		ID:   runID, TaskID: request.TaskID, SessionID: session.ID, RuntimeID: session.RuntimeID,
+		ExecutionSettings: execution,
+		Role:              role,
+		ID:                runID, TaskID: request.TaskID, SessionID: session.ID, RuntimeID: session.RuntimeID,
 		AgentID: session.AgentID, AdapterID: session.AdapterID, ModelID: session.ModelID, State: model.RunStateQueued,
 		Command: request.Command, WorkingDir: request.WorkingDir, CreatedAtMS: now,
 	}
+	executionJSON, _ := json.Marshal(execution)
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO run(run_id, task_id, task_revision_id, runtime_id, agent_id, state,
-		                command_json, working_dir, lease_epoch, created_at_ms, session_id, adapter_id, model_id, role_snapshot_json)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`,
+		                command_json, working_dir, lease_epoch, created_at_ms, session_id, adapter_id, model_id, role_snapshot_json, execution_json)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
 		runID, request.TaskID, currentRevision, session.RuntimeID, session.AgentID, run.State,
-		commandJSON, request.WorkingDir, now, session.ID, session.AdapterID, session.ModelID, roleJSON,
+		commandJSON, request.WorkingDir, now, session.ID, session.AdapterID, session.ModelID, roleJSON, executionJSON,
 	); err != nil {
 		return model.Run{}, fmt.Errorf("insert run: %w", err)
 	}
@@ -492,6 +499,7 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	}
 	messageID := id.New("msg")
 	spec := model.RunSpec{
+		ExecutionSettings:    execution,
 		RequireNativeSession: request.RequireNativeSession,
 		ReadOnly:             request.ReadOnly,
 		Instructions:         request.Instructions, OutputSchema: request.OutputSchema,
@@ -515,7 +523,7 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	if _, err := appendEventTx(ctx, tx, "run", runID, "RunQueued", messageID, request.TaskID, map[string]any{
 		"task_id": request.TaskID, "session_id": session.ID, "runtime_id": session.RuntimeID,
 		"agent_id": session.AgentID, "adapter_id": session.AdapterID, "model_id": session.ModelID,
-		"command": request.Command, "role_snapshot": role,
+		"command": request.Command, "role_snapshot": role, "execution": execution,
 	}); err != nil {
 		return model.Run{}, err
 	}
@@ -892,6 +900,8 @@ func (s *Store) ApplyRuntimeEventFrom(ctx context.Context, connectionEpoch strin
 		}
 	case "run.progress":
 		// Progress is event-only; it does not change the Run state.
+	case "run.configured":
+		err = applyExecutionTx(ctx, tx, event)
 	case "run.completed":
 		_, err = tx.ExecContext(ctx, `UPDATE run SET state = ?, finished_at_ms = ?, exit_code = COALESCE(?, 0), error = NULL WHERE run_id = ?`,
 			model.RunStateCompleted, now, event.ExitCode, event.RunID)
@@ -1120,7 +1130,7 @@ const runSelect = `
 	SELECT run_id, task_id, COALESCE(session_id, ''), runtime_id, agent_id, adapter_id,
 	       COALESCE(model_id, ''), state, command_json,
 	       COALESCE(working_dir, ''), created_at_ms, started_at_ms, finished_at_ms,
-	       exit_code, COALESCE(error, ''), output, role_snapshot_json FROM run`
+	       exit_code, COALESCE(error, ''), output, role_snapshot_json, execution_json FROM run`
 
 const sessionSelect = `
 	SELECT s.session_id, s.agent_id, s.adapter_id, COALESCE(s.model_id, ''), s.runtime_id, s.state,
@@ -1144,12 +1154,12 @@ func scanTask(row rowScanner, task *model.Task, extra ...any) error {
 
 func scanRun(row rowScanner) (model.Run, error) {
 	var run model.Run
-	var commandJSON, roleJSON []byte
+	var commandJSON, roleJSON, executionJSON []byte
 	var started, finished sql.NullInt64
 	var exitCode sql.NullInt64
 	err := row.Scan(&run.ID, &run.TaskID, &run.SessionID, &run.RuntimeID, &run.AgentID, &run.AdapterID,
 		&run.ModelID, &run.State,
-		&commandJSON, &run.WorkingDir, &run.CreatedAtMS, &started, &finished, &exitCode, &run.Error, &run.Output, &roleJSON)
+		&commandJSON, &run.WorkingDir, &run.CreatedAtMS, &started, &finished, &exitCode, &run.Error, &run.Output, &roleJSON, &executionJSON)
 	if err != nil {
 		return model.Run{}, err
 	}
@@ -1157,6 +1167,9 @@ func scanRun(row rowScanner) (model.Run, error) {
 		return model.Run{}, err
 	}
 	if err := json.Unmarshal(roleJSON, &run.Role); err != nil {
+		return model.Run{}, err
+	}
+	if err := json.Unmarshal(executionJSON, &run.ExecutionSettings); err != nil {
 		return model.Run{}, err
 	}
 	if started.Valid {
@@ -1385,7 +1398,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateV10(db); err != nil {
 		return err
 	}
-	return migrateV11(db)
+	if err := migrateV11(db); err != nil {
+		return err
+	}
+	return migrateV12(db)
 }
 
 func migrateV2(db *sql.DB) error {

@@ -3,6 +3,7 @@ package model
 // Upgrade is an explicitly authorized change to this application, not a normal
 // business task. The installation approval is bound to an immutable candidate.
 type Upgrade struct {
+	ExecutionSettings
 	Builder          *AgentProfile     `json:"builder,omitempty"`
 	BuilderBinding   *SystemBinding    `json:"builder_binding,omitempty"`
 	ID               string            `json:"upgrade_id"`

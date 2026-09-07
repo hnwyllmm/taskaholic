@@ -64,7 +64,11 @@ func (s *Store) SwitchHomeExecutor(ctx context.Context, chatID string, expected 
 	if err != nil {
 		return c, err
 	}
-	session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": req.SystemBinding, "handoff_from": old.ID})
+	execution, err := resolveExecutionTx(ctx, tx, session, req.ReasoningEffort)
+	if err != nil {
+		return c, err
+	}
+	session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": req.SystemBinding, "handoff_from": old.ID, "execution_defaults": execution})
 	if _, err = tx.ExecContext(ctx, `UPDATE session SET metadata_json=? WHERE session_id=?`, session.Metadata, session.ID); err != nil {
 		return c, err
 	}

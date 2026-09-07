@@ -388,7 +388,8 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 			SessionID: spec.SessionID, DirectiveID: event.DirectiveID, Type: eventType,
 			AgentSessionRef: event.AgentSessionRef, Message: event.Message,
 			Stream: event.Stream, Error: event.Error, CausationID: causationID,
-			Activity: event.Activity,
+			Activity:  event.Activity,
+			Execution: event.Execution,
 		})
 	})
 	exitCode := result.ExitCode

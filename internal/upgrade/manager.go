@@ -477,6 +477,7 @@ func (m *Manager) Prepare(ctx context.Context, upgrade model.Upgrade) model.Upgr
 	var eventLog strings.Builder
 	var eventMu sync.Mutex
 	modelID, agentID := m.config.ModelID, ""
+	execution := model.ExecutionSettings{ReasoningEffortSource: "runtime_default"}
 	builder := m.adapter
 	if upgrade.Builder != nil {
 		if m.config.RuntimeID == "" || upgrade.Builder.RuntimeID != m.config.RuntimeID {
@@ -489,11 +490,18 @@ func (m *Manager) Prepare(ctx context.Context, upgrade model.Upgrade) model.Upgr
 			}
 		}
 		modelID, agentID = upgrade.Builder.ModelID, upgrade.Builder.ID
+		execution.ReasoningEffort = upgrade.Builder.ReasoningEffort
+		if execution.ReasoningEffort != "" {
+			execution.ReasoningEffortSource = "member_default"
+		}
 		prompt = upgrade.Builder.Role.ExecutionInstructions() + "\n\n" + prompt
 	}
-	result := builder.Run(ctx, model.RunSpec{AgentID: agentID, TaskTitle: upgrade.Title, TaskGoal: upgrade.Instructions, Instructions: prompt, ModelID: modelID, OutputSchema: preparationSchema}, candidate, nil, func(event agent.Event) {
+	result := builder.Run(ctx, model.RunSpec{ExecutionSettings: execution, AgentID: agentID, TaskTitle: upgrade.Title, TaskGoal: upgrade.Instructions, Instructions: prompt, ModelID: modelID, OutputSchema: preparationSchema}, candidate, nil, func(event agent.Event) {
 		eventMu.Lock()
 		defer eventMu.Unlock()
+		if event.Execution != nil {
+			upgrade.ExecutionSettings = *event.Execution
+		}
 		if event.AgentSessionRef != "" {
 			upgrade.SessionRef = event.AgentSessionRef
 		}

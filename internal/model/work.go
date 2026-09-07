@@ -86,6 +86,7 @@ type TaskSummary struct {
 }
 
 type TaskSummaryExecutor struct {
+	ExecutionSettings
 	AgentID     string `json:"agent_id,omitempty"`
 	RuntimeID   string `json:"runtime_id,omitempty"`
 	AdapterID   string `json:"adapter_id,omitempty"`

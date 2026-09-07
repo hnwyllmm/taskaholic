@@ -381,6 +381,9 @@ func (s *Store) CreateAgent(ctx context.Context, agent model.AgentProfile) (mode
 	if err != nil {
 		return agent, err
 	}
+	if err := validateRuntimeEffortTx(ctx, tx, agent.RuntimeID, agent.AdapterID, agent.ReasoningEffort); err != nil {
+		return agent, err
+	}
 	var capabilityJSON []byte
 	if err := tx.QueryRowContext(ctx, `SELECT capabilities_json FROM runtime WHERE runtime_id = ?`, agent.RuntimeID).Scan(&capabilityJSON); err != nil {
 		return agent, err

@@ -13,12 +13,12 @@ class Element {
   set value(value){this._value=value;}
   find(id){return this.id===id?this:this.children.map(n=>n.find(id)).find(Boolean);}
 }
-function setup(t,load,value=''){
+function setup(t,load,value='',settings={}){
   const old=global.document;global.document={createElement:tag=>new Element(tag)};
   t.after(()=>{global.document=old;});
   const root=new Element('form'),label=new Element('label'),input=new Element('input');
   label.textContent='模型';input.id='agent-model';input.value=value;root.append(label);label.append(input);
-  const control=mount(input,load);
+  const control=mount(input,load,settings);
   return{root,input,control,mode:root.find('agent-model-mode'),select:root.find('agent-model-select'),hint:root.find('agent-model-hint')};
 }
 const context=(id='dev',adapter='cursor-agent',state='ONLINE',supported=true)=>({runtimeID:id,adapterID:adapter,runtimes:[{runtime_id:id,state,capabilities:{adapters:{[adapter]:{model_catalog:supported}}}}],agents:[]});
@@ -72,4 +72,28 @@ test('Unavailable catalogs retain configured models and keep manual entry availa
   await control.update(config);assert.match(hint.textContent,/暂不可用/);
   assert.ok(select.children.some(o=>o.value==='configured'));assert.ok(!select.children.some(o=>o.value==='wrong-machine'));
   mode.value='manual';mode.onchange();input.value='new-model';assert.equal(input.disabled,false);
+});
+
+test('Reasoning picker follows exact model capabilities and resets only on model/provider edits',async t=>{
+  const {control,input,root,select}=setup(t,async()=>({status:'ready',models:[{id:'smart',reasoning_efforts:[{id:'low'},{id:'ultra'}],default_reasoning_effort:'low'},{id:'plain'}]}),'smart',{reasoning:true,reasoningEffort:'ultra'});
+  const config=context();config.runtimes[0].capabilities.adapters['cursor-agent'].reasoning_effort=true;
+  await control.update(config);
+  const effort=root.find('agent-model-effort');
+  assert.deepEqual(effort.children.map(o=>o.value),['','low','ultra']);assert.equal(effort.value,'ultra');
+  effort.value='low';effort.onchange();assert.equal(control.getReasoningEffort(),'low');
+  await control.update(config);assert.equal(control.getReasoningEffort(),'low');
+  control.setDisabled(true);assert.equal(effort.disabled,true);control.setDisabled(false);assert.equal(effort.disabled,false);
+  select.value='plain';select.onchange();assert.equal(effort.value,'');assert.equal(effort.disabled,true);
+  input.value='custom[effort=high]';input.oninput();assert.equal(control.getReasoningEffort(),'');assert.equal(effort.children.length,1);
+});
+
+test('Offline or stale catalogs never erase a saved reasoning configuration',async t=>{
+  let finish;
+  const {control,root}=setup(t,()=>new Promise(resolve=>finish=resolve),'smart',{reasoning:true,reasoningEffort:'high'});
+  const config=context();config.runtimes[0].capabilities.adapters['cursor-agent'].reasoning_effort=true;
+  const pending=control.update(config);
+  const effort=root.find('agent-model-effort');assert.equal(effort.value,'high');
+  finish({status:'unavailable',models:[]});await pending;
+  assert.equal(control.getReasoningEffort(),'high');assert.equal(effort.disabled,false);
+  effort.value='';effort.onchange();assert.equal(control.getReasoningEffort(),'');
 });

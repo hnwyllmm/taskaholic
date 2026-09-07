@@ -32,7 +32,7 @@ async function page({pinned=false}={}){
     const response={'/roles':{roles:[role]},'/role-drafts':{drafts:[]},'/agents':{agents:[]},'/runtimes':{runtimes:[runtime]},'/roles/role-docs':role,'/role-drafts/draft_test':draft,'/tasks/task-test':{session}}[route];
     if(!response)throw Error('unexpected API '+route);return{ok:true,json:async()=>structuredClone(response)};
   };
-  const noop=()=>{},context=vm.createContext({console,document:{getElementById:$,createElement:tag=>new Element(tag),querySelectorAll:()=>[]},fetch,history:{replaceState:noop},location:{hash:pinned?'#draft_test':'#role-docs'},setTimeout:()=>1,clearTimeout:noop,Uint8Array,crypto:{getRandomValues:a=>a.fill(1)},WA:{token:()=>''},WAModels:{catalogLoader:()=>noop,mount:input=>({update:config=>{modelUpdates.push({id:input.id,...config});return Promise.resolve();},setDisabled:noop,setValue:value=>{input.value=value;}})},addEventListener:noop});
+  const noop=()=>{},context=vm.createContext({console,document:{getElementById:$,createElement:tag=>new Element(tag),querySelectorAll:()=>[]},fetch,history:{replaceState:noop},location:{hash:pinned?'#draft_test':'#role-docs'},setTimeout:()=>1,clearTimeout:noop,Uint8Array,crypto:{getRandomValues:a=>a.fill(1)},WA:{token:()=>''},WAModels:{catalogLoader:()=>noop,mount:input=>({update:config=>{modelUpdates.push({id:input.id,...config});return Promise.resolve();},setDisabled:noop,setValue:value=>{input.value=value;},getReasoningEffort:()=>''})},addEventListener:noop});
   context.window=context;
   for(const file of ['adapters.js','app.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),context,{filename:file});
   const settle=async()=>{for(let i=0;i<4;i++)await new Promise(setImmediate);};await settle();
@@ -49,6 +49,7 @@ test('Member page uses a real dropdown and submits both Cursor and Codex, with p
     $('agent-name').value=adapter;$('agent-form').onsubmit({preventDefault(){}});await settle();
     const request=requests.filter(r=>r.method==='POST').at(-1);
     assert.equal(request.body.adapter_id,adapter);assert.equal(request.body.runtime_id,'dev');assert.equal(request.body.model_id,'');
+    assert.equal(request.body.reasoning_effort,'');
     assert.equal(selector.value,adapter);
   }
 });

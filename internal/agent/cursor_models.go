@@ -76,5 +76,30 @@ func parseCursorModels(output string) ([]model.ModelOption, error) {
 	if len(models) == 0 {
 		return nil, errors.New("Cursor returned no recognizable models")
 	}
-	return models, nil
+	return cursorReasoningVariants(models), nil
+}
+
+// Cursor's current catalog exposes effort as concrete model IDs. Preserve the
+// existing picker IDs, and only offer sibling variants actually in this list.
+// Fast/non-fast variants remain separate; never synthesize a bracket override
+// for a model whose allowed parameter values are not advertised by the CLI.
+var cursorEffortVariant = regexp.MustCompile(`^(.+)-(none|minimal|low|medium|high|xhigh|max|ultra)(-fast)?$`)
+
+func cursorReasoningVariants(models []model.ModelOption) []model.ModelOption {
+	groups := map[string][]model.ReasoningEffortOption{}
+	for _, m := range models {
+		parts := cursorEffortVariant.FindStringSubmatch(m.ID)
+		if parts != nil {
+			key := parts[1] + parts[3]
+			groups[key] = append(groups[key], model.ReasoningEffortOption{ID: parts[2], ModelID: m.ID})
+		}
+	}
+	for i, m := range models {
+		parts := cursorEffortVariant.FindStringSubmatch(m.ID)
+		if parts != nil && len(groups[parts[1]+parts[3]]) > 1 {
+			models[i].ReasoningEfforts = groups[parts[1]+parts[3]]
+			models[i].DefaultReasoningEffort = parts[2]
+		}
+	}
+	return models
 }

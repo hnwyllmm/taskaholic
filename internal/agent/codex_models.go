@@ -96,10 +96,15 @@ func readCodexModels(input io.Writer, output io.Reader) ([]model.ModelOption, er
 		}
 		var page struct {
 			Data []struct {
-				ID          string `json:"id"`
-				Model       string `json:"model"`
-				DisplayName string `json:"displayName"`
-				Hidden      bool   `json:"hidden"`
+				ID                        string `json:"id"`
+				Model                     string `json:"model"`
+				DisplayName               string `json:"displayName"`
+				Hidden                    bool   `json:"hidden"`
+				DefaultReasoningEffort    string `json:"defaultReasoningEffort"`
+				SupportedReasoningEfforts []struct {
+					ReasoningEffort string `json:"reasoningEffort"`
+					Description     string `json:"description"`
+				} `json:"supportedReasoningEfforts"`
 			} `json:"data"`
 			NextCursor string `json:"nextCursor"`
 		}
@@ -122,7 +127,23 @@ func readCodexModels(input io.Writer, output io.Reader) ([]model.ModelOption, er
 				continue
 			}
 			seen[id] = true
-			models = append(models, model.ModelOption{ID: id, Name: name})
+			option := model.ModelOption{ID: id, Name: name}
+			efforts := map[string]bool{}
+			for _, effort := range entry.SupportedReasoningEfforts {
+				if effort.ReasoningEffort == "" || model.ValidateReasoningEffort(effort.ReasoningEffort) != nil || efforts[effort.ReasoningEffort] {
+					continue
+				}
+				description, _, _ := model.ObservationText(effort.Description, 500)
+				option.ReasoningEfforts = append(option.ReasoningEfforts, model.ReasoningEffortOption{ID: effort.ReasoningEffort, Description: description})
+				efforts[effort.ReasoningEffort] = true
+				if len(option.ReasoningEfforts) >= 16 {
+					break
+				}
+			}
+			if efforts[entry.DefaultReasoningEffort] {
+				option.DefaultReasoningEffort = entry.DefaultReasoningEffort
+			}
+			models = append(models, option)
 			if len(models) > 256 {
 				return nil, failure
 			}

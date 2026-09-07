@@ -40,6 +40,7 @@ func (a *CursorAdapter) Capabilities() map[string]any {
 		"live_directives": true, "directive_mode": "next-turn", "native_session": true, "per_session_model": true,
 		"task_goal_as_prompt": true, "role_instructions": true, "structured_output": true, "structured_output_mode": "prompt-and-validated-json",
 		"read_only_runs": true, "execution_mode": "ask", "sandbox": "enabled",
+		"reasoning_effort": true,
 	}
 }
 
@@ -69,7 +70,14 @@ func (a *CursorAdapter) Run(ctx context.Context, spec model.RunSpec, directory s
 		}
 		native = ""
 	}
-	result := a.runTurn(ctx, spec, directory, native, emit, nil)
+	var err error
+	spec, err = prepareReasoning(ctx, a, spec)
+	if err != nil {
+		return Result{ExitCode: -1, Err: err}
+	}
+	result := a.runTurn(ctx, spec, directory, native, emit, func() {
+		emit(Event{Type: "run.configured", Execution: &spec.ExecutionSettings})
+	})
 	if result.Err != nil {
 		return Result{ExitCode: result.ExitCode, Err: result.Err}
 	}

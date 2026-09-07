@@ -24,7 +24,7 @@ func TestModelsAPIAuthRoutingAndOfflineFallback(t *testing.T) {
 	s := New(Config{APIToken: "test"}, state, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	hello := model.RuntimeHello{RuntimeID: "machine", Epoch: "epoch", Capabilities: map[string]any{"adapters": map[string]any{"listed": map[string]any{"model_catalog": true}, "old": map[string]any{}}}}
+	hello := model.RuntimeHello{RuntimeID: "machine", Epoch: "epoch", Capabilities: map[string]any{"adapters": map[string]any{"listed": map[string]any{"model_catalog": true, "reasoning_effort": true, "role_instructions": true}, "old": map[string]any{}}}}
 	if err := state.RegisterRuntime(ctx, hello); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestModelsAPIAuthRoutingAndOfflineFallback(t *testing.T) {
 			if request.Method != "models.list" || string(request.Params) != `{"adapter_id":"listed"}` {
 				t.Error("wrong RPC", request)
 			}
-			return model.ModelCatalog{Status: "ready", Models: []model.ModelOption{{ID: "remote-model", Name: "Remote Model"}}}, nil
+			return model.ModelCatalog{Status: "ready", Models: []model.ModelOption{{ID: "remote-model", Name: "Remote Model", ReasoningEfforts: []model.ReasoningEffortOption{{ID: "low"}, {ID: "high"}}, DefaultReasoningEffort: "low"}}}, nil
 		})
 		_ = peer.Serve(ctx)
 	}))
@@ -85,6 +85,23 @@ func TestModelsAPIAuthRoutingAndOfflineFallback(t *testing.T) {
 	if result := call("machine/models?adapter_id=listed", "test", 200); len(result.Models) != 1 || result.Models[0].ID != "remote-model" {
 		t.Fatal(result)
 	}
+	if err := s.validateEffort(ctx, "machine", "listed", "remote-model", "high"); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range [][2]string{{"remote-model", "ultra"}, {"custom", "high"}, {"", "high"}} {
+		if err := s.validateEffort(ctx, "machine", "listed", pair[0], pair[1]); err == nil {
+			t.Fatal("unsupported effort accepted", pair)
+		}
+	}
+	if err := s.validateEffort(ctx, "machine", "old", "remote-model", "high"); err == nil {
+		t.Fatal("old adapter accepted effort")
+	}
 	s.hub.unregister("machine", peer)
 	call("machine/models?adapter_id=listed", "test", 503)
+	if err := s.validateEffort(ctx, "machine", "listed", "remote-model", "high"); err == nil {
+		t.Fatal("offline validation claimed success")
+	}
+	if err := s.validateEffort(ctx, "machine", "listed", "custom", ""); err != nil {
+		t.Fatal("offline default blocked", err)
+	}
 }

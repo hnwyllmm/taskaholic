@@ -221,6 +221,7 @@ func createTaskSummaryTx(ctx context.Context, tx *sql.Tx, taskID, sourceType, so
 		executor = model.TaskSummaryExecutor{
 			AgentID: sourceRun.AgentID, RuntimeID: sourceRun.RuntimeID,
 			AdapterID: sourceRun.AdapterID, ModelID: sourceRun.ModelID,
+			ExecutionSettings: sourceRun.ExecutionSettings,
 		}
 		if sourceRun.Role != nil {
 			executor.RoleID = sourceRun.Role.ID

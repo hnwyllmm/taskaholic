@@ -49,6 +49,21 @@ func (s *Server) handleUpdateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, err)
 		return
 	}
+	current, err := s.store.GetAgent(r.Context(), r.PathValue("agent_id"))
+	if err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	if current.Version != req.ExpectedVersion {
+		writeStoreError(w, fmt.Errorf("%w: agent changed; reload before editing", model.ErrConflict))
+		return
+	}
+	if req.ReasoningEffort != nil && (*req.ReasoningEffort != current.ReasoningEffort || req.ModelID != current.ModelID) {
+		if err := s.validateEffort(r.Context(), current.RuntimeID, current.AdapterID, req.ModelID, *req.ReasoningEffort); err != nil {
+			writeStoreError(w, err)
+			return
+		}
+	}
 	a, err := s.store.UpdateAgent(r.Context(), r.PathValue("agent_id"), req)
 	reply(w, 200, a, err)
 }
@@ -247,12 +262,13 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name          string `json:"name"`
-		RoleID        string `json:"role_id"`
-		RuntimeID     string `json:"runtime_id"`
-		AdapterID     string `json:"adapter_id"`
-		ModelID       string `json:"model_id"`
-		MaxConcurrent int    `json:"max_concurrent"`
+		ReasoningEffort string `json:"reasoning_effort"`
+		Name            string `json:"name"`
+		RoleID          string `json:"role_id"`
+		RuntimeID       string `json:"runtime_id"`
+		AdapterID       string `json:"adapter_id"`
+		ModelID         string `json:"model_id"`
+		MaxConcurrent   int    `json:"max_concurrent"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -261,7 +277,11 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	if request.AdapterID == "" {
 		request.AdapterID = "codex-agent"
 	}
-	agent, err := s.store.CreateAgent(r.Context(), model.AgentProfile{Name: request.Name, RoleID: request.RoleID, RuntimeID: request.RuntimeID, AdapterID: request.AdapterID, ModelID: request.ModelID, MaxConcurrent: request.MaxConcurrent})
+	if err := s.validateEffort(r.Context(), request.RuntimeID, request.AdapterID, request.ModelID, request.ReasoningEffort); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	agent, err := s.store.CreateAgent(r.Context(), model.AgentProfile{Name: request.Name, RoleID: request.RoleID, RuntimeID: request.RuntimeID, AdapterID: request.AdapterID, ModelID: request.ModelID, ReasoningEffort: request.ReasoningEffort, MaxConcurrent: request.MaxConcurrent})
 	reply(w, http.StatusCreated, agent, err)
 }
 

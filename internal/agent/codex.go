@@ -63,6 +63,7 @@ func (a *CodexAdapter) Capabilities() map[string]any {
 		"role_instructions":   true,
 		"structured_output":   true,
 		"read_only_runs":      true,
+		"reasoning_effort":    true,
 	}
 }
 
@@ -81,6 +82,11 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 	if !valid && (spec.RequireNativeSession || (spec.AgentSessionRef != "" && !strings.HasPrefix(spec.AgentSessionRef, "workspace:"))) {
 		return Result{ExitCode: -1, Err: errors.New("invalid stored Codex session reference; refusing to start a replacement session")}
 	}
+	var err error
+	spec, err = prepareReasoning(ctx, a, spec)
+	if err != nil {
+		return Result{ExitCode: -1, Err: err}
+	}
 	mismatchedSession := false
 	guardedEmit := func(event Event) {
 		if spec.RequireNativeSession && event.Type == "session.bound" && event.AgentSessionRef != spec.AgentSessionRef {
@@ -89,7 +95,9 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 		}
 		emit(event)
 	}
-	result := a.runTurn(ctx, workingDir, spec.ModelID, sessionID, prompt, guardedEmit, nil, spec.OutputSchema)
+	result := a.runTurn(ctx, workingDir, spec.ModelID, spec.ReasoningEffort, sessionID, prompt, guardedEmit, func() {
+		emit(Event{Type: "run.configured", Execution: &spec.ExecutionSettings})
+	}, spec.OutputSchema)
 	if mismatchedSession {
 		return Result{ExitCode: -1, Err: errors.New("Codex returned a different native session; original session binding preserved")}
 	}
@@ -115,7 +123,7 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 				emit(Event{Type: "directive.rejected", DirectiveID: directive.ID, Error: "Codex did not return a resumable session id"})
 				continue
 			}
-			followUp := a.runTurn(ctx, workingDir, spec.ModelID, sessionID, spec.Instructions+"\n\n"+directive.Message, guardedEmit, func() {
+			followUp := a.runTurn(ctx, workingDir, spec.ModelID, spec.ReasoningEffort, sessionID, spec.Instructions+"\n\n"+directive.Message, guardedEmit, func() {
 				emit(Event{Type: "directive.applied", DirectiveID: directive.ID})
 			}, spec.OutputSchema)
 			if mismatchedSession {
@@ -141,8 +149,11 @@ type codexTurnResult struct {
 	Err       error
 }
 
-func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
+func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
 	args := []string{"exec", "-c", "approval_policy=\"never\""}
+	if effort != "" {
+		args = append(args, "-c", "model_reasoning_effort=\""+effort+"\"")
+	}
 	var schemaPath string
 	if len(schemas) > 0 && len(schemas[0]) > 0 {
 		file, err := os.CreateTemp("", "work-assistant-schema-*.json")

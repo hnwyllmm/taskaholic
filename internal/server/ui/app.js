@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const state = {token: WA.token(), draft: null, role: null, dirty: false, busy: false, editingRole: false, runtimes: [], agents: [], roles: [], session: null, poll: null};
 const loadModels=WAModels.catalogLoader(api);
-const modelControls={builder:WAModels.mount($('builder-model'),loadModels),agent:WAModels.mount($('agent-model'),loadModels)};
+const modelControls={builder:WAModels.mount($('builder-model'),loadModels),agent:WAModels.mount($('agent-model'),loadModels,{reasoning:true})};
 function requestKey() { const bytes = new Uint8Array(16); crypto.getRandomValues(bytes); return Array.from(bytes, b=>b.toString(16).padStart(2,'0')).join(''); }
 const labels = {DRAFT:'草案', GENERATING:'AI 生成中', FAILED:'生成失败', PUBLISHED:'已发布'};
 function node(tag, text, className) { const el = document.createElement(tag); if (text != null) el.textContent = text; if (className) el.className = className; return el; }
@@ -68,7 +68,7 @@ function renderAgents() {
   for (const agent of agents) {
     const row = node('div', null, 'agent-row');
     const online = state.runtimes.find(r=>r.runtime_id === agent.runtime_id)?.state === 'ONLINE';
-    row.append(node('strong', agent.name), node('span', agent.runtime_id + (online ? ' · 在线' : ' · 离线')), node('span', agent.adapter_id==='codex-agent'?'Codex CLI':agent.adapter_id==='cursor-agent'?'Cursor Agent':agent.adapter_id), node('span', agent.model_id || '默认模型'), node('span', `运行中 ${agent.active_runs} / ${agent.max_concurrent}`), node('code', agent.agent_id));
+    row.append(node('strong', agent.name), node('span', agent.runtime_id + (online ? ' · 在线' : ' · 离线')), node('span', agent.adapter_id==='codex-agent'?'Codex CLI':agent.adapter_id==='cursor-agent'?'Cursor Agent':agent.adapter_id), node('span', (agent.model_id || '默认模型')+' · 推理：'+(agent.reasoning_effort||'运行环境默认')), node('span', `运行中 ${agent.active_runs} / ${agent.max_concurrent}`), node('code', agent.agent_id));
     const settings = node('details'), summary = node('summary', '修改配置 · '+agent.state); settings.append(summary);
     const form = node('form'); const fields = {};
     for (const [key,label,value,type] of [['name','名称',agent.name,'text'],['model_id','模型（只影响新 Session）',agent.model_id||'','text'],['max_concurrent','并发上限',agent.max_concurrent,'number']]) {
@@ -77,11 +77,11 @@ function renderAgents() {
       fields[key]=input;wrap.append(input);form.append(wrap);
     }
     fields.model_id.id='model-'+agent.agent_id;
-    const modelControl=WAModels.mount(fields.model_id,loadModels);
+    const modelControl=WAModels.mount(fields.model_id,loadModels,{reasoning:true,reasoningEffort:agent.reasoning_effort});
     void modelControl.update({runtimeID:agent.runtime_id,adapterID:agent.adapter_id,runtimes:state.runtimes,agents:state.agents});
     const statusLabel=node('label','状态'),status=node('select');status.append(option('ACTIVE','启用'),option('DISABLED','停用（不打断当前运行）'));status.value=agent.state;statusLabel.append(status);form.append(statusLabel);
     const submit=node('button','保存 Agent');submit.type='submit';form.append(submit);
-    form.onsubmit=event=>{event.preventDefault();action(async()=>{await api('/agents/'+agent.agent_id,'PUT',{name:fields.name.value,model_id:fields.model_id.value,max_concurrent:Number(fields.max_concurrent.value),state:status.value,expected_version:agent.version||0});await refreshLibrary();notice('Agent 已更新；已有 Session 继续使用原角色和模型。');});};settings.append(form);row.append(settings);
+    form.onsubmit=event=>{event.preventDefault();action(async()=>{await api('/agents/'+agent.agent_id,'PUT',{name:fields.name.value,model_id:fields.model_id.value,reasoning_effort:modelControl.getReasoningEffort(),max_concurrent:Number(fields.max_concurrent.value),state:status.value,expected_version:agent.version||0});await refreshLibrary();notice('成员已更新；同一模型的推理强度从下一次执行生效，当前运行不变。已有 Session 保留原角色和模型。');});};settings.append(form);row.append(settings);
     $('agents').append(row);
   }
 }
@@ -184,7 +184,7 @@ $('clone').onclick = () => action(async()=>{
 $('stop').onclick = () => action(async()=>{ await api('/runs/' + state.draft.last_run_id + '/interrupt','POST',{}); notice('已发送停止请求，正在等待 Runtime 确认。'); });
 document.querySelectorAll('[data-prompt]').forEach(button=>button.onclick=()=>{ $('message').value=button.dataset.prompt; $('message').focus(); });
 $('agent-form').onsubmit = event => { event.preventDefault(); action(async()=>{
-  await api('/agents','POST',{name:$('agent-name').value.trim(),role_id:state.role?.role_id || state.draft.published_role_id,runtime_id:$('agent-runtime').value,adapter_id:$('agent-adapter').value,model_id:$('agent-model').value,max_concurrent:Number($('agent-capacity').value)});
+  await api('/agents','POST',{name:$('agent-name').value.trim(),role_id:state.role?.role_id || state.draft.published_role_id,runtime_id:$('agent-runtime').value,adapter_id:$('agent-adapter').value,model_id:$('agent-model').value,reasoning_effort:modelControls.agent.getReasoningEffort(),max_concurrent:Number($('agent-capacity').value)});
   $('agent-name').value=''; await refreshLibrary(); notice('成员已添加。任务可通过角色或能力标签路由给它。');
 }); };
 window.addEventListener('beforeunload', event=>{ if (state.dirty||$('message').value) { event.preventDefault(); event.returnValue=''; } });

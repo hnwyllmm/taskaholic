@@ -49,11 +49,12 @@ func (s *Store) UpdateRole(ctx context.Context, roleID string, expected int64, s
 }
 
 type AgentUpdate struct {
-	Name            string `json:"name"`
-	ModelID         string `json:"model_id"`
-	MaxConcurrent   int    `json:"max_concurrent"`
-	State           string `json:"state"`
-	ExpectedVersion int64  `json:"expected_version"`
+	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
+	Name            string  `json:"name"`
+	ModelID         string  `json:"model_id"`
+	MaxConcurrent   int     `json:"max_concurrent"`
+	State           string  `json:"state"`
+	ExpectedVersion int64   `json:"expected_version"`
 }
 
 // Machine and adapter identity are stable. Model changes affect new sessions
@@ -76,6 +77,15 @@ func (s *Store) UpdateAgent(ctx context.Context, agentID string, u AgentUpdate) 
 	if a.Version != u.ExpectedVersion {
 		return a, fmt.Errorf("%w: agent changed; reload before editing", model.ErrConflict)
 	}
+	effort := a.ReasoningEffort
+	if u.ReasoningEffort != nil {
+		effort = *u.ReasoningEffort
+	} else if a.ModelID != u.ModelID {
+		effort = ""
+	}
+	if err := validateRuntimeEffortTx(ctx, tx, a.RuntimeID, a.AdapterID, effort); err != nil {
+		return a, err
+	}
 	if u.MaxConcurrent < a.ActiveRuns {
 		return a, fmt.Errorf("%w: concurrency cannot be reduced below active runs", model.ErrConflict)
 	}
@@ -87,6 +97,7 @@ func (s *Store) UpdateAgent(ctx context.Context, agentID string, u AgentUpdate) 
 		return a, fmt.Errorf("%w: agent name already exists", model.ErrConflict)
 	}
 	a.Name, a.ModelID, a.MaxConcurrent, a.State = strings.TrimSpace(u.Name), u.ModelID, u.MaxConcurrent, u.State
+	a.ReasoningEffort = effort
 	a.Version++
 	data, _ := json.Marshal(a)
 	if _, err = tx.ExecContext(ctx, `UPDATE agent_profile SET name=?,data_json=? WHERE agent_id=?`, a.Name, data, agentID); err != nil {

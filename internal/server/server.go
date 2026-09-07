@@ -238,14 +238,15 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		SessionID      string   `json:"session_id"`
-		RuntimeID      string   `json:"runtime_id"`
-		AgentID        string   `json:"agent_id"`
-		AdapterID      string   `json:"adapter_id"`
-		ModelID        string   `json:"model_id"`
-		Command        []string `json:"command"`
-		WorkingDir     string   `json:"working_dir"`
-		IdempotencyKey string   `json:"idempotency_key"`
+		SessionID       string   `json:"session_id"`
+		ReasoningEffort *string  `json:"reasoning_effort,omitempty"`
+		RuntimeID       string   `json:"runtime_id"`
+		AgentID         string   `json:"agent_id"`
+		AdapterID       string   `json:"adapter_id"`
+		ModelID         string   `json:"model_id"`
+		Command         []string `json:"command"`
+		WorkingDir      string   `json:"working_dir"`
+		IdempotencyKey  string   `json:"idempotency_key"`
 	}
 	if err := decodeJSON(w, r, &request); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -262,7 +263,8 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	resolved, err := s.resolveRun(r.Context(), task, store.CreateRunRequest{
 		TaskID: task.ID, SessionID: request.SessionID, RuntimeID: request.RuntimeID,
 		AgentID: request.AgentID, AdapterID: request.AdapterID, ModelID: request.ModelID,
-		Command: request.Command, WorkingDir: request.WorkingDir, IdempotencyKey: request.IdempotencyKey,
+		ReasoningEffort: request.ReasoningEffort,
+		Command:         request.Command, WorkingDir: request.WorkingDir, IdempotencyKey: request.IdempotencyKey,
 	})
 	if err != nil {
 		writeStoreError(w, err)

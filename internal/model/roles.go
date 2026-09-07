@@ -52,18 +52,19 @@ type RoleDraft struct {
 
 // AgentProfile is a stable employee identity. Multiple employees can share a role.
 type AgentProfile struct {
-	Version       int64  `json:"version"`
-	ID            string `json:"agent_id"`
-	Name          string `json:"name"`
-	RoleID        string `json:"role_id"`
-	RuntimeID     string `json:"runtime_id"`
-	AdapterID     string `json:"adapter_id"`
-	ModelID       string `json:"model_id,omitempty"`
-	MaxConcurrent int    `json:"max_concurrent"`
-	State         string `json:"state"`
-	CreatedAtMS   int64  `json:"created_at_ms"`
-	Role          Role   `json:"role"`
-	ActiveRuns    int    `json:"active_runs"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	Version         int64  `json:"version"`
+	ID              string `json:"agent_id"`
+	Name            string `json:"name"`
+	RoleID          string `json:"role_id"`
+	RuntimeID       string `json:"runtime_id"`
+	AdapterID       string `json:"adapter_id"`
+	ModelID         string `json:"model_id,omitempty"`
+	MaxConcurrent   int    `json:"max_concurrent"`
+	State           string `json:"state"`
+	CreatedAtMS     int64  `json:"created_at_ms"`
+	Role            Role   `json:"role"`
+	ActiveRuns      int    `json:"active_runs"`
 }
 
 type TaskRequirements struct {
