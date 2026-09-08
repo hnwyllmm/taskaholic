@@ -63,6 +63,18 @@ test('Plan approval is explicit and different from final delivery acceptance',as
  assert.equal(p.$('notice').textContent,'方案已批准，原 Agent 将开始隔离开发。');
 });
 
+test('A major implementation replan highlights its reason, changes and evidence',async()=>{
+ const task={task_id:'replan-task',title:'Replan',goal:'Implement',state:'IN_PROGRESS',version:9};
+ const p=await page({initialTasks:[task]});
+ p.details[task.task_id].work.development={phase:'IMPLEMENTING',version:3,repository:'oceanbase/seekdb',base_branch:'master'};
+ p.details[task.task_id].detail.runs=[{run_id:'old',created_at_ms:1,output:'{}'},{run_id:'replan',created_at_ms:2,finished_at_ms:3,output:JSON.stringify({outcome:'replan',message:'fallback',task_update:{reason:'Unicode watcher failed',approach:'Patch the file boundary',analysis:'Wide file read passed',validation:'ASCII passed; Unicode failed'}})}];
+ await vm.runInContext("selectTask('replan-task')",p.ctx);await p.settle();
+ assert.equal(p.$('plan-change').hidden,false);
+ assert.match(textTree(p.$('plan-change')),/为什么要改.*Unicode watcher failed/);
+ assert.match(textTree(p.$('plan-change')),/方案改了什么.*Patch the file boundary/);
+ assert.match(textTree(p.$('plan-change')),/Wide file read passed[\s\S]*ASCII passed; Unicode failed/);
+});
+
 test('Task page defaults to save first, then submits manual and automatic assignments',async()=>{
   const {$,requests,ctx,settle}=await page();
   $('new').onclick();assert.equal($('new-role').value,'');assert.equal($('new-agent').disabled,true);

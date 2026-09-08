@@ -80,6 +80,9 @@ pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;white
 .artifact-preview{min-height:90px;max-height:650px;overflow:auto;padding:18px;font-size:12px;background:#fafbf8;border:1px solid #e5eae1;border-radius:8px}.artifact-preview.plain-text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
 #events{max-height:260px;overflow:auto;margin-top:15px}
 .development-phase,.task-summary,.publications{margin:18px 0}.development-phase{padding:18px}.task-history{display:grid;gap:12px;margin-top:18px}.task-history>.panel{padding:15px}
+.plan-change{margin:18px 0;border-color:#e5c67b;background:#fffaf0;box-shadow:0 8px 24px rgba(117,78,17,.06)}
+.plan-change-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;padding:15px 18px;border-bottom:1px solid #ead9ad}.plan-change-head h2{margin:3px 0 0;font-size:18px}.plan-change-kicker{font-size:10px;font-weight:700;letter-spacing:.12em;color:#9a6619}.plan-change-meta{font-size:10px;color:#806f51;white-space:nowrap}
+.plan-change-grid{display:grid;grid-template-columns:1fr 1fr;gap:0}.plan-change-item{padding:16px 18px}.plan-change-item+ .plan-change-item{border-left:1px solid #ead9ad}.plan-change-item h3{margin:0 0 9px;font-size:13px;color:#684b1c}.plan-change-item .markdown-body{font-size:12px;color:#3c463e}.plan-change-evidence{border-top:1px solid #ead9ad;padding:11px 18px 15px}.plan-change-evidence>summary{font-size:11px;color:#7d6845}.plan-change-evidence .markdown-body{font-size:11px;margin-top:10px;color:#59635b}
 #runs p,#reviews p{font-size:11px;overflow-wrap:anywhere;margin-top:10px}
 .summary-body{padding:17px}
 .summary-result{font-size:14px;white-space:pre-wrap;overflow-wrap:anywhere}
@@ -127,7 +130,7 @@ dialog h2{font-size:20px}
 .work-subtasks{display:block;margin-top:5px;font-size:11px;color:var(--accent)}
 .work-subtasks[data-attention="true"]{color:#965e26}
 .work-task-status{display:grid;justify-items:start;gap:5px}
-@media(max-width:650px){.subtask-row{gap:7px;padding:8px 10px}.task-parents{margin-top:0}.subtask-status{max-width:115px;display:grid}.task-hierarchy .panel-head{align-items:start}.task-hierarchy .panel-head>span{text-align:right}.subtask-note{margin:6px 10px}.review-delivery>#review-chat-slot{padding:0 10px}.review{margin:0 10px 10px;padding:12px}.artifacts{padding:12px 10px}.artifact-preview{padding:12px}}
+@media(max-width:650px){.subtask-row{gap:7px;padding:8px 10px}.task-parents{margin-top:0}.subtask-status{max-width:115px;display:grid}.task-hierarchy .panel-head{align-items:start}.task-hierarchy .panel-head>span{text-align:right}.subtask-note{margin:6px 10px}.review-delivery>#review-chat-slot{padding:0 10px}.review{margin:0 10px 10px;padding:12px}.artifacts{padding:12px 10px}.artifact-preview{padding:12px}.plan-change-grid{grid-template-columns:1fr}.plan-change-item+ .plan-change-item{border-left:0;border-top:1px solid #ead9ad}.plan-change-head{padding:13px 14px}.plan-change-item{padding:13px 14px}.plan-change-meta{white-space:normal;text-align:right}}
 .activity-head{padding:16px 18px 14px}
 .activity-heading{display:grid;gap:3px}.activity-heading h2{margin:0}.activity-heading>span{font-size:10px}
 .activity-connection{white-space:nowrap;color:#8b6a36;background:#fbf4e6;border:1px solid #eee0c5;border-radius:999px;padding:4px 9px;font-size:10px}
