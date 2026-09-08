@@ -83,7 +83,7 @@ func requestEnvironmentTx(ctx context.Context, tx *sql.Tx, taskID, runID string,
 	if capability := caps.Executors[r.Profile]; !capability.Available {
 		return requestRecoveryTx(ctx, tx, taskID, runID, workflow.RecoveryRequest{
 			Evidence: "Windows 执行器当前不可用，未创建验证子任务，也没有运行测试。\n" + truncateRunes(capability.Reason, 3000),
-			NextStep: "先检查仓库构建入口及所需接入条件；在现有授权范围内准备修复和评审材料。需要宿主登记或新增权限时明确报告依赖；能力未恢复前不要重复提交相同环境申请。Manager 不会替你改任务代码或自动授予宿主权限。",
+			NextStep: "阅读本轮 runtime 提供的能力说明。若已提供通用 Windows client.py，直接自行上传文件、执行远程命令，environment_request 填 null；不需要入口评审或登记。确实没有执行通道时再明确报告缺少的条件。Manager 不替你改任务代码，也不授予 dev 宿主机权限。",
 		})
 	}
 	parent, err := getTaskTx(ctx, tx, taskID)
@@ -302,7 +302,7 @@ func (s *Store) ResumeDevelopmentDiagnosis(ctx context.Context, taskID string, e
 		if busy {
 			return model.ErrConflict
 		}
-		_, err = messageWorkFromTx(ctx, tx, taskID, "用户补充的构建诊断（不是新的需求、权限或测试通过证明）：\n"+diagnosis+"\n沿用原 Session 和已批准方案；核验诊断后修正构建差异再申请验证，不升级工具链、不擅自扩大验收范围。", fmt.Sprintf("development-diagnosis:%s:%d", taskID, expected), false, "system")
+		_, err = messageWorkFromTx(ctx, tx, taskID, "用户补充的构建诊断（不是新的需求或测试通过证明；执行权限以本轮 runtime 授权为准）：\n"+diagnosis+"\n沿用原 Session 和已批准方案，自行核验并推进，不擅自扩大验收范围或 dev 宿主机权限。", fmt.Sprintf("development-diagnosis:%s:%d", taskID, expected), false, "system")
 		return err
 	})
 }

@@ -5,6 +5,8 @@ Large approved source snapshots must not pass through Windows' command line.
 This is a runtime entry point, not a tool exposed to sandboxed agents.
 """
 import base64
+import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -34,11 +36,13 @@ def discover_address():
     return str(address)
 
 def main():
-    # Includes the compressed, Git-filtered worktree snapshot. Stdin avoids
-    # Windows command-line limits; no source text is evaluated as PowerShell.
-    script = sys.stdin.buffer.read(128 * 1024 * 1024 + 1)
-    if len(script) > 128 * 1024 * 1024:
-        raise ValueError('Windows request exceeds 128 MiB')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--upload')
+    parser.add_argument('--destination')
+    args = parser.parse_args()
+    if bool(args.upload) != bool(args.destination):
+        parser.error('--upload and --destination must be supplied together')
+    script = b'' if args.upload else sys.stdin.buffer.read()
     username, password = host['read_credentials']()
     address = discover_address()
     # This transport is only for the local VM, never the model's HTTP proxy.
@@ -51,6 +55,32 @@ def main():
     protocol = session.protocol
     # A short fixed bootstrap reads base64 UTF-8 from stdin, not PowerShell source lines.
     bootstrap = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; & ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))))'
+    if args.upload:
+        expected_hash = hashlib.sha256()
+        with open(args.upload, 'rb') as source:
+            while chunk := source.read(1024 * 1024):
+                expected_hash.update(chunk)
+        destination = base64.b64encode(args.destination.encode('utf-8')).decode('ascii')
+        bootstrap = """
+$ErrorActionPreference='Stop'
+$destination=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__DEST__'))
+$destination=[IO.Path]::GetFullPath($destination)
+$parent=Split-Path $destination -Parent
+New-Item -ItemType Directory -Path $parent -Force | Out-Null
+$tmp=$destination+'.upload-'+[guid]::NewGuid().ToString('N')
+$stream=[IO.File]::Open($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+try {
+ while($null -ne ($line=[Console]::In.ReadLine())){
+  $data=[Convert]::FromBase64String($line)
+  $stream.Write($data,0,$data.Length)
+ }
+ $stream.Flush($true)
+}finally{$stream.Dispose()}
+$hash=(Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+if($hash -ne '__HASH__'){throw 'Upload checksum mismatch; destination not replaced'}
+Move-Item -LiteralPath $tmp -Destination $destination -Force
+Write-Output ('UPLOAD_SHA256='+$hash)
+""".replace('__DEST__', destination).replace('__HASH__', expected_hash.hexdigest())
     encoded = base64.b64encode(bootstrap.encode('utf-16-le')).decode('ascii')
     shell = protocol.open_shell()
     command = None
@@ -58,11 +88,22 @@ def main():
         command = protocol.run_command(shell, 'powershell.exe',
             ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
             console_mode_stdin=False)
-        payload = base64.b64encode(script)
-        for offset in range(0, len(payload), 98304):
-            protocol.send_command_input(shell, command, payload[offset:offset+98304])
+        digest = hashlib.sha256()
+        if args.upload:
+            with open(args.upload, 'rb') as data:
+                while chunk := data.read(49152):
+                    digest.update(chunk)
+                    protocol.send_command_input(shell, command, base64.b64encode(chunk)+b'\n')
+        else:
+            payload = base64.b64encode(script)
+            for offset in range(0, len(payload), 98304):
+                protocol.send_command_input(shell, command, payload[offset:offset+98304])
         protocol.send_command_input(shell, command, b'', end=True)
         out, err, code = protocol.get_command_output(shell, command)
+        if args.upload and code == 0:
+            expected = ('UPLOAD_SHA256='+digest.hexdigest()).encode()
+            if expected not in out:
+                raise RuntimeError('Uploaded file checksum did not match')
         sys.stdout.buffer.write(out)
         # A script can catch an error and emit a failed business result while
         # PowerShell exits zero. Its stderr is still essential diagnostic data.

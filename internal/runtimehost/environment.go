@@ -25,6 +25,7 @@ import (
 var windowsPhase0Script string
 
 type windowsProfile struct {
+	Autonomous             bool   `json:"autonomous"`
 	RepositoryRoot         string `json:"repository_root"`
 	BuildContract          string `json:"build_contract"`
 	BuildScriptSHA256      string `json:"build_script_sha256"`
@@ -72,6 +73,12 @@ func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
 		st, e := os.Stat(p.WinRMCommand)
 		if ok && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) && p.AllowPolicySwitch && len(p.SQLiteHeaderSHA256) == 64 && len(p.SQLiteLibrarySHA256) == 64 && len(p.SQLiteDLLSHA256) == 64 {
 			cap = model.ExecutionCapability{Available: true}
+		}
+		if ok && p.Autonomous && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) {
+			return map[string]model.ExecutionCapability{
+				"windows_vm":            {Available: true},
+				"windows_seekdb_phase0": {Reason: "此 VM 已改为 Agent 自主远程执行/上传工具，不再使用专用 environment_request。请在原开发 Session 使用本轮提供的 client.py。"},
+			}
 		}
 	}
 	return map[string]model.ExecutionCapability{"windows_seekdb_phase0": cap}
@@ -187,6 +194,9 @@ func (d *Daemon) executeEnvironment(ctx context.Context, spec model.RunSpec, emi
 		return finish("Windows 主机配置格式无效。")
 	}
 	profile, ok := profiles[env.Profile]
+	if ok && profile.Autonomous {
+		return finish("Windows 已启用自主 exec/upload 工具，请回原开发 Session 使用通用工具；不再调用专用探针执行器。")
+	}
 	if !ok || !filepath.IsAbs(profile.WinRMCommand) || len(profile.SQLiteHeaderSHA256) != 64 || len(profile.SQLiteLibrarySHA256) != 64 || len(profile.SQLiteDLLSHA256) != 64 {
 		return finish("Windows profile 缺少入口或固定依赖校验值。")
 	}

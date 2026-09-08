@@ -408,7 +408,14 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 	if spec.Environment != nil {
 		result = d.executeEnvironment(ctx, spec, emit)
 	} else if preparationErr == nil {
-		result = adapter.Run(ctx, spec, workingDir, active.directives, emit)
+		instructions, stopBridge, bridgeErr := d.startVMBridge(ctx, spec, workingDir, workspace.Directory, emit)
+		if bridgeErr != nil {
+			result = agent.Result{ExitCode: -1, Err: bridgeErr}
+		} else {
+			spec.Instructions += instructions
+			result = adapter.Run(ctx, spec, workingDir, active.directives, emit)
+		}
+		stopBridge()
 	}
 	if result.Err == nil && spec.ExecutionGrant != nil && ctx.Err() == nil {
 		parsed, err := workflow.Parse(result.Output)

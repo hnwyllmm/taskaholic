@@ -1,5 +1,9 @@
 # Repository-owned Windows build entry
 
+Legacy executor documentation. For profiles with autonomous=true (dev win11),
+this path is disabled; see autonomous-windows.md. The Agent owns upload and
+execution using generic tools, without snapshot size or fixed-target gates.
+
 The approved development Agent may edit build.ps1 and build configuration in its
 task worktree, then request Windows validation without a PR, extra review, or
 script-hash registration. Plan, repository and host-operation grants are unchanged.
