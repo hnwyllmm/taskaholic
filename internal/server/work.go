@@ -17,6 +17,7 @@ import (
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/environment", s.apiAuth(http.HandlerFunc(s.handleEnvironmentRequest)))
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/diagnosis", s.apiAuth(http.HandlerFunc(s.handleDevelopmentDiagnosis)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/retry", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRetry)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/restart", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRestart)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
@@ -55,6 +56,19 @@ func (s *Server) handleEnvironmentRequest(w http.ResponseWriter, r *http.Request
 	}
 	err := s.store.RequestEnvironment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, workflow.EnvironmentRequest{Profile: req.Profile, Reason: req.Reason})
 	reply(w, http.StatusAccepted, map[string]string{"status": "WAITING_SUBTASKS"}, err)
+}
+
+func (s *Server) handleDevelopmentDiagnosis(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		Diagnosis       string `json:"diagnosis"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	err := s.store.ResumeDevelopmentDiagnosis(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, req.Diagnosis)
+	reply(w, http.StatusAccepted, map[string]string{"status": "QUEUED"}, err)
 }
 
 func (s *Server) handleDevelopmentRetry(w http.ResponseWriter, r *http.Request) {

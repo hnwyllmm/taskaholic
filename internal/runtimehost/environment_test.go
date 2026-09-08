@@ -52,3 +52,11 @@ func TestWindowsLogRetainsFinalVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsBuildUsesProductBaselineAndGuardsRetries(t *testing.T) {
+	for _, required := range []string{"product_compile_commands", "Probe compiler differs from product build", "PRODUCT_CXX_FLAGS=", "-DCMAKE_CXX_FLAGS=", "CMakeConfigureLog.yaml", "Unchanged failed build inputs", "BUILD_INPUT_SHA256=", "$file.name -ne 'README.md'"} {
+		if !strings.Contains(windowsPhase0Script, required) {
+			t.Fatal("missing build safety", required)
+		}
+	}
+}

@@ -5,6 +5,7 @@ $root = 'C:\work-assistant'
 $policyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
 $result = @{status='unavailable';profile='windows_seekdb_phase0';snapshot_sha256=$p.snapshot_sha256;message=''}
 $lease = $null
+$fingerprintFile = $null
 $original = $null
 $journal = Join-Path $root 'policy-recovery.json'
 $job = Join-Path $root ('jobs\'+$p.job_id)
@@ -21,6 +22,24 @@ function Restore-Policy($saved) {
 }
 try {
     if($p.job_id -notmatch '^[A-Za-z0-9_-]{1,160}$'){throw 'Invalid job identity'}
+    if($p.parent_task_id -notmatch '^[A-Za-z0-9_-]{1,160}$'){throw 'Invalid parent identity'}
+    # A host-configured product build is the reference; never execute its command
+    # string or trust model-provided compiler flags. Import only supported settings.
+    if(!$cfg.product_compile_commands -or !(Test-Path -LiteralPath $cfg.product_compile_commands -PathType Leaf)){throw 'Missing product compile_commands.json: diagnose the repository build before changing the environment'}
+    $commands=Get-Content -LiteralPath $cfg.product_compile_commands -Raw | ConvertFrom-Json
+    $entry=$commands | Where-Object { $_.file -match '\.(cpp|cc|cxx)$' } | Select-Object -First 1
+    if(!$entry -or !$entry.command){throw 'Product build has no supported C++ command record'}
+    $compilerMatch=[regex]::Match($entry.command,'^\s*(?:"([^"]+)"|(\S+))')
+    $compiler=$compilerMatch.Groups[1].Value
+    if(!$compiler){$compiler=$compilerMatch.Groups[2].Value}
+    if([IO.Path]::GetFullPath($compiler).Replace('/','\') -ine [IO.Path]::GetFullPath($cfg.clang).Replace('/','\')){throw 'Probe compiler differs from product build; reconcile repository configuration first'}
+    $standard=[regex]::Match($entry.command,'(?:/std:|-std=)(?:gnu\+\+|c\+\+)(17|20|23)(?:\s|$)').Groups[1].Value
+    if(!$standard){throw 'Product C++ standard unavailable; refusing an independent probe default'}
+    $productFlags='/D_ITERATOR_DEBUG_LEVEL=0'
+    if($entry.command -notmatch '(?:/D|-D)_ITERATOR_DEBUG_LEVEL=0(?:\s|$)' -or $entry.command -notmatch '(?:/|-)(?:MD)(?:\s|$)'){throw 'Product CRT/STL configuration differs from supported Release CRT profile'}
+    if($entry.command -match '(?:/D|-D)_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH(?:\s|$)'){$productFlags+=' /D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH'}
+    Write-Output ('PRODUCT_BUILD_REFERENCE='+$cfg.product_compile_commands)
+    Write-Output ('PRODUCT_CXX_STANDARD='+$standard+'; PRODUCT_CXX_FLAGS='+$productFlags)
     foreach($file in @($cfg.cmake,$cfg.clang,$cfg.ninja,$cfg.vs_dev_cmd,$cfg.sqlite_library,(Join-Path $cfg.sqlite_include 'sqlite3.h'))) {
         if(!(Test-Path -LiteralPath $file -PathType Leaf)){throw "Required tool/dependency missing: $file"}
     }
@@ -59,6 +78,16 @@ try {
         $envLines=& $env:ComSpec /d /c ('call "'+$cfg.vs_dev_cmd+'" -no_logo -arch=x64 -host_arch=x64 >nul && set')
         if($LASTEXITCODE -ne 0){throw 'Visual Studio toolchain environment initialization failed'}
         foreach($line in $envLines){if($line -match '^([^=]+)=(.*)$'){[Environment]::SetEnvironmentVariable($matches[1],$matches[2],'Process')}}
+        # Guard real inputs, not the Agent's explanation or README wording.
+        $inputs=@($productFlags,$standard,$env:VCToolsVersion,$env:WindowsSDKVersion,$headerHash,$libraryHash,$dllHash,(Get-FileHash -LiteralPath $cfg.clang -Algorithm SHA256).Hash)
+        $stl=Join-Path $env:VCToolsInstallDir 'include\yvals_core.h'
+        $inputs+=(Get-FileHash -LiteralPath $stl -Algorithm SHA256).Hash
+        foreach($file in ($p.files | Sort-Object name)){if($file.name -ne 'README.md'){$inputs+=($file.name+':'+$file.data)}}
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try{$fingerprint=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($inputs -join "`n"))))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
+        $fingerprintFile=Join-Path $root ('last-failed-'+$p.parent_task_id+'.json')
+        if(Test-Path -LiteralPath $fingerprintFile){$previous=Get-Content -LiteralPath $fingerprintFile -Raw | ConvertFrom-Json;if($previous.fingerprint -eq $fingerprint){$fingerprintFile=$null;throw ('Unchanged failed build inputs; inspect diagnosis from job '+$previous.job+' before retrying')}}
+        Write-Output ('BUILD_INPUT_SHA256='+$fingerprint)
         $result.status='failed'
         Write-Output ('SOURCE_SNAPSHOT_SHA256='+$p.snapshot_sha256)
         Write-Output ('SQLITE_HEADER_SHA256='+$headerHash)
@@ -66,8 +95,11 @@ try {
         Write-Output ('WINDOWS_VERSION='+[Environment]::OSVersion.VersionString)
         & $cfg.clang --version
         $build=Join-Path $job 'build'
-        & $cfg.cmake -S (Join-Path $job 'source') -B $build -G Ninja ('-DCMAKE_MAKE_PROGRAM='+$cfg.ninja) ('-DCMAKE_CXX_COMPILER='+$cfg.clang) '-DCMAKE_BUILD_TYPE=RelWithDebInfo' ('-DPHASE0_SQLITE_INCLUDE_DIR='+$cfg.sqlite_include) ('-DPHASE0_SQLITE_LIBRARY='+$cfg.sqlite_library)
-        if($LASTEXITCODE -ne 0){throw 'Phase 0 CMake configure failed'}
+        & $cfg.cmake -S (Join-Path $job 'source') -B $build -G Ninja ('-DCMAKE_MAKE_PROGRAM='+$cfg.ninja) ('-DCMAKE_CXX_COMPILER='+$cfg.clang) ('-DCMAKE_CXX_FLAGS='+$productFlags) ('-DCMAKE_CXX_STANDARD='+$standard) '-DCMAKE_BUILD_TYPE=RelWithDebInfo' ('-DPHASE0_SQLITE_INCLUDE_DIR='+$cfg.sqlite_include) ('-DPHASE0_SQLITE_LIBRARY='+$cfg.sqlite_library)
+        if($LASTEXITCODE -ne 0){
+            foreach($name in @('CMakeConfigureLog.yaml','CMakeError.log')){$diagnostic=Join-Path $build ('CMakeFiles\'+$name);if(Test-Path -LiteralPath $diagnostic){Write-Output ('CONFIGURE_DIAGNOSTIC='+$diagnostic);Get-Content -LiteralPath $diagnostic -Tail 200}}
+            throw 'Phase 0 CMake configure failed; product settings were imported. Diagnose command/configuration differences before declaring the environment broken.'
+        }
         & $cfg.cmake --build $build --parallel 4
         if($LASTEXITCODE -ne 0){throw 'Phase 0 compilation failed'}
         $exe=Join-Path $build 'sqlite_path_probe.exe'
@@ -111,6 +143,7 @@ try {
         }
     }
     if($lease -ne $null){
+        if($fingerprintFile -and $result.status -eq 'failed'){try{Save-JSON $fingerprintFile @{fingerprint=$fingerprint;job=$p.job_id}}catch{$result.status='unavailable';$result.message='Cannot persist retry guard; inspect execution before further tests'}}
         if(Test-Path -LiteralPath $job){try{Save-JSON (Join-Path $job 'status.json') $result}catch{$result.status='unavailable';$result.message='Cannot persist Windows result; inspect job directory before retrying.'}}
         $lease.Dispose()
     }

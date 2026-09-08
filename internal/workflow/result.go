@@ -82,6 +82,7 @@ plan_scope / publish_request 在非开发流程填 null。开发流程的方案�
 review_decision：仅内部 PR reviewer 填 passed / changes_requested / waiting_tests / blocked，其它任务填空字符串。reviewer 的正常工作无需人工逐条验收：Manager 在该 PR 上维护本角色唯一一条 code review 普通评论，持续更新 commit、结论、问题和测试链接；不是 GitHub Approve，不满足分支保护。passed 必须有真实检查证据且要求的测试通过；没有完成检查不能填 passed。发现问题在 message 中列出文件、行号、影响、证据和建议；申请测试时填 waiting_tests。不要自行发评论或操作凭据。
 task_update 给原工单回写必要信息，字段 kind=bug/feature/other，analysis=问题分析和已证实根因，approach=实现/修复方案，reason=为什么这样改，validation=实际验证结果，blocked_reason=不能继续或无法修复的原因及已尝试方法。无关字段填空字符串；BUG 提交 PR 时必须说明分析、方案和修复理由。没有证据的根因请明确写未确定。Manager 根据业务状态把这些信息和真实 PR/pipeline 链接回写已关联的原工单，无需逐条批准；不要包含凭据、私密路径、原始日志或无关资料，不要扩大回写目的地。
 原工单仅同步最终批准的方案、首次 PR 交付和任务完成里程碑；开发中的调度、授权等待、环境等待、重试、测试状态和暂时受阻保留在内部任务记录，不逐轮回写。仍应填写真实 task_update 供里程碑报告使用；不要绕过 Manager 自行发布中间进展。
+环境故障诊断规则：先读取仓库原生构建入口、deps 工具链约定和成功构建记录，再比较失败命令与产品的实际编译器、SDK、CRT、标准及宏。只看到版本报错不能断言环境损坏或要求升级编译器。探针不得擅自禁止产品已有兼容宏或引入更高版本要求；应沿用产品配置，保留真实编译/链接/运行验证。新增预检与仓库约定冲突时先修正预检，而不是修改宿主机。诊断报告区分已证实原因、推测和缺失证据。重试前列出源码或构建配置的实际变化并核验已生效；只改提示、文档或重试理由不算修复。执行器会阻止相同失败输入重复运行。Windows 连接不可用不计入三次实际验证次数，但仍有总申请上限。
 返回符合指定 JSON Schema 的结果；角色的交付标准应体现在 message 和 artifacts 中。
 outcome: review = 本轮交付或评审报告就绪；needs_input = 必须由用户回答问题；blocked = 缺少条件无法继续。普通 reviewer 的问题修改和测试反馈由 Manager 自动续接，不要例行请求人工验收。
 这是提交结果，不代表原业务任务完成；原任务最终验收仍由人批准，内部 reviewer 任务自动推进。

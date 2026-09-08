@@ -54,11 +54,11 @@ func requestEnvironmentTx(ctx context.Context, tx *sql.Tx, taskID, runID string,
 	if err != sql.ErrNoRows {
 		return err
 	}
-	var count int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM environment_job WHERE parent_task_id=?`, taskID).Scan(&count); err != nil {
+	var count, total int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN state!='unavailable' AND state!='interrupted' THEN 1 END),COUNT(*) FROM environment_job WHERE parent_task_id=?`, taskID).Scan(&count, &total); err != nil {
 		return err
 	}
-	if count >= 3 {
+	if count >= 3 || total >= 6 {
 		return fmt.Errorf("%w: Windows validation has reached three attempts; needs human direction", model.ErrConflict)
 	}
 	var session, agent string
@@ -236,4 +236,49 @@ func pauseEnvironmentChildrenTx(ctx context.Context, tx *sql.Tx, parent string) 
 		}
 	}
 	return nil
+}
+
+// A human-supplied diagnostic resumes an approved task without treating it as
+// new requirements or fabricating successful tests. The original session owns memory.
+func (s *Store) ResumeDevelopmentDiagnosis(ctx context.Context, taskID string, expected int64, diagnosis string) error {
+	if len(diagnosis) == 0 || len(diagnosis) > 12000 {
+		return model.ErrValidation
+	}
+	if m, err := s.Maintenance(ctx); err != nil {
+		return err
+	} else if m != "" {
+		return model.ErrConflict
+	}
+	return s.sourceWrite(ctx, func(tx *sql.Tx) error {
+		t, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if t.Version != expected || t.State != model.TaskStateBlocked {
+			return model.ErrConflict
+		}
+		d, err := developmentTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "" {
+			return model.ErrConflict
+		}
+		r, err := readJSONRow[model.Review](tx.QueryRowContext(ctx, `SELECT data_json FROM review WHERE review_id=? AND task_id=?`, d.ApprovedReviewID, taskID))
+		if err != nil {
+			return err
+		}
+		if r.State != "PLAN_APPROVED" || r.PlanHash != d.PlanHash || r.RunID != d.PlanRunID {
+			return model.ErrConflict
+		}
+		var busy bool
+		if err = tx.QueryRowContext(ctx, `SELECT (SELECT paused FROM task_workflow WHERE task_id=?) OR EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') OR EXISTS(SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM environment_job WHERE parent_task_id=? AND state IN ('QUEUED','RUNNING'))`, taskID, taskID, taskID, taskID).Scan(&busy); err != nil {
+			return err
+		}
+		if busy {
+			return model.ErrConflict
+		}
+		_, err = messageWorkFromTx(ctx, tx, taskID, "用户补充的构建诊断（不是新的需求、权限或测试通过证明）：\n"+diagnosis+"\n沿用原 Session 和已批准方案；核验诊断后修正构建差异再申请验证，不升级工具链、不擅自扩大验收范围。", fmt.Sprintf("development-diagnosis:%s:%d", taskID, expected), false, "system")
+		return err
+	})
 }

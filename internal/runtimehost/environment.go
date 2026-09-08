@@ -25,23 +25,25 @@ import (
 var windowsPhase0Script string
 
 type windowsProfile struct {
-	WinRMCommand        string `json:"winrm_command"`
-	CMake               string `json:"cmake"`
-	Clang               string `json:"clang"`
-	Ninja               string `json:"ninja"`
-	VSDevCmd            string `json:"vs_dev_cmd"`
-	SQLiteInclude       string `json:"sqlite_include"`
-	SQLiteLibrary       string `json:"sqlite_library"`
-	SQLiteHeaderSHA256  string `json:"sqlite_header_sha256"`
-	SQLiteLibrarySHA256 string `json:"sqlite_library_sha256"`
-	SQLiteDLLSHA256     string `json:"sqlite_dll_sha256"`
-	AllowPolicySwitch   bool   `json:"allow_policy_switch"`
+	ProductCompileCommands string `json:"product_compile_commands"`
+	WinRMCommand           string `json:"winrm_command"`
+	CMake                  string `json:"cmake"`
+	Clang                  string `json:"clang"`
+	Ninja                  string `json:"ninja"`
+	VSDevCmd               string `json:"vs_dev_cmd"`
+	SQLiteInclude          string `json:"sqlite_include"`
+	SQLiteLibrary          string `json:"sqlite_library"`
+	SQLiteHeaderSHA256     string `json:"sqlite_header_sha256"`
+	SQLiteLibrarySHA256    string `json:"sqlite_library_sha256"`
+	SQLiteDLLSHA256        string `json:"sqlite_dll_sha256"`
+	AllowPolicySwitch      bool   `json:"allow_policy_switch"`
 }
 type windowsFile struct {
 	Name string `json:"name"`
 	Data string `json:"data"`
 }
 type windowsPayload struct {
+	ParentTaskID   string         `json:"parent_task_id"`
 	JobID          string         `json:"job_id"`
 	Mode           string         `json:"mode"`
 	SnapshotSHA256 string         `json:"snapshot_sha256"`
@@ -228,7 +230,7 @@ func (d *Daemon) executeEnvironment(ctx context.Context, spec model.RunSpec, emi
 		return finish(err.Error())
 	}
 	answer.SnapshotSHA256 = hash
-	payload := windowsPayload{JobID: spec.TaskID, Mode: "preflight", SnapshotSHA256: hash, Profile: profile, Files: files}
+	payload := windowsPayload{ParentTaskID: env.ParentTaskID, JobID: spec.TaskID, Mode: "preflight", SnapshotSHA256: hash, Profile: profile, Files: files}
 	if err = durableWorkspaceJSON(filepath.Join(record, "snapshot.json"), payload); err != nil {
 		return finish("源码快照持久化失败。")
 	}

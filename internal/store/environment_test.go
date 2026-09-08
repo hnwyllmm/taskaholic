@@ -115,3 +115,25 @@ func TestEnvironmentExplicitBlockedRequestAndPausedParent(t *testing.T) {
 		t.Fatal("bad profile trusted", state)
 	}
 }
+
+func TestDevelopmentDiagnosisPreservesApprovalAndSession(t *testing.T) {
+	ctx := context.Background()
+	s, dev, task, impl := approvedEnvironmentFixture(t)
+	before := developmentState(t, s, task.ID)
+	developmentFinish(t, s, impl, 3, workflow.Result{Outcome: "blocked", Message: "STL preflight failed", Artifacts: []workflow.File{}})
+	current, _ := s.GetTask(ctx, task.ID)
+	if err := s.ResumeDevelopmentDiagnosis(ctx, task.ID, current.Version-1, "verified build mismatch"); !errors.Is(err, model.ErrConflict) {
+		t.Fatal(err)
+	}
+	if err := s.ResumeDevelopmentDiagnosis(ctx, task.ID, current.Version, "Native product build passed. Compare flags before changing tools."); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResumeDevelopmentDiagnosis(ctx, task.ID, current.Version, "duplicate"); !errors.Is(err, model.ErrConflict) {
+		t.Fatal(err)
+	}
+	next := startWork(t, s, dev, task)
+	after := developmentState(t, s, task.ID)
+	if next.SessionID != impl.SessionID || before.PlanHash != after.PlanHash || before.ApprovedReviewID != after.ApprovedReviewID {
+		t.Fatal("diagnosis invalidated session/approval")
+	}
+}
