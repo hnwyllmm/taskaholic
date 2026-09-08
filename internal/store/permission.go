@@ -208,6 +208,9 @@ func permissionGateTx(ctx context.Context, tx *sql.Tx, req CreateRunRequest, las
 		}
 		if !caps.Executors[op].Available {
 			reason := "运行机器未提供可用的 Windows 执行能力；需要配置执行器，不是授予 Agent sudo。"
+			if caps.Executors[op].Reason != "" {
+				reason += "\n" + caps.Executors[op].Reason
+			}
 			if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET scheduler_error=?,retry_at_ms=? WHERE task_id=?`, reason, time.Now().Add(30*time.Second).UnixMilli(), req.TaskID); err != nil {
 				return false, err
 			}

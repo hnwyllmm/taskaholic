@@ -25,6 +25,9 @@ import (
 var windowsPhase0Script string
 
 type windowsProfile struct {
+	RepositoryRoot         string `json:"repository_root"`
+	BuildContract          string `json:"build_contract"`
+	BuildScriptSHA256      string `json:"build_script_sha256"`
 	ProductCompileCommands string `json:"product_compile_commands"`
 	WinRMCommand           string `json:"winrm_command"`
 	CMake                  string `json:"cmake"`
@@ -67,6 +70,9 @@ func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
 		st, e := os.Stat(p.WinRMCommand)
 		if ok && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) && p.AllowPolicySwitch && len(p.SQLiteHeaderSHA256) == 64 && len(p.SQLiteLibrarySHA256) == 64 && len(p.SQLiteDLLSHA256) == 64 {
 			cap = model.ExecutionCapability{Available: true}
+			if p.BuildContract != "seekdb-phase0-v1" || p.RepositoryRoot == "" || len(p.BuildScriptSHA256) != 64 {
+				cap = model.ExecutionCapability{Reason: "仓库 build.ps1 尚未注册 Phase 0 构建入口；需先接入并评审，不允许直接 CMake 回退"}
+			}
 		}
 	}
 	return map[string]model.ExecutionCapability{"windows_seekdb_phase0": cap}
