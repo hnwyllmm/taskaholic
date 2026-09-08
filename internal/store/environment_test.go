@@ -14,6 +14,12 @@ func approvedEnvironmentFixture(t *testing.T) (*Store, model.AgentProfile, model
 	t.Helper()
 	ctx := context.Background()
 	s, dev, reviewer, task := developmentFixture(t)
+	if _, err := s.db.Exec(`UPDATE runtime SET capabilities_json=json_set(capabilities_json,'$.executors.windows_seekdb_phase0.available',json('true')) WHERE runtime_id=?`, dev.RuntimeID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveExecutionPolicy(ctx, model.ExecutionPolicy{Operation: "windows_seekdb_phase0", RuntimeID: dev.RuntimeID, Repository: "oceanbase/seekdb", Effect: "allow"}); err != nil {
+		t.Fatal(err)
+	}
 	first := startWork(t, s, dev, task)
 	developmentFinish(t, s, first, 1, submittedPlan("Windows Phase 0"))
 	if err := s.RoutePlanReviews(ctx); err != nil {

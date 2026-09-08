@@ -41,9 +41,9 @@ func listWorkItemsTx(ctx context.Context, tx *sql.Tx, seed string, args ...any) 
 			SELECT d.root_id,
 				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' THEN 1 ELSE 0 END) total,
 				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state='COMPLETED' THEN 1 ELSE 0 END) completed,
-				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state='BLOCKED' THEN 1 ELSE 0 END) blocked,
+				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state IN ('BLOCKED','WAITING_ENVIRONMENT') THEN 1 ELSE 0 END) blocked,
 				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state='WAITING_REVIEW' THEN 1 ELSE 0 END) waiting_review,
-				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state='WAITING_INPUT' THEN 1 ELSE 0 END) waiting_input,
+				SUM(CASE WHEN COALESCE(r.state,'')!='SUPERSEDED' AND t.state IN ('WAITING_INPUT','WAITING_AUTHORIZATION') THEN 1 ELSE 0 END) waiting_input,
 				SUM(CASE WHEN r.state='SUPERSEDED' THEN 1 ELSE 0 END) superseded,
 				MAX(t.updated_at_ms) updated_at_ms
 			FROM descendants d JOIN task t ON t.task_id=d.task_id

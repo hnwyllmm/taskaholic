@@ -114,8 +114,7 @@ func environmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		return fmt.Errorf("%w: parent approval paused or changed", model.ErrConflict)
 	}
 	req.Environment = &job
-	_, err = tx.ExecContext(ctx, `UPDATE environment_job SET state='RUNNING' WHERE task_id=?`, req.TaskID)
-	return err
+	return nil
 }
 
 func finishEnvironmentTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, result workflow.Result) (bool, error) {

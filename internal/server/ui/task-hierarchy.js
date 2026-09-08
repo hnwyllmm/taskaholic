@@ -1,6 +1,6 @@
 'use strict';
 (()=>{
-  const attentionStates=['WAITING_REVIEW','WAITING_INPUT','BLOCKED'];
+  const attentionStates=['WAITING_REVIEW','WAITING_INPUT','BLOCKED','WAITING_AUTHORIZATION','WAITING_ENVIRONMENT'];
   const needsAttention=t=>attentionStates.includes(t.state)||(t.subtasks?.needs_attention||0)>0;
   function matchesFilter(t,filter){
     if(filter==='ATTENTION')return needsAttention(t);

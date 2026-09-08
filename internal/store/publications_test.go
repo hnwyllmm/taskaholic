@@ -30,7 +30,7 @@ func TestPublicationBackupAndSchemaUpgradePreserveSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, q := range []string{`DROP TABLE environment_job`, `DROP TABLE development_run`, `DROP TABLE development`, `DROP TABLE publication_history`, `DROP TABLE publication`, `DELETE FROM schema_version WHERE version>=16`} {
+	for _, q := range []string{`DROP TABLE permission_request`, `DROP TABLE execution_policy`, `DROP TABLE environment_job`, `DROP TABLE development_run`, `DROP TABLE development`, `DROP TABLE publication_history`, `DROP TABLE publication`, `DELETE FROM schema_version WHERE version>=16`} {
 		if _, err = old.Exec(q); err != nil {
 			t.Fatal(err)
 		}

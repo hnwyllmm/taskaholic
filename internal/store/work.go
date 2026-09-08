@@ -247,6 +247,9 @@ func messageWorkFromTx(ctx context.Context, tx *sql.Tx, taskID, content, key str
 	}
 	d, devErr := developmentTx(ctx, tx, taskID)
 	if speaker == "user" {
+		if err = invalidatePermissionsTx(ctx, tx, taskID); err != nil {
+			return model.TaskMessage{}, err
+		}
 		if err = pauseEnvironmentChildrenTx(ctx, tx, taskID); err != nil {
 			return model.TaskMessage{}, err
 		}
@@ -337,6 +340,9 @@ func (s *Store) PauseWork(ctx context.Context, taskID string) error {
 }
 
 func pauseWorkTx(ctx context.Context, tx *sql.Tx, taskID string) error {
+	if err := invalidatePermissionsTx(ctx, tx, taskID); err != nil {
+		return err
+	}
 	if err := pauseEnvironmentChildrenTx(ctx, tx, taskID); err != nil {
 		return err
 	}
@@ -385,7 +391,7 @@ func pauseWorkTx(ctx context.Context, tx *sql.Tx, taskID string) error {
 
 // PendingWork is a durable queue view, not an in-memory goroutine per task.
 func (s *Store) PendingWork(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT w.task_id FROM task_workflow w JOIN task t ON t.task_id=w.task_id JOIN task_message m ON m.task_id=w.task_id AND m.delivery='PENDING' WHERE w.paused=0 AND w.retry_at_ms<=? AND t.state NOT IN ('NEW','COMPLETED') AND NOT EXISTS(SELECT 1 FROM run r WHERE r.task_id=w.task_id AND r.state IN ('QUEUED','RUNNING')) GROUP BY w.task_id ORDER BY MIN(m.seq) LIMIT 50`, time.Now().UnixMilli())
+	rows, err := s.db.QueryContext(ctx, `SELECT w.task_id FROM task_workflow w JOIN task t ON t.task_id=w.task_id JOIN task_message m ON m.task_id=w.task_id AND m.delivery='PENDING' WHERE w.paused=0 AND w.retry_at_ms<=? AND t.state NOT IN ('NEW','COMPLETED','WAITING_AUTHORIZATION') AND NOT EXISTS(SELECT 1 FROM run r WHERE r.task_id=w.task_id AND r.state IN ('QUEUED','RUNNING')) GROUP BY w.task_id ORDER BY MIN(m.seq) LIMIT 50`, time.Now().UnixMilli())
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +409,7 @@ func (s *Store) PendingWork(ctx context.Context) ([]string, error) {
 func (s *Store) DeferWork(ctx context.Context, taskID string, cause error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE task_workflow SET scheduler_error=?,retry_at_ms=? WHERE task_id=?`, cause.Error(), time.Now().Add(2*time.Second).UnixMilli(), taskID)
+	_, err := s.db.ExecContext(ctx, `UPDATE task_workflow SET scheduler_error=?,retry_at_ms=? WHERE task_id=? AND NOT EXISTS(SELECT 1 FROM task WHERE task_id=? AND state IN ('WAITING_AUTHORIZATION','WAITING_ENVIRONMENT'))`, cause.Error(), time.Now().Add(2*time.Second).UnixMilli(), taskID, taskID)
 	return err
 }
 
@@ -513,13 +519,27 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if err = environmentInstructionsTx(ctx, tx, &req); err != nil {
 		return model.Run{}, err
 	}
+	if waiting, e := permissionGateTx(ctx, tx, req, last); e != nil {
+		return model.Run{}, e
+	} else if waiting {
+		if e = tx.Commit(); e != nil {
+			return model.Run{}, e
+		}
+		return model.Run{}, fmt.Errorf("%w: waiting for execution permission or runtime capability", model.ErrConflict)
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
 	}
 	if development != nil {
+		// The plan approval remains independent of execution policy.
 		if _, err = tx.ExecContext(ctx, `INSERT INTO development_run VALUES(?,?,?,?)`, run.ID, development.TaskID, development.Version, development.Phase); err != nil {
 			return run, err
+		}
+	}
+	if req.Environment != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE environment_job SET state='RUNNING' WHERE task_id=?`, req.TaskID); err != nil {
+			return model.Run{}, err
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE task_message SET delivery='SENT',run_id=? WHERE task_id=? AND delivery='PENDING' AND seq<=?`, run.ID, req.TaskID, last); err != nil {

@@ -55,6 +55,21 @@ type windowsReceipt struct {
 
 var phase0Files = []string{"CMakeLists.txt", "path_fixture.h", "path_fixture_test.cpp", "phase0.manifest", "README.md", "sqlite_path_probe.cpp"}
 
+// Advertise configured host capabilities; remote connectivity/build checks remain preflight.
+func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
+	cap := model.ExecutionCapability{Reason: "缺少受控 Windows profile、固定依赖校验或宿主策略切换授权"}
+	raw, err := os.ReadFile(filepath.Join(d.config.WorkRoot, "windows-profiles.json"))
+	var profiles map[string]windowsProfile
+	if err == nil && json.Unmarshal(raw, &profiles) == nil {
+		p, ok := profiles["windows_seekdb_phase0"]
+		st, e := os.Stat(p.WinRMCommand)
+		if ok && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) && p.AllowPolicySwitch && len(p.SQLiteHeaderSHA256) == 64 && len(p.SQLiteLibrarySHA256) == 64 && len(p.SQLiteDLLSHA256) == 64 {
+			cap = model.ExecutionCapability{Available: true}
+		}
+	}
+	return map[string]model.ExecutionCapability{"windows_seekdb_phase0": cap}
+}
+
 func snapshotWindowsFiles(directory string) ([]windowsFile, string, error) {
 	real, err := filepath.EvalSymlinks(directory)
 	if err != nil || real != directory {

@@ -7,6 +7,7 @@ const activity=WAActivity.mount($('activity-panel'),{onTaskEvent:()=>{if(!activi
 const reviewChatBox=WA.el('section');reviewChatBox.id='task-review-chat';$('composer').before(reviewChatBox);const reviewChat=WAReviewChat.mount(reviewChatBox,{changed:async()=>{if(state.id){await selectTask(state.id);await list();}},busyChanged:controls});
 const labels={NEW:'待分派',QUEUED:'排队中',IN_PROGRESS:'进行中',WAITING_REVIEW:'待我验收',WAITING_INPUT:'待我回复',BLOCKED:'受阻',PAUSED:'已暂停',COMPLETED:'已完成',WAITING_SUBTASKS:'等待子任务'};
 labels.ATTENTION='需要你';
+Object.assign(labels,{WAITING_AUTHORIZATION:'等待授权',WAITING_ENVIRONMENT:'等待环境'});
 const hierarchy=WATaskHierarchy.mount($('task-parents'),$('task-hierarchy'),{navigate:id=>action(()=>selectTask(id))});
 function node(tag,text,cls){const n=document.createElement(tag);if(text!=null)n.textContent=text;if(cls)n.className=cls;return n;}
 function executionLabel(config){return '推理：'+(config.reasoning_effort|| (config.reasoning_effort_source?'运行环境默认（具体值未报告）':'历史未记录'))+(config.execution_model_id&&config.execution_model_id!==config.model_id?' · 执行模型：'+config.execution_model_id:'');}

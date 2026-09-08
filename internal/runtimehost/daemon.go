@@ -565,6 +565,7 @@ func (d *Daemon) resolveWorkingDir(spec model.RunSpec) (string, error) {
 
 func (d *Daemon) capabilities() map[string]any {
 	result := map[string]any{
+		"executors":      d.executionCapabilities(),
 		"protocol":       "json-rpc-2.0/websocket",
 		"durable_spool":  true,
 		"workspace_root": d.config.WorkRoot,

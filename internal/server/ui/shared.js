@@ -12,6 +12,7 @@ window.WA=(()=>{
   const download=async(path,name)=>{const r=await fetch('/api/v1'+path,{headers:token()?{Authorization:'Bearer '+token()}:{}});if(!r.ok)throw Error('下载失败：'+r.status);const url=URL.createObjectURL(await r.blob()),a=el('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);};
   const labels={NEW:'待分派',QUEUED:'排队中',IN_PROGRESS:'进行中',WAITING_REVIEW:'待你验收',WAITING_INPUT:'待你回复',BLOCKED:'需要处理',PAUSED:'已暂停',COMPLETED:'已完成',WAITING_SUBTASKS:'等待子任务'};
   const link=(text,href,cls)=>{const a=el('a',text,cls);a.href=href;return a;};
+	Object.assign(labels,{WAITING_AUTHORIZATION:'等待授权',WAITING_ENVIRONMENT:'等待环境'});
   const badge=state=>{const n=el('span',labels[state]||state,'status-pill');n.dataset.state=state;return n;};
   const date=ms=>new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
   const syncAccess=async(settings,indicator)=>{
@@ -34,5 +35,6 @@ window.WA=(()=>{
     const access=el('span','免登录模式','small muted');access.hidden=true;access.title='所有能连接此地址的设备都可以访问数据并操作任务；仅用于受信任网络。';connection.append(access);void syncAccess(settings,access);
     if(page==='tasks'){const b=el('button','备份');b.id='backup';connection.append(b);}header.append(connection);
   }
+  if(header){const a=link('执行权限','/permissions',document.body.dataset.page==='permissions'?'selected':'');if(document.body.dataset.page==='permissions')a.setAttribute('aria-current','page');header.querySelector('.app-nav')?.append(a);}
   return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,syncAccess};
 })();

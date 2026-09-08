@@ -8,6 +8,7 @@ import (
 )
 
 func (s *Server) registerHomeRoutes(mux *http.ServeMux) {
+	s.registerPermissionRoutes(mux)
 	for path, handler := range map[string]http.HandlerFunc{
 		"GET /api/v1/home":                                          s.handleHome,
 		"GET /api/v1/home/chats":                                    s.handleHomeChats,

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>执行权限 · Work Assistant</title><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/permissions.js" defer></script></head>
+<body class="app-page" data-page="permissions"><header data-app-shell></header><div id="notice" role="status" hidden></div><main>
+<div class="page-heading"><div><span class="eyebrow">SCOPED EXECUTION</span><h1>执行权限</h1><p>把重复确认变成明确的预授权，不开放任意 sudo、管理员账户或宿主命令。</p></div></div>
+<section class="panel"><h2>需要授权</h2><div id="permission-requests"></div></section>
+<section class="panel"><h2>预授权规则</h2><p class="small muted">默认：已审批的隔离开发/发布沿用现有允许行为；Windows 验证需要确认。禁止规则优先，其余采用最具体范围；同等范围“每次确认”优先。规则只影响后续调度，不中断当前执行。修改后可在待授权记录中重新检查。</p>
+<form id="policy-form"><label>操作<select id="policy-operation"><option value="windows_seekdb_phase0">Windows Phase 0（串行测试、切换并恢复策略）</option><option value="development.execute">已批准的隔离仓库开发 / PR 发布</option></select></label>
+<label>运行机器<input id="policy-runtime" list="permission-runtimes" required placeholder="例如 dev；* 表示所有机器"></label><datalist id="permission-runtimes"></datalist>
+<label>仓库<input id="policy-repository" required placeholder="例如 oceanbase/seekdb；* 表示所有仓库"></label>
+<label>策略<select id="policy-effect"><option value="ask">每次确认</option><option value="allow">预授权允许</option><option value="deny">禁止</option></select></label><button type="submit" class="primary">保存规则</button></form>
+<div id="permission-policies"></div></section>
+<section class="panel"><h2>执行环境能力</h2><p class="small muted">显示 runtime 最近连接时报告的配置能力；不代表远端测试已通过。配置变更后需重新连接 runtime。没有执行器时授权也不能代替环境配置。</p><div id="permission-capabilities"></div></section>
+<p class="page-footer">当前接入开发/发布和 Windows 验证。GitLab 流水线、GitHub 评论仍沿用各自已有执行配置，尚未接入此权限页。方案审批、系统升级确认和最终验收不受此页预授权替代。</p></main></body></html>
