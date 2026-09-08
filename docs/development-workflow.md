@@ -29,7 +29,10 @@
 
 Manager 签发内部 `ExecutionGrant`，包含审批单、方案 hash、GitHub 仓库及 base branch。它经已有带认证的 JSON-RPC runtime 通道传递，不能由任务源或模型直接提交。原角色的历史只读部署说明由本轮明确授权取代，角色职责和其它边界不变。
 
-- runtime 克隆明确批准的 base branch；每个 Session 独立目录，不写共享 checkout。
+- runtime 使用主机配置的基准仓库，通过 SSH fetch 明确批准的 upstream 分支并固定 commit，为每个 Session 创建独立任务分支和 worktree。保留基准仓库的工作目录、分支和已有修改，不 checkout/reset/clean，也不改其 remote 配置。
+- 主机 `work root/repositories.json` 配置仓库到 `directory`、`upstream_ssh` 的映射。路径与 SSH 入口由主机配置，不由模型指定。缺少配置或基准仓库时报错，不再为每个任务克隆整个 upstream。
+- `gh api` 核实当前身份及同名 fork 的 parent 和 push 权限；基准仓库 origin 必须是该 fork 的 SSH 地址，可使用主机 SSH alias。新 worktree 只向核实后的 origin 推送任务分支，使用 `gh pr create --repo <upstream> --head <fork-owner>:<task-branch>` 发起 PR，不向 upstream 推送。
+- Git 元数据仍在基准仓库的 `.git/worktrees/` 中，位于 Agent 可写 Session 之外。重试复用原 worktree，不覆盖未知残留目录；旧版已登记的独立 clone 保留兼容，不迁移历史数据。
 - Codex `workspace-write`，不启用 full-access；Git 元数据和发布回执在可写 Session 目录之外。没有额外为 Agent 开放网络或外部系统写权限。依赖/远程 Windows 验证若不可用，应报告阻塞或未验证，不能虚报。
 - runtime 使用已登录 `gh` 的现有 fork，核对 fork 的 parent 后，只推送 `work-assistant/<task_id>`，不强推、不建 fork、不合并。
 - PR POST 前 fsync 记录尝试。响应不确定时按任务 marker 与 branch 查找已有 PR；未找到也不自动重复 POST。手动编辑/关闭的 PR 不自动重建。
@@ -43,6 +46,8 @@ Manager 签发内部 `ExecutionGrant`，包含审批单、方案 hash、GitHub �
 本版每个方案一个 GitHub 仓库及 base branch；跨仓库应拆成独立任务。修改仓库范围后不会覆盖已有 checkout，而会阻塞要求配置新隔离空间。尚无通用仓库配置 UI、Cursor 可写执行、自动 fork、PR 不确定状态解除 UI。现有任务重走通过带版本检查的 API 操作，页面仅展示阶段与审批。
 
 ## 验证要求
+
+运行环境失败后的恢复使用 `POST /api/v1/work/tasks/{id}/development/retry`，body 为当前 `expected_version`。仅允许最新 Run 失败且审批仍有效、任务空闲的受阻开发任务；保留原 Session、方案 hash、审批和历史失败记录。普通任务消息仍表示调整方向，不能用普通聊天绕过审批。Git 错误仅返回已知脱敏错误类别和失败步骤，不回显可能含凭据的完整 stderr。
 
 自动测试覆盖多轮互审、双方 Session 连续性、旧版本拒绝、普通聊天不能批准、无 reviewer 不跳过、显式人工批准后才有写授权、文档不能作为开发完成、备份恢复、PR POST 不确定结果不重复、foreign fork/符号链接拒绝。
 

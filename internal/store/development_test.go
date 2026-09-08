@@ -45,6 +45,47 @@ func developmentFinish(t *testing.T, s *Store, r model.Run, seq int64, result wo
 func submittedPlan(body string) workflow.Result {
 	return workflow.Result{Outcome: "review", Message: body, Artifacts: []workflow.File{{Name: "plan.md", Content: body}}, PlanScope: &workflow.PlanScope{Repository: "oceanbase/seekdb", BaseBranch: "master"}}
 }
+
+func TestDevelopmentRetryPreservesApprovalAndSession(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, task := developmentFixture(t)
+	first := startWork(t, s, dev, task)
+	developmentFinish(t, s, first, 1, submittedPlan("plan"))
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := developmentState(t, s, task.ID)
+	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+	rr := startWork(t, s, reviewer, child)
+	developmentFinish(t, s, rr, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "passed", Artifacts: []workflow.File{}})
+	w, _ := s.GetWorkDetail(ctx, task.ID)
+	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "yes"); err != nil {
+		t.Fatal(err)
+	}
+	impl := startWork(t, s, dev, task)
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: impl.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3, RunID: impl.ID, TaskID: task.ID, Type: "run.failed", Error: "git failed"}); err != nil {
+		t.Fatal(err)
+	}
+	before := developmentState(t, s, task.ID)
+	current, _ := s.GetTask(ctx, task.ID)
+	if _, err := s.RetryDevelopment(ctx, task.ID, current.Version-1); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("stale retry accepted", err)
+	}
+	if _, err := s.RetryDevelopment(ctx, task.ID, current.Version); err != nil {
+		t.Fatal(err)
+	}
+	after := developmentState(t, s, task.ID)
+	if after.Phase != "IMPLEMENTING" || after.ApprovedReviewID != before.ApprovedReviewID || after.PlanHash != before.PlanHash || after.Version != before.Version {
+		t.Fatal("retry changed approval", after)
+	}
+	if _, err := s.RetryDevelopment(ctx, task.ID, current.Version); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("duplicate retry accepted", err)
+	}
+	next := startWork(t, s, dev, task)
+	if next.SessionID != first.SessionID || outboxSpec(t, s, next.ID).ExecutionGrant == nil {
+		t.Fatal("retry lost session/grant")
+	}
+}
 func developmentState(t *testing.T, s *Store, task string) *model.Development {
 	t.Helper()
 	w, e := s.GetWorkDetail(context.Background(), task)

@@ -15,6 +15,7 @@ import (
 )
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/retry", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRetry)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/restart", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRestart)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
 	for pattern, handler := range map[string]http.HandlerFunc{
@@ -38,6 +39,18 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 	} {
 		mux.Handle(pattern, s.apiAuth(handler))
 	}
+}
+
+func (s *Server) handleDevelopmentRetry(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64 `json:"expected_version"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	m, err := s.store.RetryDevelopment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion)
+	reply(w, http.StatusAccepted, m, err)
 }
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,8 @@ type developmentWorkspace struct {
 	BaseSHA         string `json:"base_sha"`
 	PRURL           string `json:"pr_url"`
 	CreateAttempted bool   `json:"create_attempted"`
+	BaseDirectory   string `json:"base_directory,omitempty"`
+	OriginURL       string `json:"origin_url,omitempty"`
 }
 
 func (w developmentWorkspace) run(ctx context.Context, binary string, args ...string) (string, error) {
@@ -83,7 +85,19 @@ func developmentCommand(ctx context.Context, directory, binary string, args ...s
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1", "GIT_LFS_SKIP_SMUDGE=1")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("%s action failed (details suppressed); check host access, repository and branch", binary)
+		reason := "command failed; raw output withheld to protect credentials"
+		if ctx.Err() != nil {
+			reason = ctx.Err().Error()
+		} else if e, ok := err.(*exec.ExitError); ok {
+			for _, known := range []string{"Permission denied (publickey)", "Could not resolve hostname", "Could not resolve host", "Connection timed out", "Connection refused", "Host key verification failed", "Repository not found", "No space left on device", "already exists", "already checked out", "Connection reset", "early EOF", "index-pack failed"} {
+				if strings.Contains(string(e.Stderr), known) {
+					reason = known
+					break
+				}
+			}
+			reason = fmt.Sprintf("exit %d: %s", e.ExitCode(), reason)
+		}
+		return "", fmt.Errorf("%s action failed: %s", binary, reason)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -115,34 +129,33 @@ func (d *Daemon) prepareDevelopment(ctx context.Context, spec model.RunSpec, ses
 		if err = json.Unmarshal(raw, &w); err != nil {
 			return w, receipt, err
 		}
-		if w.Repository != g.Repository || w.BaseBranch != g.BaseBranch || w.Directory != filepath.Join(sessionDirectory, "repository") || w.GitDir != filepath.Join(metadata, "git") {
+		if w.Repository != g.Repository || w.BaseBranch != g.BaseBranch || w.Directory != filepath.Join(sessionDirectory, "repository") || (w.BaseDirectory == "" && w.GitDir != filepath.Join(metadata, "git")) {
 			return w, receipt, errors.New("approved repository changed; preserve old checkout and configure a new isolated workspace")
 		}
 		real, e := filepath.EvalSymlinks(w.Directory)
 		if e != nil || real != w.Directory {
 			return w, receipt, errors.New("development checkout is missing or symlinked")
 		}
+		if w.BaseDirectory != "" {
+			if e := validateDevelopmentWorktree(ctx, w); e != nil {
+				return w, receipt, e
+			}
+		}
 		return w, receipt, nil
 	}
 	if !os.IsNotExist(err) {
 		return w, receipt, err
 	}
-	w = developmentWorkspace{Repository: g.Repository, BaseBranch: g.BaseBranch, Directory: filepath.Join(sessionDirectory, "repository"), GitDir: filepath.Join(metadata, "git"), Branch: "work-assistant/" + spec.TaskID}
+	w = developmentWorkspace{Repository: g.Repository, BaseBranch: g.BaseBranch, Directory: filepath.Join(sessionDirectory, "repository"), Branch: "work-assistant/" + spec.TaskID}
 	if _, err = os.Lstat(w.Directory); !os.IsNotExist(err) {
 		return w, receipt, errors.New("unregistered checkout exists; refusing to overwrite it")
 	}
-	if _, err = os.Lstat(w.GitDir); !os.IsNotExist(err) {
+	if _, err = os.Lstat(filepath.Join(metadata, "git")); !os.IsNotExist(err) {
 		return w, receipt, errors.New("incomplete Git preparation exists; preserved for recovery")
 	}
-	_, err = developmentCommand(ctx, sessionDirectory, "git", "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "credential.helper=!gh auth git-credential", "clone", "--depth=1", "--single-branch", "--branch", g.BaseBranch, "--separate-git-dir", w.GitDir, "https://github.com/"+g.Repository+".git", w.Directory)
-	if err != nil {
-		return w, receipt, err
-	}
-	w.BaseSHA, err = w.git(ctx, "rev-parse", "HEAD")
-	if err != nil {
-		return w, receipt, err
-	}
-	if _, err = w.git(ctx, "checkout", "-b", w.Branch); err != nil {
+	d.preparationMu.Lock()
+	defer d.preparationMu.Unlock()
+	if err = d.prepareDevelopmentWorktree(ctx, &w); err != nil {
 		return w, receipt, err
 	}
 	return w, receipt, durableWorkspaceJSON(receipt, w)
@@ -245,7 +258,17 @@ func publishDevelopment(ctx context.Context, w *developmentWorkspace, receipt st
 	if found == "" && w.CreateAttempted {
 		return errors.New("previous PR creation outcome is uncertain; no duplicate PR created, inspect GitHub before retrying")
 	}
-	if _, err = w.git(ctx, "push", "https://github.com/"+fork+".git", "HEAD:refs/heads/"+w.Branch); err != nil {
+	pushURL := "https://github.com/" + fork + ".git" // Existing isolated clones keep their transport.
+	if w.BaseDirectory != "" {
+		if !sshRepositoryURL(w.OriginURL, fork) {
+			return errors.New("origin is not the verified publisher fork")
+		}
+		if err = validateDevelopmentWorktree(ctx, *w); err != nil {
+			return err
+		}
+		pushURL = w.OriginURL
+	}
+	if _, err = w.git(ctx, "push", pushURL, "HEAD:refs/heads/"+w.Branch); err != nil {
 		return err
 	}
 	if found == "" {

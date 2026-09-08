@@ -38,14 +38,15 @@ type Daemon struct {
 	epoch    string
 	hostname string
 
-	adapters     map[string]agent.Adapter
-	activeMu     sync.Mutex
-	active       map[string]*activeRun
-	activeWG     sync.WaitGroup
-	storageFault chan error
-	storageErr   error // protected by activeMu; fail closed until process restart
-	modelMu      sync.Mutex
-	modelCache   map[string]*modelCacheEntry
+	adapters      map[string]agent.Adapter
+	activeMu      sync.Mutex
+	active        map[string]*activeRun
+	activeWG      sync.WaitGroup
+	storageFault  chan error
+	storageErr    error // protected by activeMu; fail closed until process restart
+	modelMu       sync.Mutex
+	modelCache    map[string]*modelCacheEntry
+	preparationMu sync.Mutex // Serialize shared-base worktree preparation on this runtime.
 }
 
 type activeRun struct {

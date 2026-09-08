@@ -43,6 +43,56 @@ func developmentTx(ctx context.Context, tx *sql.Tx, taskID string) (model.Develo
 func (s *Store) GetDevelopment(ctx context.Context, taskID string) (model.Development, error) {
 	return readJSONRow[model.Development](s.db.QueryRowContext(ctx, `SELECT data_json FROM development WHERE task_id=?`, taskID))
 }
+
+// Retry a failed runtime attempt, not a change of requirements or new approval.
+func (s *Store) RetryDevelopment(ctx context.Context, taskID string, expected int64) (model.TaskMessage, error) {
+	var message model.TaskMessage
+	if m, err := s.Maintenance(ctx); err != nil {
+		return message, err
+	} else if m != "" {
+		return message, fmt.Errorf("%w: maintenance active", model.ErrConflict)
+	}
+	err := s.sourceWrite(ctx, func(tx *sql.Tx) error {
+		t, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if t.Version != expected || t.State != model.TaskStateBlocked {
+			return fmt.Errorf("%w: retry requires the current blocked task version", model.ErrConflict)
+		}
+		d, err := developmentTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "" {
+			return fmt.Errorf("%w: retry cannot replace plan approval", model.ErrConflict)
+		}
+		r, err := readJSONRow[model.Review](tx.QueryRowContext(ctx, `SELECT data_json FROM review WHERE review_id=? AND task_id=?`, d.ApprovedReviewID, taskID))
+		if err != nil {
+			return err
+		}
+		if r.State != "PLAN_APPROVED" || r.PlanHash != d.PlanHash || r.RunID != d.PlanRunID {
+			return fmt.Errorf("%w: approved plan changed", model.ErrConflict)
+		}
+		var runID, state string
+		if err = tx.QueryRowContext(ctx, `SELECT run_id,state FROM run WHERE task_id=? ORDER BY created_at_ms DESC LIMIT 1`, taskID).Scan(&runID, &state); err != nil {
+			return err
+		}
+		if state != "FAILED" {
+			return fmt.Errorf("%w: only failed runtime attempts can be retried", model.ErrConflict)
+		}
+		var busy bool
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') OR EXISTS(SELECT 1 FROM review_turn WHERE task_id=? AND state IN ('QUEUED','RUNNING'))`, taskID, taskID).Scan(&busy); err != nil {
+			return err
+		}
+		if busy {
+			return fmt.Errorf("%w: task has pending work", model.ErrConflict)
+		}
+		message, err = messageWorkFromTx(ctx, tx, taskID, "运行环境已修复，请沿用当前已批准方案、原 Agent 和原 Session 重试开发。需求及审批范围不变。", "development-retry:"+runID, false, "system")
+		return err
+	})
+	return message, err
+}
 func saveDevelopmentTx(ctx context.Context, tx *sql.Tx, d model.Development, event string) error {
 	raw, err := json.Marshal(d)
 	if err != nil {
