@@ -43,6 +43,11 @@ WinRM helper 由宿主维护并自行读取受保护凭据；不把凭据写入 
 请求或日志。测试源码在专用虚拟机账户下执行，并不是新的 Windows 安全沙箱；
 因此虚拟机应专用，不应包含不相关的敏感资料。
 
+dev 入口 `deploy/dev/windows-run` 使用 WinRM stdin 分块传输，避免 Windows
+命令行长度限制。按已验证的 win11 MAC 从 root 拥有的只读 DHCP 租约文件发现
+IP，不调用 sudo，兼容后台服务的 NoNewPrivileges。更换虚拟机或网络时需要
+管理员更新此宿主入口的身份配置。WinRM 请求不经过模型的 HTTP 代理。
+
 已有受阻任务可由用户显式调用
 `POST /api/v1/work/tasks/{id}/environment`，带当前 `expected_version`、
 `profile` 和 `reason`，直接发起执行子任务，避免通过普通聊天重新触发方案审批。

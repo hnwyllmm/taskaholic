@@ -5,17 +5,44 @@ Large approved source snapshots must not pass through Windows' command line.
 This is a runtime entry point, not a tool exposed to sandboxed agents.
 """
 import base64
+import ipaddress
+import json
+import os
+from pathlib import Path
 import runpy
+import stat
 import sys
+import time
 
 host = runpy.run_path('/data/wangyunlai.wyl/vm/win11/config/winrm-run')
+
+def discover_address():
+    # This dev-specific entry point pins the verified win11 NIC identity.
+    # Root-owned dnsmasq leases are readable without sudo or setuid privileges.
+    leases = Path('/var/lib/libvirt/dnsmasq/virbr0.status')
+    info = leases.lstat()
+    if info.st_uid != 0 or not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022:
+        raise RuntimeError('Untrusted libvirt lease file')
+    matches = [item for item in json.loads(leases.read_text())
+        if item.get('mac-address', '').lower() == '52:54:00:11:25:11'
+        and item.get('expiry-time', 0) > time.time()]
+    if len(matches) != 1:
+        raise RuntimeError('No unique active lease for the configured win11 NIC')
+    address = ipaddress.ip_address(matches[0]['ip-address'])
+    if address not in ipaddress.ip_network('192.168.122.0/24'):
+        raise RuntimeError('Windows lease is outside the configured VM network')
+    return str(address)
 
 def main():
     script = sys.stdin.buffer.read(1024 * 1024 + 1)
     if len(script) > 1024 * 1024:
         raise ValueError('Windows script exceeds 1 MiB')
     username, password = host['read_credentials']()
-    address = host['discover_ipv4']()
+    address = discover_address()
+    # This transport is only for the local VM, never the model's HTTP proxy.
+    for name in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','http_proxy','https_proxy','all_proxy'):
+        os.environ.pop(name, None)
+    os.environ['NO_PROXY'] = os.environ['no_proxy'] = '*'
     session = host['winrm'].Session(
         f'http://{address}:5985/wsman', auth=(username, password),
         transport='ntlm', operation_timeout_sec=60, read_timeout_sec=70)
