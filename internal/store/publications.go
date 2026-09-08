@@ -115,24 +115,24 @@ func (s *Store) ReconcilePublications(ctx context.Context) error {
 		}
 		for _, r := range reviews {
 			key := publicationKey("pr-review", r.target.Entity, r.role)
-			verdict := "评审中（尚无结论）"
+			verdict := "Review in progress (no conclusion yet)"
 			message := ""
 			var result workflow.Result
 			if r.output != "" {
 				result, err = workflow.Parse(r.output)
 				if err != nil {
-					result = workflow.Result{Message: "报告格式无效，不能据此认定评审通过"}
+					result = workflow.Result{Message: "The review report is invalid and cannot be treated as approval."}
 				}
 				message = result.Message
 				switch result.ReviewDecision {
 				case "passed":
-					verdict = "通过"
+					verdict = "Passed"
 				case "changes_requested":
-					verdict = "不通过 · 需要修改"
+					verdict = "Changes requested"
 				case "waiting_tests":
-					verdict = "等待测试"
+					verdict = "Waiting for tests"
 				default:
-					verdict = "未通过 · 检查未完成或旧报告未声明结论"
+					verdict = "Not passed: the review is incomplete or the previous report has no explicit verdict"
 				}
 			}
 			var active bool
@@ -140,17 +140,17 @@ func (s *Store) ReconcilePublications(ctx context.Context) error {
 				return err
 			}
 			if active {
-				verdict = "重新评审中（之前结论不代表本轮通过）"
+				verdict = "Re-review in progress; the previous verdict does not apply to this revision"
 			}
 			if r.state != "COMPLETED" && result.ReviewDecision == "passed" {
-				verdict = "未通过 · 本轮尚未完成"
+				verdict = "Not passed: this review run has not completed"
 			}
 			w, err := scanWork(tx.QueryRowContext(ctx, workSelect+` WHERE task_id=?`, r.task))
 			if err != nil {
 				return err
 			}
 			if w.Paused {
-				verdict = "已暂停（不作为当前通过结论）"
+				verdict = "Paused; this is not a current passing verdict"
 			}
 			pipelines, err := listJSONRows[model.TestPipeline](ctx, tx, `SELECT data_json FROM test_pipeline WHERE pr_target_id=? AND head_sha=? ORDER BY attempt`, r.target.ID, r.head)
 			if err != nil {
@@ -158,18 +158,18 @@ func (s *Store) ReconcilePublications(ctx context.Context) error {
 			}
 			var tests strings.Builder
 			for _, p := range pipelines {
-				fmt.Fprintf(&tests, "\n- 测试 #%d：%s · %s", p.PipelineID, p.State, p.URL)
+				fmt.Fprintf(&tests, "\n- Test #%d: %s · %s", p.PipelineID, p.State, p.URL)
 			}
 			var testsRequired bool
 			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM test_pipeline WHERE pr_target_id=?)`, r.target.ID).Scan(&testsRequired); err != nil {
 				return err
 			}
 			if testsRequired && (len(pipelines) == 0 || pipelines[len(pipelines)-1].State != "success") && result.ReviewDecision == "passed" {
-				verdict = "未通过 · 必需测试尚未成功"
+				verdict = "Not passed: required tests have not succeeded"
 			}
-			body := fmt.Sprintf("<!-- work-assistant:review:%s -->\n## Code review · %s\n\n评审版本：`%s`\n\n结论：**%s**\n\n%s\n\n### 测试记录\n%s\n\n---\n这是 Agent 对上述 commit 的评审记录，不是 GitHub Approve，也不代表人工验收或允许合并。新 commit 必须重新评审；本评论持续更新，历次内容保存在任务记录中。", key, r.name, r.head, verdict, message, tests.String())
+			body := fmt.Sprintf("<!-- work-assistant:review:%s -->\n## Agent code review\n\nReviewed commit: `%s`\n\nVerdict: **%s**\n\n%s\n\n### Test history\n%s\n\n---\nThis is the Agent review record for the commit above. It is not a GitHub approval, human acceptance, or merge authorization. Every new commit requires another review. This comment is updated in place; previous versions remain in the Work Assistant history.", key, r.head, verdict, message, tests.String())
 			decision := "pending"
-			if verdict == "通过" {
+			if verdict == "Passed" {
 				decision = "passed"
 			}
 			if err = queuePublicationTx(ctx, tx, model.Publication{Key: key, TaskID: r.task, Platform: "github", URL: r.target.Entity, HeadSHA: r.head, Body: body, Sticky: true, ReportHash: publicationKey(r.output), Verdict: decision}); err != nil {
@@ -236,7 +236,11 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 				destination = ref.URL
 			}
 			if ref.Kind == "github.pr" {
-				fmt.Fprintf(&links, "\n- PR：%s", ref.URL)
+				if p.Platform == "github" {
+					fmt.Fprintf(&links, "\n- PR: %s", ref.URL)
+				} else {
+					fmt.Fprintf(&links, "\n- PR：%s", ref.URL)
+				}
 			}
 		}
 		if p.URL == "" {
@@ -289,11 +293,19 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 			return err
 		}
 		for _, pipeline := range pipelines {
-			fmt.Fprintf(&links, "\n- Pipeline #%d：%s · %s · 被测 commit %s", pipeline.PipelineID, pipeline.State, pipeline.URL, pipeline.HeadSHA)
+			if p.Platform == "github" {
+				fmt.Fprintf(&links, "\n- Pipeline #%d: %s · %s · tested commit %s", pipeline.PipelineID, pipeline.State, pipeline.URL, pipeline.HeadSHA)
+			} else {
+				fmt.Fprintf(&links, "\n- Pipeline #%d：%s · %s · 被测 commit %s", pipeline.PipelineID, pipeline.State, pipeline.URL, pipeline.HeadSHA)
+			}
 		}
 		lifecycle := ""
 		if developmentErr == nil {
-			lifecycle = "\n开发阶段：" + d.Phase + "（方案批准前不开发；方案通过不代表工单完成）"
+			if p.Platform == "github" {
+				lifecycle = "\nDevelopment phase: " + d.Phase + " (implementation starts only after plan approval; plan approval does not complete the issue)."
+			} else {
+				lifecycle = "\n开发阶段：" + d.Phase + "（方案批准前不开发；方案通过不代表工单完成）"
+			}
 		}
 		// External issues are milestone reports, not a mirror of the execution
 		// log. Freeze each delivery once; retries, new runs, CI updates and
@@ -322,7 +334,12 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 			if exists {
 				continue
 			}
-			body := fmt.Sprintf("<!-- work-assistant:progress:%s -->\n工作助手处理进展\n\n状态：%s\n任务类型：%s\n\n以下是最近一轮已提交的分析，正在进行的后续修改尚不包含在此报告内。\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n验证结果：%s\n\n阻塞/无法修复说明：%s\n\n关联交付：%s\n\n状态为工作助手记录；提交 PR 不代表已合并或工单已解决。", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
+			body := ""
+			if p.Platform == "github" {
+				body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n## Work Assistant progress\n\nStatus: %s\nTask type: %s\n\nThis report contains the latest submitted analysis. Ongoing changes made after that submission are not included.\n\nProblem analysis: %s\n\nImplementation/fix approach: %s\n\nRationale: %s\n\nValidation: %s\n\nBlocked/unresolved reason: %s\n\nRelated delivery:%s\n\nThis status comes from Work Assistant records. Opening a PR does not mean it has been merged or that the issue is resolved.", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
+			} else {
+				body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n工作助手处理进展\n\n状态：%s\n任务类型：%s\n\n以下是最近一轮已提交的分析，正在进行的后续修改尚不包含在此报告内。\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n验证结果：%s\n\n阻塞/无法修复说明：%s\n\n关联交付：%s\n\n状态为工作助手记录；提交 PR 不代表已合并或工单已解决。", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
+			}
 			p.Key = key
 			body += lifecycle
 			p.Body = body
@@ -356,7 +373,11 @@ func queueApprovedIssuePlanTx(ctx context.Context, tx *sql.Tx, p model.Publicati
 		return nil // Do not publish internal prose that was not authored for the source.
 	}
 	u := result.TaskUpdate
-	p.Body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n最终确认的方案\n\n方案已通过 Agent 评审及人工确认；不代表实现、测试或工单已完成。\n\n仓库：%s\n目标分支：%s\n方案版本：%d\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n已有验证：%s\n\n待验证/限制：%s", p.Key, d.Repository, d.BaseBranch, d.Version, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason)
+	if p.Platform == "github" {
+		p.Body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n## Final approved plan\n\nThe plan passed Agent review and human confirmation. This does not mean implementation, testing, or the issue itself is complete.\n\nRepository: %s\nBase branch: %s\nPlan version: %d\n\nProblem analysis: %s\n\nImplementation/fix approach: %s\n\nRationale: %s\n\nExisting validation: %s\n\nRemaining validation/limitations: %s", p.Key, d.Repository, d.BaseBranch, d.Version, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason)
+	} else {
+		p.Body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n最终确认的方案\n\n方案已通过 Agent 评审及人工确认；不代表实现、测试或工单已完成。\n\n仓库：%s\n目标分支：%s\n方案版本：%d\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n已有验证：%s\n\n待验证/限制：%s", p.Key, d.Repository, d.BaseBranch, d.Version, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason)
+	}
 	return queuePublicationTx(ctx, tx, p)
 }
 

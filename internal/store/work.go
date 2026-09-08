@@ -503,7 +503,7 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 		return model.Run{}, err
 	}
 	if automatedReview {
-		req.Instructions += "\n\n本任务是内部 Agent 评审子任务：review 表示评审报告已交付，Manager 将自动汇总给原任务 Agent。它不代表原任务通过人工验收，不授权合并 PR。不要登记 PR，也不要生成新的评审子任务。"
+		req.Instructions += "\n\n本任务是内部 Agent 评审子任务：review 表示评审报告已交付，Manager 将自动汇总给原任务 Agent。它不代表原任务通过人工验收，不授权合并 PR。不要登记 PR，也不要生成新的评审子任务。该报告会回写 GitHub PR，因此 message 及问题、证据、建议、测试结论等全部使用英文。"
 	}
 	pipelines, err := listTestPipelineContextTx(ctx, tx, req.TaskID)
 	if err != nil {

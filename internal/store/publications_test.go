@@ -9,9 +9,14 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode"
 	"work-assistant/internal/model"
 	"work-assistant/internal/workflow"
 )
+
+func containsHan(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool { return unicode.Is(unicode.Han, r) }) >= 0
+}
 
 func TestPublicationBackupAndSchemaUpgradePreserveSessions(t *testing.T) {
 	ctx := context.Background()
@@ -100,7 +105,7 @@ func TestReviewPublicationStickyAcrossHeadsAndAppendOnlyHistory(t *testing.T) {
 		t.Fatal(publications, err)
 	}
 	p := publications[0]
-	if p.TaskID != child.ID || p.HeadSHA != target.HeadSHA || p.Verdict != "passed" || !strings.Contains(p.Body, "**通过**") {
+	if p.TaskID != child.ID || p.HeadSHA != target.HeadSHA || p.Verdict != "passed" || !strings.Contains(p.Body, "**Passed**") || containsHan(p.Body) {
 		t.Fatal(p)
 	}
 	if err = s.ReconcilePublications(ctx); err != nil {
@@ -169,7 +174,7 @@ func TestReviewCommentCannotInheritRequiredTestsFromOlderCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	all, err := s.ListPublications(ctx, parent.ID)
-	if err != nil || len(all) != 1 || all[0].Verdict == "passed" || !strings.Contains(all[0].Body, "必需测试尚未成功") {
+	if err != nil || len(all) != 1 || all[0].Verdict == "passed" || !strings.Contains(all[0].Body, "required tests have not succeeded") {
 		t.Fatal(all, err)
 	}
 }
@@ -282,7 +287,7 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	next, _ := s.ListPublications(ctx, task.ID)
-	if len(next) != 1 {
+	if len(next) != 1 || next[0].Platform != "github" || containsHan(next[0].Body) || !strings.Contains(next[0].Body, "Work Assistant progress") {
 		t.Fatal("duplicate milestone")
 	}
 	// Later runs provide different text but must not rewrite a delivered PR report.
@@ -435,8 +440,15 @@ func TestIssuePlansPublishOnlyAfterHumanApproval(t *testing.T) {
 	}
 	p := checkCount(3) // One final-plan comment per source.
 	for _, item := range p[1:] {
-		if !strings.Contains(item.Body, "final approved proposal") || strings.Contains(item.Body, "draft two") || !strings.Contains(item.Body, "人工确认") {
+		languageMarker := "人工确认"
+		if item.Platform == "github" {
+			languageMarker = "human confirmation"
+		}
+		if !strings.Contains(item.Body, "final approved proposal") || strings.Contains(item.Body, "draft two") || !strings.Contains(item.Body, languageMarker) {
 			t.Fatal("wrong plan published", item)
+		}
+		if item.Platform == "github" && containsHan(item.Body) || item.Platform == "antmultica" && !containsHan(item.Body) {
+			t.Fatal("publication language does not match platform", item)
 		}
 	}
 	implementation := startWork(t, s, dev, task)
