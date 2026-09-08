@@ -576,6 +576,11 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		if handled, err := finishEnvironmentTx(ctx, tx, e, workflow.Result{}); handled || err != nil {
 			return err
 		}
+		if e.Type == "run.failed" && !w.Paused && pending == 0 {
+			if handled, err := recoverDisconnectedDevelopmentTx(ctx, tx, taskID, e.RunID, e.Error); handled || err != nil {
+				return err
+			}
+		}
 		if e.Type == "run.interrupted" {
 			state = model.TaskStatePaused
 			if !w.Paused && pending > 0 {
@@ -628,6 +633,15 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 	e.TaskID = taskID
 	if handled, err := finishEnvironmentTx(ctx, tx, e, result); handled || err != nil {
 		return err
+	}
+	if result.RecoveryRequest != nil {
+		if w.Paused || pending > 0 {
+			if w.Paused {
+				return setWorkStateTx(ctx, tx, taskID, model.TaskStatePaused)
+			}
+			return setWorkStateTx(ctx, tx, taskID, model.TaskStateQueued)
+		}
+		return requestRecoveryTx(ctx, tx, taskID, e.RunID, *result.RecoveryRequest)
 	}
 	if result.EnvironmentRequest != nil {
 		if w.Paused || pending > 0 {

@@ -55,7 +55,12 @@ func (s *Server) handleEnvironmentRequest(w http.ResponseWriter, r *http.Request
 		return
 	}
 	err := s.store.RequestEnvironment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, workflow.EnvironmentRequest{Profile: req.Profile, Reason: req.Reason})
-	reply(w, http.StatusAccepted, map[string]string{"status": "WAITING_SUBTASKS"}, err)
+	if err != nil {
+		reply(w, http.StatusAccepted, nil, err)
+		return
+	}
+	task, err := s.store.GetTask(r.Context(), r.PathValue("task_id"))
+	reply(w, http.StatusAccepted, map[string]any{"status": task.State}, err)
 }
 
 func (s *Server) handleDevelopmentDiagnosis(w http.ResponseWriter, r *http.Request) {

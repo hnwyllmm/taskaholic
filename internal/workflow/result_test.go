@@ -70,3 +70,23 @@ func TestEnvironmentRequestValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestRecoveryRequestValidation(t *testing.T) {
+	good := `{"outcome":"blocked","message":"continue diagnosis","artifacts":[],"recovery_request":{"evidence":"build exit 1","next_step":"inspect repository script"}}`
+	if _, err := Parse(good); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(good, "build exit 1", "", 1),
+		strings.Replace(good, `"blocked"`, `"review"`, 1),
+		strings.Replace(good, `"next_step":`, `"command":`, 1),
+		strings.Replace(good, `"artifacts":[]`, `"artifacts":[],"environment_request":{"profile":"windows_seekdb_phase0","reason":"test"}`, 1),
+	} {
+		if _, err := Parse(bad); err == nil {
+			t.Fatal("unsafe recovery accepted", bad)
+		}
+	}
+	if !strings.Contains(string((JSONContract{}).Schema()), `"recovery_request"`) {
+		t.Fatal("schema missing recovery")
+	}
+}

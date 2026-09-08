@@ -12,6 +12,16 @@ import (
 	"work-assistant/internal/workflow"
 )
 
+// Keep both the verdict/snapshot at the head and failure/restoration evidence at
+// the tail. Full evidence remains in the child's persisted report.
+func environmentEvidence(message string) string {
+	runes := []rune(message)
+	if len(runes) <= 12000 {
+		return message
+	}
+	return string(runes[:3000]) + "\n[中间日志省略；完整报告见子任务]\n" + string(runes[len(runes)-9000:])
+}
+
 func migrateV18(db *sql.DB) error {
 	var v int
 	if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&v); err != nil || v >= 18 {
@@ -57,6 +67,24 @@ func requestEnvironmentTx(ctx context.Context, tx *sql.Tx, taskID, runID string,
 	var session, agent string
 	if err = tx.QueryRowContext(ctx, `SELECT session_id,agent_id FROM run WHERE run_id=? AND task_id=? AND state='COMPLETED'`, runID, taskID).Scan(&session, &agent); err != nil {
 		return err
+	}
+	// An unavailable executor cannot complete a queued child. Return its
+	// advertised prerequisite to the developer instead of waiting indefinitely.
+	var capsRaw []byte
+	if err = tx.QueryRowContext(ctx, `SELECT rt.capabilities_json FROM runtime rt JOIN run r ON r.runtime_id=rt.runtime_id WHERE r.run_id=?`, runID).Scan(&capsRaw); err != nil {
+		return err
+	}
+	var caps struct {
+		Executors map[string]model.ExecutionCapability `json:"executors"`
+	}
+	if err = json.Unmarshal(capsRaw, &caps); err != nil {
+		return err
+	}
+	if capability := caps.Executors[r.Profile]; !capability.Available {
+		return requestRecoveryTx(ctx, tx, taskID, runID, workflow.RecoveryRequest{
+			Evidence: "Windows 执行器当前不可用，未创建验证子任务，也没有运行测试。\n" + truncateRunes(capability.Reason, 3000),
+			NextStep: "先检查仓库构建入口及所需接入条件；在现有授权范围内准备修复和评审材料。需要宿主登记或新增权限时明确报告依赖；能力未恢复前不要重复提交相同环境申请。Manager 不会替你改任务代码或自动授予宿主权限。",
+		})
 	}
 	parent, err := getTaskTx(ctx, tx, taskID)
 	if err != nil {
@@ -132,7 +160,7 @@ func finishEnvironmentTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, 
 	if _, err = tx.ExecContext(ctx, `UPDATE environment_job SET state=? WHERE task_id=?`, status, e.TaskID); err != nil {
 		return true, err
 	}
-	if _, err = insertMessageTx(ctx, tx, e.TaskID, "system", "Windows 执行结论："+status+"\n"+truncateRunes(message, 12000), e.RunID, "RECORDED"); err != nil {
+	if _, err = insertMessageTx(ctx, tx, e.TaskID, "system", "Windows 执行结论："+status+"\n"+environmentEvidence(message), e.RunID, "RECORDED"); err != nil {
 		return true, err
 	}
 	if err = setWorkStateTx(ctx, tx, e.TaskID, model.TaskStateCompleted); err != nil {
@@ -146,7 +174,7 @@ func finishEnvironmentTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, 
 	if err = tx.QueryRowContext(ctx, `SELECT paused,EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') FROM task_workflow WHERE task_id=?`, job.ParentTaskID, job.ParentTaskID).Scan(&paused, &pending); err != nil {
 		return true, err
 	}
-	feedback := "Windows 执行器结果（不是人工批准，也不是产品完成）：" + status + "\n" + truncateRunes(message, 12000) + "\n详细报告在子任务 " + e.TaskID + "。请结合源码快照和日志继续原任务；测试失败需分析修复，不得虚报通过。"
+	feedback := "Windows 执行器结果（不是人工批准，也不是产品完成）：" + status + "\n" + environmentEvidence(message) + "\n详细报告在子任务 " + e.TaskID + "。请结合源码快照和日志继续原任务；测试失败需分析修复，不得虚报通过。有可自行执行的下一步时在本轮继续，或提交 recovery_request 续接；只有明确缺少权限、输入或外部能力时才向用户说明依赖。"
 	if paused || d.Phase != "IMPLEMENTING" || d.ApprovedReviewID != job.Grant.ReviewID || d.PlanHash != job.Grant.PlanHash || pending {
 		_, err = insertMessageTx(ctx, tx, job.ParentTaskID, "system", "历史/暂停中的环境任务返回，未自动推进：\n"+feedback, e.RunID, "RECORDED")
 		return true, err
@@ -265,7 +293,10 @@ func (s *Store) ResumeDevelopmentDiagnosis(ctx context.Context, taskID string, e
 			return model.ErrConflict
 		}
 		var busy bool
-		if err = tx.QueryRowContext(ctx, `SELECT (SELECT paused FROM task_workflow WHERE task_id=?) OR EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') OR EXISTS(SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM environment_job WHERE parent_task_id=? AND state IN ('QUEUED','RUNNING'))`, taskID, taskID, taskID, taskID).Scan(&busy); err != nil {
+		// Explicit diagnosis may resume BLOCKED failures whose workflow was
+		// automatically paused. A user's pause has state PAUSED and was rejected
+		// by the task/version check above; it must never be resumed implicitly.
+		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') OR EXISTS(SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM environment_job WHERE parent_task_id=? AND state IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM publication WHERE task_id=? AND state IN ('QUEUED','SUBMITTING','UNCERTAIN'))`, taskID, taskID, taskID, taskID).Scan(&busy); err != nil {
 			return err
 		}
 		if busy {

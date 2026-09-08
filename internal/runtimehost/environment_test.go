@@ -46,6 +46,10 @@ func TestWindowsLogRetainsFinalVerdict(t *testing.T) {
 	if err != nil || result.Status != "failed" || log.Len() > 96*1024 {
 		t.Fatal(err)
 	}
+	withStderr, err := decodeWindowsResult(log.String() + "late-native-stderr\n")
+	if err != nil || !strings.Contains(withStderr.Log, "late-native-stderr") {
+		t.Fatal("lost stderr after envelope", err)
+	}
 	for _, invalid := range []string{"partial", "WORK_ASSISTANT_RESULT={}", "WORK_ASSISTANT_RESULT=not json"} {
 		if _, err = decodeWindowsResult(invalid); err == nil {
 			t.Fatal("invalid result accepted")
@@ -54,7 +58,7 @@ func TestWindowsLogRetainsFinalVerdict(t *testing.T) {
 }
 
 func TestWindowsBuildRequiresRegisteredRepositoryEntry(t *testing.T) {
-	for _, required := range []string{"seekdb-phase0-v1", "build_script_sha256", "-File $buildScript -WorkAssistantRequest $request", "build-result.json", "receipt.snapshot_sha256", "No direct CMake fallback"} {
+	for _, required := range []string{"seekdb-phase0-v1", "build_script_sha256", "'-WorkAssistantRequest'", "build-result.json", "receipt.snapshot_sha256", "No direct CMake fallback", "-RedirectStandardError $buildErr", "-RedirectStandardError $probeErr", "BUILD_EXIT_CODE=", "PROBE_EXIT_CODE"} {
 		if !strings.Contains(windowsPhase0Script, required) {
 			t.Fatal("missing build safety", required)
 		}

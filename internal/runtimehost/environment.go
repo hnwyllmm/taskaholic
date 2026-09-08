@@ -144,7 +144,8 @@ func decodeWindowsResult(log string) (*model.EnvironmentResult, error) {
 	if at < 0 {
 		return nil, errors.New("Windows result not received; execution may be uncertain")
 	}
-	line := strings.SplitN(log[at+len(marker):], "\n", 2)[0]
+	lines := strings.SplitN(log[at+len(marker):], "\n", 2)
+	line := lines[0]
 	var result model.EnvironmentResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &result); err != nil {
 		return nil, errors.New("invalid Windows result envelope")
@@ -153,6 +154,10 @@ func decodeWindowsResult(log string) (*model.EnvironmentResult, error) {
 		return nil, errors.New("invalid Windows verdict")
 	}
 	result.Log = log[:at]
+	// WinRM may deliver stderr after the stdout result envelope.
+	if len(lines) == 2 && strings.TrimSpace(lines[1]) != "" {
+		result.Log += "\n[transport stderr/tail]\n" + lines[1]
+	}
 	if len(result.Log) > 24000 {
 		result.Log = result.Log[len(result.Log)-24000:]
 	}
@@ -267,7 +272,7 @@ func (d *Daemon) executeEnvironment(ctx context.Context, spec model.RunSpec, emi
 	if err = durableWorkspaceJSON(receipt, windowsReceipt{State: "SUBMITTING"}); err != nil {
 		return finish("无法持久化执行意图，未提交 Windows 测试。")
 	}
-	emit(agent.Event{Message: "Windows 执行器：快照已冻结，开始独立构建和 LongPathsEnabled=0/1 验证，完成后恢复原值。"})
+	emit(agent.Event{Message: "Windows 执行器：快照已冻结，通过已登记的仓库构建脚本进行 LongPathsEnabled=0/1 验证，完成后恢复原值。"})
 	payload.Mode = "execute"
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	log, runErr := callWindows(runCtx, payload)

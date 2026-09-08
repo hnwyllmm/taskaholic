@@ -70,8 +70,15 @@ try {
         # build/sqlite_path_probe.exe and build/extracted.manifest.
         $request=Join-Path $job 'repository-build-request.json'
         Save-JSON $request @{contract='seekdb-phase0-v1';source_directory=(Join-Path $job 'source');build_directory=$build;snapshot_sha256=$p.snapshot_sha256;sqlite_include=$cfg.sqlite_include;sqlite_library=$cfg.sqlite_library}
-        & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $buildScript -WorkAssistantRequest $request
-        if($LASTEXITCODE -ne 0){throw 'Repository build.ps1 failed; inspect its output. No alternate build invocation attempted.'}
+        $buildLog=Join-Path $job 'repository-build.log'
+        $buildErr=Join-Path $job 'repository-build.stderr.log'
+        Write-Output ('BUILD_COMMAND=powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$buildScript+'" -WorkAssistantRequest "'+$request+'"')
+        $buildProcess=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$buildScript+'"'),'-WorkAssistantRequest',('"'+$request+'"')) -RedirectStandardOutput $buildLog -RedirectStandardError $buildErr -NoNewWindow -Wait -PassThru
+        $buildExit=$buildProcess.ExitCode
+        Get-Content -LiteralPath $buildLog -Tail 160
+        Get-Content -LiteralPath $buildErr -Tail 80
+        Write-Output ('BUILD_EXIT_CODE='+$buildExit)
+        if($buildExit -ne 0){throw ('Repository build.ps1 failed, exit='+$buildExit+'; logs: '+$buildLog+' and '+$buildErr+'. No alternate build invocation attempted.')}
         $receiptPath=Join-Path $build 'build-result.json'
         if(!(Test-Path -LiteralPath $receiptPath)){throw 'Repository build entry did not return build-result.json'}
         $receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
@@ -93,9 +100,15 @@ try {
             Set-ItemProperty -LiteralPath $policyPath -Name LongPathsEnabled -Type DWord -Value $policy
             if((Get-ItemPropertyValue -LiteralPath $policyPath -Name LongPathsEnabled) -ne $policy){throw 'Policy switch verification failed'}
             $log=Join-Path $job ('policy-'+$policy+'.log')
-            & $exe $cases $policy *> $log
-            $exit=$LASTEXITCODE
+            # Native stderr must not terminate the PowerShell loop before we
+            # record the exit code and run the other authorized policy case.
+            $probeErr=Join-Path $job ('policy-'+$policy+'.stderr.log')
+            Write-Output ('PROBE_COMMAND="'+$exe+'" "'+$cases+'" '+$policy)
+            $probeProcess=Start-Process -FilePath $exe -ArgumentList @(('"'+$cases+'"'),[string]$policy) -RedirectStandardOutput $log -RedirectStandardError $probeErr -NoNewWindow -Wait -PassThru
+            $exit=$probeProcess.ExitCode
             Get-Content -LiteralPath $log
+            Get-Content -LiteralPath $probeErr
+            Write-Output ('PROBE_EXIT_CODE policy='+$policy+' exit='+$exit)
             if($exit -ne 0 -or !(Select-String -LiteralPath $log -SimpleMatch ('SQLITE_EXTENDED_MATRIX_PASS policy='+$policy) -Quiet)){$failed+=('policy='+$policy+', exit='+$exit)}
         }
         if($failed.Count -gt 0){throw ('Windows Phase 0 failed: '+($failed -join '; '))}

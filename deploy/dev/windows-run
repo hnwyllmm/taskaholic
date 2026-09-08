@@ -62,8 +62,9 @@ def main():
         protocol.send_command_input(shell, command, b'', end=True)
         out, err, code = protocol.get_command_output(shell, command)
         sys.stdout.buffer.write(out)
-        if code:
-            sys.stderr.buffer.write(err)
+        # A script can catch an error and emit a failed business result while
+        # PowerShell exits zero. Its stderr is still essential diagnostic data.
+        sys.stderr.buffer.write(err)
         return code
     finally:
         try:
