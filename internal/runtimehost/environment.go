@@ -46,12 +46,14 @@ type windowsFile struct {
 	Data string `json:"data"`
 }
 type windowsPayload struct {
-	ParentTaskID   string         `json:"parent_task_id"`
-	JobID          string         `json:"job_id"`
-	Mode           string         `json:"mode"`
-	SnapshotSHA256 string         `json:"snapshot_sha256"`
-	Profile        windowsProfile `json:"profile"`
-	Files          []windowsFile  `json:"files"`
+	RepositoryArchive []byte         `json:"repository_archive,omitempty"`
+	RepositorySHA256  string         `json:"repository_sha256,omitempty"`
+	ParentTaskID      string         `json:"parent_task_id"`
+	JobID             string         `json:"job_id"`
+	Mode              string         `json:"mode"`
+	SnapshotSHA256    string         `json:"snapshot_sha256"`
+	Profile           windowsProfile `json:"profile"`
+	Files             []windowsFile  `json:"files"`
 }
 type windowsReceipt struct {
 	State  string                   `json:"state"`
@@ -70,9 +72,6 @@ func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
 		st, e := os.Stat(p.WinRMCommand)
 		if ok && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) && p.AllowPolicySwitch && len(p.SQLiteHeaderSHA256) == 64 && len(p.SQLiteLibrarySHA256) == 64 && len(p.SQLiteDLLSHA256) == 64 {
 			cap = model.ExecutionCapability{Available: true}
-			if p.BuildContract != "seekdb-phase0-v1" || p.RepositoryRoot == "" || len(p.BuildScriptSHA256) != 64 {
-				cap = model.ExecutionCapability{Reason: "仓库 build.ps1 尚未注册 Phase 0 构建入口；需先接入并评审，不允许直接 CMake 回退"}
-			}
 		}
 	}
 	return map[string]model.ExecutionCapability{"windows_seekdb_phase0": cap}
@@ -242,6 +241,14 @@ func (d *Daemon) executeEnvironment(ctx context.Context, spec model.RunSpec, emi
 	}
 	answer.SnapshotSHA256 = hash
 	payload := windowsPayload{ParentTaskID: env.ParentTaskID, JobID: spec.TaskID, Mode: "preflight", SnapshotSHA256: hash, Profile: profile, Files: files}
+	archive, repositoryHash, err := snapshotRepository(ctx, w.Directory)
+	if err != nil {
+		return finish(err.Error())
+	}
+	if err = os.WriteFile(filepath.Join(record, "repository.tar.gz"), archive, 0600); err != nil {
+		return finish("无法持久化源码快照")
+	}
+	payload.RepositorySHA256 = repositoryHash
 	if err = durableWorkspaceJSON(filepath.Join(record, "snapshot.json"), payload); err != nil {
 		return finish("源码快照持久化失败。")
 	}
@@ -272,8 +279,9 @@ func (d *Daemon) executeEnvironment(ctx context.Context, spec model.RunSpec, emi
 	if err = durableWorkspaceJSON(receipt, windowsReceipt{State: "SUBMITTING"}); err != nil {
 		return finish("无法持久化执行意图，未提交 Windows 测试。")
 	}
-	emit(agent.Event{Message: "Windows 执行器：快照已冻结，通过已登记的仓库构建脚本进行 LongPathsEnabled=0/1 验证，完成后恢复原值。"})
+	emit(agent.Event{Message: "Windows 执行器：当前工作树快照已冻结，通过仓库 build.ps1 进行 LongPathsEnabled=0/1 验证，完成后恢复原值。"})
 	payload.Mode = "execute"
+	payload.RepositoryArchive = archive
 	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	log, runErr := callWindows(runCtx, payload)
 	cancel()

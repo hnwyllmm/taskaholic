@@ -58,8 +58,7 @@ Repository build scripts remain mandatory in the controlled Windows executor;
 there is no independent CMake fallback. Other sandbox commands are guided by the
 per-turn contract, not a universal shell interception mechanism.
 
-Agents may prepare necessary build-entry changes in the approved worktree and
-request review; they may not edit the host profile or self-register their hash.
-Automated reviewer-approved build-entry registration is not implemented here.
-Missing privileges and genuinely external prerequisites still need an explicit,
-actionable dependency report, not endless identical environment requests.
+Agents may change build scripts in the approved worktree and request validation.
+No separate script review/registration gate applies. The executor transfers the
+current source snapshot and invokes the repository entry. Missing privileges
+and genuinely external prerequisites still need an explicit dependency report.

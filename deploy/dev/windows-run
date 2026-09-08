@@ -34,9 +34,11 @@ def discover_address():
     return str(address)
 
 def main():
-    script = sys.stdin.buffer.read(1024 * 1024 + 1)
-    if len(script) > 1024 * 1024:
-        raise ValueError('Windows script exceeds 1 MiB')
+    # Includes the compressed, Git-filtered worktree snapshot. Stdin avoids
+    # Windows command-line limits; no source text is evaluated as PowerShell.
+    script = sys.stdin.buffer.read(128 * 1024 * 1024 + 1)
+    if len(script) > 128 * 1024 * 1024:
+        raise ValueError('Windows request exceeds 128 MiB')
     username, password = host['read_credentials']()
     address = discover_address()
     # This transport is only for the local VM, never the model's HTTP proxy.
@@ -57,8 +59,8 @@ def main():
             ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
             console_mode_stdin=False)
         payload = base64.b64encode(script)
-        for offset in range(0, len(payload), 16384):
-            protocol.send_command_input(shell, command, payload[offset:offset+16384])
+        for offset in range(0, len(payload), 98304):
+            protocol.send_command_input(shell, command, payload[offset:offset+98304])
         protocol.send_command_input(shell, command, b'', end=True)
         out, err, code = protocol.get_command_output(shell, command)
         sys.stdout.buffer.write(out)

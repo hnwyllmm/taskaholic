@@ -57,13 +57,13 @@ func TestWindowsLogRetainsFinalVerdict(t *testing.T) {
 	}
 }
 
-func TestWindowsBuildRequiresRegisteredRepositoryEntry(t *testing.T) {
-	for _, required := range []string{"seekdb-phase0-v1", "build_script_sha256", "'-WorkAssistantRequest'", "build-result.json", "receipt.snapshot_sha256", "No direct CMake fallback", "-RedirectStandardError $buildErr", "-RedirectStandardError $probeErr", "BUILD_EXIT_CODE=", "PROBE_EXIT_CODE"} {
+func TestWindowsBuildUsesCurrentRepositoryWithoutApprovalHash(t *testing.T) {
+	for _, required := range []string{"repository_sha256", "'phase0','-j','4'", "Repository transfer checksum mismatch", "Probe changed during repository snapshot", "-RedirectStandardError $buildErr", "-RedirectStandardError $probeErr", "BUILD_EXIT_CODE=", "PROBE_EXIT_CODE"} {
 		if !strings.Contains(windowsPhase0Script, required) {
 			t.Fatal("missing build safety", required)
 		}
 	}
-	for _, forbidden := range []string{"& $cfg.cmake", "& $cfg.clang", "& $cfg.ninja", "CMAKE_CXX_FLAGS", "product_compile_commands", "_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"} {
+	for _, forbidden := range []string{"& $cfg.cmake", "& $cfg.clang", "& $cfg.ninja", "CMAKE_CXX_FLAGS", "product_compile_commands", "_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH", "$cfg.build_script_sha256", "build-result.json", "WorkAssistantRequest"} {
 		if strings.Contains(windowsPhase0Script, forbidden) {
 			t.Fatal("executor still owns build parameters", forbidden)
 		}

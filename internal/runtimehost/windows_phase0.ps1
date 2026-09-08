@@ -22,15 +22,8 @@ function Restore-Policy($saved) {
 try {
     if($p.job_id -notmatch '^[A-Za-z0-9_-]{1,160}$'){throw 'Invalid job identity'}
     if($p.parent_task_id -notmatch '^[A-Za-z0-9_-]{1,160}$'){throw 'Invalid parent identity'}
-    # Only an explicitly registered repository build.ps1 may build this target.
-    # Missing support is an integration issue, never a reason to guess flags.
-    if($cfg.build_contract -ne 'seekdb-phase0-v1' -or !$cfg.repository_root -or $cfg.build_script_sha256 -notmatch '^[a-fA-F0-9]{64}$'){throw 'Repository build entry not registered for Phase 0; integrate and review build.ps1 support first. No direct CMake fallback.'}
-    $buildScript=Join-Path $cfg.repository_root 'build.ps1'
-    if(!(Test-Path -LiteralPath $buildScript -PathType Leaf)){throw 'Registered repository build.ps1 is missing'}
-    $buildScriptHash=(Get-FileHash -LiteralPath $buildScript -Algorithm SHA256).Hash.ToLowerInvariant()
-    if($buildScriptHash -ne $cfg.build_script_sha256.ToLowerInvariant()){throw 'Repository build.ps1 changed; review and register its new hash before execution'}
-    Write-Output ('REPOSITORY_BUILD_ENTRY='+$buildScript)
-    Write-Output ('REPOSITORY_BUILD_SHA256='+$buildScriptHash)
+    # Hashes identify transferred inputs; they are not approval allowlists.
+    if($p.repository_sha256 -notmatch '^[a-f0-9]{64}$'){throw 'Repository snapshot identity missing'}
     $headerHash=(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $cfg.sqlite_include 'sqlite3.h')).Hash.ToLowerInvariant()
     $libraryHash=(Get-FileHash -Algorithm SHA256 -LiteralPath $cfg.sqlite_library).Hash.ToLowerInvariant()
 	$vendor=Split-Path (Split-Path $cfg.sqlite_library -Parent) -Parent
@@ -52,39 +45,82 @@ try {
         }
         if(Test-Path -LiteralPath $job){throw 'Job directory already exists; refusing duplicate execution'}
         New-Item -ItemType Directory -Path (Join-Path $job 'source') | Out-Null
-        Save-JSON (Join-Path $job 'request.json') $p
+        Save-JSON (Join-Path $job 'request.json') @{job_id=$p.job_id;parent_task_id=$p.parent_task_id;repository_sha256=$p.repository_sha256;snapshot_sha256=$p.snapshot_sha256}
         Save-JSON (Join-Path $job 'status.json') @{state='RUNNING';snapshot=$p.snapshot_sha256}
+        $source=Join-Path $job 'source'
+        $archive=Join-Path $job 'repository.tar.gz'
+        [IO.File]::WriteAllBytes($archive,[Convert]::FromBase64String($p.repository_archive))
+        if((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $p.repository_sha256){throw 'Repository transfer checksum mismatch'}
+        & tar.exe -xzf $archive -C $source
+        if($LASTEXITCODE -ne 0){throw 'Cannot extract repository snapshot'}
+        $deps=Split-Path (Split-Path $vendor -Parent) -Parent
+        New-Item -ItemType Directory -Path (Join-Path $source 'deps') -Force | Out-Null
+        $dependencyLink=Join-Path $source 'deps\3rd'
+        if(Test-Path -LiteralPath $dependencyLink){throw 'Source snapshot must not replace host dependencies'}
+        New-Item -ItemType Junction -Path $dependencyLink -Target $deps | Out-Null
         $allowed=@('CMakeLists.txt','path_fixture.h','path_fixture_test.cpp','phase0.manifest','README.md','sqlite_path_probe.cpp')
         if($p.files.Count -ne 6){throw 'Incomplete source snapshot'}
         $seen=@{}
         foreach($file in $p.files){
             if($file.name -cnotin $allowed -or $seen.ContainsKey($file.name)){throw 'Invalid source snapshot filename'}
             $seen[$file.name]=$true
-            [IO.File]::WriteAllBytes((Join-Path (Join-Path $job 'source') $file.name),[Convert]::FromBase64String($file.data))
+            $probeFile=Join-Path (Join-Path $source 'tools\windows\long_path_phase0') $file.name
+            $actual=[Convert]::ToBase64String([IO.File]::ReadAllBytes($probeFile))
+            if($actual -cne $file.data){throw 'Probe changed during repository snapshot'}
         }
         $result.status='failed'
         Write-Output ('SOURCE_SNAPSHOT_SHA256='+$p.snapshot_sha256)
-        $build=Join-Path $job 'build'
-        # This versioned request is data, not a model-supplied command line.
-        # The repository owns all configure/compile/link options and must emit
-        # build/sqlite_path_probe.exe and build/extracted.manifest.
-        $request=Join-Path $job 'repository-build-request.json'
-        Save-JSON $request @{contract='seekdb-phase0-v1';source_directory=(Join-Path $job 'source');build_directory=$build;snapshot_sha256=$p.snapshot_sha256;sqlite_include=$cfg.sqlite_include;sqlite_library=$cfg.sqlite_library}
+        $build=Join-Path $source 'build_phase0'
+        $buildScript=Join-Path $source 'build.ps1'
+        Write-Output ('REPOSITORY_SHA256='+$p.repository_sha256)
+        Write-Output ('REPOSITORY_BUILD_SHA256='+(Get-FileHash -LiteralPath $buildScript -Algorithm SHA256).Hash)
         $buildLog=Join-Path $job 'repository-build.log'
         $buildErr=Join-Path $job 'repository-build.stderr.log'
-        Write-Output ('BUILD_COMMAND=powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$buildScript+'" -WorkAssistantRequest "'+$request+'"')
-        $buildProcess=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$buildScript+'"'),'-WorkAssistantRequest',('"'+$request+'"')) -RedirectStandardOutput $buildLog -RedirectStandardError $buildErr -NoNewWindow -Wait -PassThru
+        Write-Output ('BUILD_COMMAND=powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$buildScript+'" phase0 -j 4')
+        $buildProcess=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"'+$buildScript+'"'),'phase0','-j','4') -WorkingDirectory $source -RedirectStandardOutput $buildLog -RedirectStandardError $buildErr -NoNewWindow -Wait -PassThru
         $buildExit=$buildProcess.ExitCode
         Get-Content -LiteralPath $buildLog -Tail 160
         Get-Content -LiteralPath $buildErr -Tail 80
         Write-Output ('BUILD_EXIT_CODE='+$buildExit)
         if($buildExit -ne 0){throw ('Repository build.ps1 failed, exit='+$buildExit+'; logs: '+$buildLog+' and '+$buildErr+'. No alternate build invocation attempted.')}
-        $receiptPath=Join-Path $build 'build-result.json'
-        if(!(Test-Path -LiteralPath $receiptPath)){throw 'Repository build entry did not return build-result.json'}
-        $receipt=Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-        if($receipt.contract -ne 'seekdb-phase0-v1' -or $receipt.snapshot_sha256 -ne $p.snapshot_sha256 -or $receipt.build_script_sha256 -ne $buildScriptHash){throw 'Repository build receipt does not match the requested source and registered entry'}
         $exe=Join-Path $build 'sqlite_path_probe.exe'
         if(!(Test-Path -LiteralPath $exe)){throw 'Probe executable missing'}
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class SeekDBManifest {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr LoadLibraryEx(string file, IntPtr reserved, uint flags);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr FindResource(IntPtr module, IntPtr name, IntPtr type);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern uint SizeofResource(IntPtr module, IntPtr resource);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr LoadResource(IntPtr module, IntPtr resource);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr LockResource(IntPtr resource);
+    [DllImport("kernel32.dll")] static extern bool FreeLibrary(IntPtr module);
+    public static byte[] Read(string file) {
+        var module = LoadLibraryEx(file, IntPtr.Zero, 2); // AS_DATAFILE: never execute.
+        if (module == IntPtr.Zero) throw new Win32Exception();
+        try {
+            var resource = FindResource(module, new IntPtr(1), new IntPtr(24));
+            if (resource == IntPtr.Zero) throw new Win32Exception();
+            var size = SizeofResource(module, resource);
+            if (size == 0 || size > 1048576) throw new InvalidOperationException("Invalid manifest size");
+            var loaded = LoadResource(module, resource);
+            if (loaded == IntPtr.Zero) throw new Win32Exception();
+            var data = LockResource(loaded);
+            if (data == IntPtr.Zero) throw new Win32Exception();
+            var bytes = new byte[(int)size];
+            Marshal.Copy(data, bytes, 0, bytes.Length);
+            return bytes;
+        } finally { FreeLibrary(module); }
+    }
+}
+'@
+    [IO.File]::WriteAllBytes((Join-Path $build 'extracted.manifest'), [SeekDBManifest]::Read($exe))
         $manifest=Get-Content -LiteralPath (Join-Path $build 'extracted.manifest') -Raw
         if($manifest -notmatch 'longPathAware[^>]*>\s*true\s*<'){throw 'Probe manifest does not declare longPathAware=true'}
         Write-Output ('PROBE_SHA256='+(Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash)
