@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {parser,merge,actionKey}=require('./activity.js');
+const {parser,merge,actionKey,defaultOpen}=require('./activity.js');
 
 test('SSE arbitrary UTF-8 network chunks, CRLF, comments and multiline data',()=>{
   const wire=': connected\r\n\r\nid: 81\r\nevent: RunActivity\r\ndata: {"message":\r\ndata: "中文输出"}\r\n\r\n: heartbeat\n\nid: 82\ndata: {"done":true}\n\n';
@@ -17,4 +17,10 @@ test('Snapshots replace output, deduplicate, retain first-seq ordering and separ
   assert.equal(merge(items,{...a,last_seq:12,output:'stale'}),false);
   assert.equal(items.get(actionKey(a)).first_seq,11);assert.equal(items.get(actionKey(a)).output,'one\ntwo');
   merge(items,{...a,run_id:'run-2',last_seq:20});assert.equal(items.size,2);
+});
+
+test('Agent messages are expanded by default while verbose actions stay collapsed',()=>{
+  assert.equal(defaultOpen('message'),true);
+  assert.equal(defaultOpen('command'),false);
+  assert.equal(defaultOpen('file_change'),false);
 });

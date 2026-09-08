@@ -4,6 +4,7 @@
 (function(root){
   const active=state=>state==='RUNNING'||state==='PENDING';
   const actionKey=a=>JSON.stringify([a.run_id,a.action_id]);
+  const defaultOpen=kind=>kind==='message';
   function parser(onEvent,onHeartbeat=()=>{}){
     let buffer='',data=[],id='',type='',size=0;
     return chunk=>{
@@ -30,7 +31,7 @@
     if(old&&old.last_seq>=item.last_seq)return false;
     items.set(key,{...item,first_seq:item.first_seq||old?.first_seq||item.last_seq});return true;
   }
-  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey};return;}
+  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey,defaultOpen};return;}
   function mount(container,{onTaskEvent=()=>{}}={}){
     const el=WA.el,items=new Map(),cards=new Map();
     const head=el('div',null,'panel-head activity-head'),heading=el('div',null,'activity-heading'),title=el('h2','Agent 实时行动'),subtitle=el('span','查看 Agent 当前正在做什么','small muted'),connection=el('span','尚未连接','activity-connection');
@@ -63,7 +64,7 @@
         const box=el('details',null,'activity-card'),summary=el('summary'),marker=el('span',null,'activity-marker'),main=el('span',null,'activity-main'),top=el('span',null,'activity-card-top'),name=el('strong'),kind=el('span',null,'activity-kind'),bottom=el('span',null,'activity-card-bottom'),status=el('span',null,'activity-status'),time=el('span',null,'activity-time');
         top.append(name,kind);bottom.append(status,time);main.append(top,bottom);summary.append(marker,main);box.append(summary);
         const body=el('div',null,'activity-body'),meta=el('p',null,'activity-meta'),commandWrap=el('section',null,'activity-block'),commandLabel=el('h3','执行命令'),command=el('pre',null,'activity-command'),detailsWrap=el('section',null,'activity-block'),detailsLabel=el('h3','详细信息'),details=el('pre'),outputWrap=el('section',null,'activity-block'),outputLabel=el('h3','输出'),output=el('pre',null,'activity-output'),errorWrap=el('section',null,'activity-block activity-error-block'),errorLabel=el('h3','错误'),error=el('p',null,'activity-error'),flags=el('p',null,'small muted activity-flags');
-        commandWrap.append(commandLabel,command);detailsWrap.append(detailsLabel,details);outputWrap.append(outputLabel,output);errorWrap.append(errorLabel,error);body.append(meta,commandWrap,detailsWrap,outputWrap,errorWrap,flags);box.append(body);box.open=false;box.dataset.actionId=a.action_id;
+        commandWrap.append(commandLabel,command);detailsWrap.append(detailsLabel,details);outputWrap.append(outputLabel,output);errorWrap.append(errorLabel,error);body.append(meta,commandWrap,detailsWrap,outputWrap,errorWrap,flags);box.append(body);box.open=defaultOpen(a.kind);box.dataset.actionId=a.action_id;
         c={box,name,kind,status,time,meta,command,details,output,error,flags,commandWrap,detailsWrap,outputWrap,errorWrap};cards.set(key,c);
       }
       c.box.dataset.state=a.state;c.box.dataset.kind=a.kind||'unknown';c.name.textContent=a.title;c.kind.textContent=kindNames[a.kind]||'行动';c.status.textContent=stateNames[a.state]||a.state;c.time.textContent=elapsed(a);c.meta.textContent=metadata(a)+'\n'+new Date(a.updated_at_ms).toLocaleString();

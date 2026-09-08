@@ -60,5 +60,5 @@ test('Markdown renders common work records without accepting HTML',()=>{
 
 test('Task workspace follows the human reading order',()=>{
   const html=fs.readFileSync(path.join(__dirname,'tasks.html'),'utf8');
-  for(const [before,after] of [['id="activity-panel"','id="composer"'],['id="composer"','id="messages"'],['id="messages"','id="review-chat-slot"'],['id="review-chat-slot"','id="artifact"'],['id="artifact"','id="development-phase"'],['id="development-phase"','id="summary"'],['id="summary"','id="publications"']])assert.ok(html.indexOf(before)<html.indexOf(after),`${before} should precede ${after}`);
+  for(const [before,after] of [['id="activity-panel"','id="composer"'],['id="composer"','id="messages"'],['id="messages"','id="artifact"'],['id="artifact"','id="review-chat-slot"'],['id="review-chat-slot"','id="development-phase"'],['id="development-phase"','id="summary"'],['id="summary"','id="publications"']])assert.ok(html.indexOf(before)<html.indexOf(after),`${before} should precede ${after}`);
 });
