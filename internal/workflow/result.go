@@ -81,6 +81,7 @@ func (JSONContract) Instructions() string {
 plan_scope / publish_request 在非开发流程填 null。开发流程的方案阶段，plan_scope 填待审批的 GitHub owner/repository 与 base_branch；完整方案放 artifacts，不能只填路径。只有 Manager 明确给出已批准的隔离开发授权时才可修改代码。开发验证完成后 publish_request 填 title/body（实现说明、测试证据、风险），由 runtime 受控提交并创建 PR；你不要自行执行 git commit/push 或创建 PR。运行时没有授予发布权限时不可申请发布。需要重大调整已批准方案时 outcome=replan，重新进入方案评审，不能在普通聊天中自行推断批准。
 review_decision：仅内部 PR reviewer 填 passed / changes_requested / waiting_tests / blocked，其它任务填空字符串。reviewer 的正常工作无需人工逐条验收：Manager 在该 PR 上维护本角色唯一一条 code review 普通评论，持续更新 commit、结论、问题和测试链接；不是 GitHub Approve，不满足分支保护。passed 必须有真实检查证据且要求的测试通过；没有完成检查不能填 passed。发现问题在 message 中列出文件、行号、影响、证据和建议；申请测试时填 waiting_tests。不要自行发评论或操作凭据。
 task_update 给原工单回写必要信息，字段 kind=bug/feature/other，analysis=问题分析和已证实根因，approach=实现/修复方案，reason=为什么这样改，validation=实际验证结果，blocked_reason=不能继续或无法修复的原因及已尝试方法。无关字段填空字符串；BUG 提交 PR 时必须说明分析、方案和修复理由。没有证据的根因请明确写未确定。Manager 根据业务状态把这些信息和真实 PR/pipeline 链接回写已关联的原工单，无需逐条批准；不要包含凭据、私密路径、原始日志或无关资料，不要扩大回写目的地。
+原工单仅同步最终批准的方案、首次 PR 交付和任务完成里程碑；开发中的调度、授权等待、环境等待、重试、测试状态和暂时受阻保留在内部任务记录，不逐轮回写。仍应填写真实 task_update 供里程碑报告使用；不要绕过 Manager 自行发布中间进展。
 返回符合指定 JSON Schema 的结果；角色的交付标准应体现在 message 和 artifacts 中。
 outcome: review = 本轮交付或评审报告就绪；needs_input = 必须由用户回答问题；blocked = 缺少条件无法继续。普通 reviewer 的问题修改和测试反馈由 Manager 自动续接，不要例行请求人工验收。
 这是提交结果，不代表原业务任务完成；原任务最终验收仍由人批准，内部 reviewer 任务自动推进。

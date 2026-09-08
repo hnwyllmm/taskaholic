@@ -259,8 +259,24 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, err := s.ListPublications(ctx, task.ID)
-	if err != nil || len(p) != 1 || p[0].URL != url || p[0].Sticky || !strings.Contains(p[0].Body, "missing affected version") {
+	if err != nil || len(p) != 0 {
 		t.Fatal(p, err)
+	}
+	for _, state := range []string{"RUNNING", "BLOCKED", "WAITING_ENVIRONMENT", "WAITING_AUTHORIZATION", "WAITING_REVIEW"} {
+		if _, err := s.db.Exec(`UPDATE task SET state=? WHERE task_id=?`, state, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ReconcilePublications(ctx); err != nil {
+			t.Fatal(err)
+		}
+		items, _ := s.ListPublications(ctx, task.ID)
+		if len(items) != 0 {
+			t.Fatal("intermediate report without a delivery", state, items)
+		}
+	}
+	// A temporary blocker is internal, even when it has a structured report.
+	if _, err = s.RegisterPR(ctx, task.ID, source.ID, "https://github.com/oceanbase/seekdb/pull/321"); err != nil {
+		t.Fatal(err)
 	}
 	if err = s.ReconcilePublications(ctx); err != nil {
 		t.Fatal(err)
@@ -269,8 +285,38 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 	if len(next) != 1 {
 		t.Fatal("duplicate milestone")
 	}
+	// Later runs provide different text but must not rewrite a delivered PR report.
+	result.TaskUpdate.Validation = "another test attempt"
+	raw, _ = json.Marshal(result)
+	if _, err := s.db.Exec(`UPDATE run SET output=? WHERE run_id=?`, string(raw), run.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, state := range []string{"RUNNING", "BLOCKED", "WAITING_ENVIRONMENT", "WAITING_AUTHORIZATION", "WAITING_REVIEW"} {
+		if _, err := s.db.Exec(`UPDATE task SET state=? WHERE task_id=?`, state, task.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ReconcilePublications(ctx); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := s.ListPublications(ctx, task.ID)
+		if !reflect.DeepEqual(next, after) {
+			t.Fatal("intermediate state changed publication", state)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE task SET state='COMPLETED' WHERE task_id=?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.ReconcilePublications(ctx); err != nil {
+			t.Fatal(err)
+		}
+		after, _ := s.ListPublications(ctx, task.ID)
+		if len(after) != 2 {
+			t.Fatal("completion milestone missing or duplicated", after)
+		}
+	}
 	refs, _, err := taskReferences(ctx, s.db, task.ID)
-	if err != nil || len(refs) != 1 || refs[0].URL != url {
+	if err != nil || len(refs) != 2 {
 		t.Fatal(refs, err)
 	}
 	other, _, err := s.CreateTask(ctx, "", "other", "other")
@@ -282,6 +328,33 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 	}
 	if err = s.BindGitHubIssue(ctx, task.ID, source.ID, "https://evil.example/issues/123"); err == nil {
 		t.Fatal("external endpoint accepted")
+	}
+}
+
+func TestIssueLegacyDeliveryDoesNotBackfill(t *testing.T) {
+	ctx := context.Background()
+	s, agent, task := workFixture(t)
+	source := saveTestSource(t, s, "github")
+	url := "https://github.com/oceanbase/seekdb/issues/123"
+	if err := s.BindGitHubIssue(ctx, task.ID, source.ID, url); err != nil {
+		t.Fatal(err)
+	}
+	run := startWork(t, s, agent, task)
+	developmentFinish(t, s, run, 1, workflow.Result{Outcome: "blocked", Message: "waiting for tests", Artifacts: []workflow.File{}, TaskUpdate: &workflow.TaskUpdate{Kind: "bug", Approach: "fix"}})
+	if _, err := s.RegisterPR(ctx, task.ID, source.ID, "https://github.com/oceanbase/seekdb/pull/321"); err != nil {
+		t.Fatal(err)
+	}
+	old := model.Publication{Key: "legacy-progress", TaskID: task.ID, Platform: "github", URL: url, Body: "工作助手处理进展\n关联交付：\n- PR：https://github.com/oceanbase/seekdb/pull/321\n", State: "SYNCED", Version: 1, RemoteID: "old"}
+	if err := s.sourceWrite(ctx, func(tx *sql.Tx) error { return savePublicationTx(ctx, tx, old) }); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.ListPublications(ctx, task.ID)
+	if err := s.ReconcilePublications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.ListPublications(ctx, task.ID)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("legacy delivery changed or backfilled", after)
 	}
 }
 
@@ -431,7 +504,7 @@ func TestIssuePlanPublicationLegacyAndFastImplementation(t *testing.T) {
 				t.Fatal(err)
 			}
 			p, _ := s.ListPublications(ctx, task.ID)
-			if len(p) != 2 || !strings.Contains(p[0].Body, "approved approach") || strings.Contains(p[0].Body, "implementation output") || !strings.Contains(p[1].Body, "implementation output") {
+			if len(p) != 1 || !strings.Contains(p[0].Body, "approved approach") || strings.Contains(p[0].Body, "implementation output") {
 				t.Fatal("latest implementation replaced approved plan", p)
 			}
 		})

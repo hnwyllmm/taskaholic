@@ -295,16 +295,40 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		if developmentErr == nil {
 			lifecycle = "\n开发阶段：" + d.Phase + "（方案批准前不开发；方案通过不代表工单完成）"
 		}
-		key := publicationKey("issue-progress", b.entity, b.task, runID, task.State, links.String())
-		if lifecycle != "" {
-			key = publicationKey(key, lifecycle)
+		// External issues are milestone reports, not a mirror of the execution
+		// log. Freeze each delivery once; retries, new runs, CI updates and
+		// temporary blockers must not create or rewrite issue comments.
+		var milestones []string
+		for _, ref := range refs {
+			if ref.Kind == "github.pr" {
+				milestones = append(milestones, "pr:"+ref.URL)
+			}
 		}
-		body := fmt.Sprintf("<!-- work-assistant:progress:%s -->\n工作助手处理进展\n\n状态：%s\n任务类型：%s\n\n以下是最近一轮已提交的分析，正在进行的后续修改尚不包含在此报告内。\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n验证结果：%s\n\n阻塞/无法修复说明：%s\n\n关联交付：%s\n\n状态为工作助手记录；提交 PR 不代表已合并或工单已解决。", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
-		p.Key = key
-		body += lifecycle
-		p.Body = body
-		if err = queuePublicationTx(ctx, tx, p); err != nil {
-			return err
+		if task.State == "COMPLETED" {
+			milestones = append(milestones, "completed")
+		}
+		for _, milestone := range milestones {
+			key := publicationKey("issue-milestone", b.entity, b.task, milestone)
+			legacyEvidence := "状态：COMPLETED\n"
+			if strings.HasPrefix(milestone, "pr:") {
+				legacyEvidence = "- PR：" + strings.TrimPrefix(milestone, "pr:") + "\n"
+			}
+			var exists bool
+			// Recognize pre-upgrade reports too, without editing their history or
+			// sending a duplicate delivery after upgrade.
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publication WHERE publication_key=? OR (task_id=? AND json_extract(data_json,'$.url')=? AND instr(json_extract(data_json,'$.body'),'工作助手处理进展')>0 AND instr(json_extract(data_json,'$.body'),?)>0))`, key, b.task, p.URL, legacyEvidence).Scan(&exists); err != nil {
+				return err
+			}
+			if exists {
+				continue
+			}
+			body := fmt.Sprintf("<!-- work-assistant:progress:%s -->\n工作助手处理进展\n\n状态：%s\n任务类型：%s\n\n以下是最近一轮已提交的分析，正在进行的后续修改尚不包含在此报告内。\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n验证结果：%s\n\n阻塞/无法修复说明：%s\n\n关联交付：%s\n\n状态为工作助手记录；提交 PR 不代表已合并或工单已解决。", key, task.State, u.Kind, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason, links.String())
+			p.Key = key
+			body += lifecycle
+			p.Body = body
+			if err = queuePublicationTx(ctx, tx, p); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
