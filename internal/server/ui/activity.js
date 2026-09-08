@@ -33,9 +33,9 @@
   if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey};return;}
   function mount(container,{onTaskEvent=()=>{}}={}){
     const el=WA.el,items=new Map(),cards=new Map();
-    const head=el('div',null,'panel-head'),title=el('h2','Agent 实时行动'),connection=el('span','尚未连接','activity-connection');
-    connection.setAttribute('role','status');head.append(title,connection);
-    const now=el('div',null,'activity-now'),current=el('strong'),last=el('p',null,'small muted');now.append(current,last);
+    const head=el('div',null,'panel-head activity-head'),heading=el('div',null,'activity-heading'),title=el('h2','Agent 实时行动'),subtitle=el('span','查看 Agent 当前正在做什么','small muted'),connection=el('span','尚未连接','activity-connection');
+    heading.append(title,subtitle);connection.setAttribute('role','status');head.append(heading,connection);
+    const now=el('div',null,'activity-now'),pulse=el('span',null,'activity-pulse'),nowText=el('div'),current=el('strong'),last=el('p',null,'small muted');nowText.append(current,last);now.append(pulse,nowText);
     const tools=el('div',null,'activity-toolbar'),filterLabel=el('label','查看轮次'),filter=el('select'),count=el('span',null,'small muted'),reconnect=el('button','重新连接');
     filter.setAttribute('aria-label','筛选行动轮次');filterLabel.append(filter);tools.append(filterLabel,count,reconnect);
     const list=el('div',null,'activity-list'),empty=el('p',null,'activity-empty'),older=el('button','加载更早的行动'),note=el('p','只展示 Agent 实际上报的行动；更新粒度取决于执行器，不展示内部思考。常见密钥格式会脱敏，长输出会截断。','activity-note');
@@ -43,6 +43,7 @@
     let taskID='',detail=null,agents=[],runtimes=[],generation=0,cursor=0,before=0,hasMore=false,loadingOlder=false;
     let stream=null,retry=null,watchdog=null,frame=null,connected=false,disposed=false,lastByte=0,attempt=0,filterKey='',lastLegacy=null;
     const stateNames={RUNNING:'执行中',PENDING:'等待中',COMPLETED:'已完成',FAILED:'失败',INTERRUPTED:'已中断',UNKNOWN:'结果未知'};
+    const kindNames={command:'命令',tool:'工具',file_change:'文件',search:'检索',plan:'计划',message:'消息'};
     const headers=()=>WA.token()?{Authorization:'Bearer '+WA.token()}:{};
     function connectionState(text,isConnected=false){connected=isConnected;connection.textContent=text;connection.dataset.connected=String(isConnected);}
     function close(){generation++;stream?.abort();stream=null;clearTimeout(retry);clearInterval(watchdog);retry=null;watchdog=null;connected=false;}
@@ -59,14 +60,14 @@
     function card(a){
       const key=actionKey(a);let c=cards.get(key);
       if(!c){
-        const box=el('details',null,'activity-card'),summary=el('summary'),name=el('strong'),status=el('span',null,'activity-status'),time=el('span',null,'activity-time');
-        summary.append(status,name,time);box.append(summary);
-        const body=el('div',null,'activity-body'),meta=el('p',null,'activity-meta'),command=el('pre',null,'activity-command'),details=el('pre'),output=el('pre',null,'activity-output'),error=el('p',null,'activity-error'),flags=el('p',null,'small muted');
-        body.append(meta,command,details,output,error,flags);box.append(body);box.open=active(a.state);box.dataset.actionId=a.action_id;
-        c={box,name,status,time,meta,command,details,output,error,flags};cards.set(key,c);
+        const box=el('details',null,'activity-card'),summary=el('summary'),marker=el('span',null,'activity-marker'),main=el('span',null,'activity-main'),top=el('span',null,'activity-card-top'),name=el('strong'),kind=el('span',null,'activity-kind'),bottom=el('span',null,'activity-card-bottom'),status=el('span',null,'activity-status'),time=el('span',null,'activity-time');
+        top.append(name,kind);bottom.append(status,time);main.append(top,bottom);summary.append(marker,main);box.append(summary);
+        const body=el('div',null,'activity-body'),meta=el('p',null,'activity-meta'),commandWrap=el('section',null,'activity-block'),commandLabel=el('h3','执行命令'),command=el('pre',null,'activity-command'),detailsWrap=el('section',null,'activity-block'),detailsLabel=el('h3','详细信息'),details=el('pre'),outputWrap=el('section',null,'activity-block'),outputLabel=el('h3','输出'),output=el('pre',null,'activity-output'),errorWrap=el('section',null,'activity-block activity-error-block'),errorLabel=el('h3','错误'),error=el('p',null,'activity-error'),flags=el('p',null,'small muted activity-flags');
+        commandWrap.append(commandLabel,command);detailsWrap.append(detailsLabel,details);outputWrap.append(outputLabel,output);errorWrap.append(errorLabel,error);body.append(meta,commandWrap,detailsWrap,outputWrap,errorWrap,flags);box.append(body);box.open=false;box.dataset.actionId=a.action_id;
+        c={box,name,kind,status,time,meta,command,details,output,error,flags,commandWrap,detailsWrap,outputWrap,errorWrap};cards.set(key,c);
       }
-      c.box.dataset.state=a.state;c.name.textContent=a.title;c.status.textContent=stateNames[a.state]||a.state;c.time.textContent=elapsed(a);c.meta.textContent=metadata(a)+'\n'+new Date(a.updated_at_ms).toLocaleString();
-      for(const field of ['command','details','output','error']){c[field].hidden=!a[field];if(c[field].textContent!==(a[field]||'')){const bottom=c[field].scrollTop+c[field].clientHeight>=c[field].scrollHeight-20;c[field].textContent=a[field]||'';if(bottom)c[field].scrollTop=c[field].scrollHeight;}}
+      c.box.dataset.state=a.state;c.box.dataset.kind=a.kind||'unknown';c.name.textContent=a.title;c.kind.textContent=kindNames[a.kind]||'行动';c.status.textContent=stateNames[a.state]||a.state;c.time.textContent=elapsed(a);c.meta.textContent=metadata(a)+'\n'+new Date(a.updated_at_ms).toLocaleString();
+      for(const field of ['command','details','output','error']){c[field+'Wrap'].hidden=!a[field];if(c[field].textContent!==(a[field]||'')){const bottom=c[field].scrollTop+c[field].clientHeight>=c[field].scrollHeight-20;c[field].textContent=a[field]||'';if(bottom)c[field].scrollTop=c[field].scrollHeight;}}
       c.flags.textContent=[a.exit_code!=null?'退出码 '+a.exit_code:'',a.redacted?'已对常见密钥格式脱敏':'',a.truncated?'内容已截断':''].filter(Boolean).join(' · ');
       return c.box;
     }
@@ -88,7 +89,7 @@
       const doing=all.filter(a=>active(a.state)).sort((a,b)=>b.last_seq-a.last_seq);
       const latest=all.reduce((best,a)=>!best||a.last_seq>best.last_seq?a:best,null);
       const offline=liveRuns.some(r=>!runtimeOnline(r.runtime_id));
-      current.textContent=offline?'原执行机器离线或心跳待确认；显示最后收到的行动':doing.length?doing[0].title+(doing.length>1?' · 另有 '+(doing.length-1)+' 项未结束':''):liveRuns.some(r=>r.state==='RUNNING')?'运行中，等待下一条行动事件':liveRuns.length?'已进入等待队列':'当前没有正在运行的 Agent';
+      const isWorking=!offline&&(doing.length||liveRuns.length);now.dataset.active=String(!!isWorking);current.textContent=offline?'原执行机器离线或心跳待确认；显示最后收到的行动':doing.length?doing[0].title+(doing.length>1?' · 另有 '+(doing.length-1)+' 项未结束':''):liveRuns.some(r=>r.state==='RUNNING')?'运行中，等待下一条行动事件':liveRuns.length?'已进入等待队列':'当前没有正在运行的 Agent';
       const lastTime=Math.max(latest?.updated_at_ms||0,lastLegacy?.time||0);
       last.textContent=(lastTime?'最后行动：'+new Date(lastTime).toLocaleString():'尚未收到行动记录')+' · '+(connected?'页面事件连接正常；不代表 Agent 始终有输出':'页面未实时连接，正在显示已读取的记录');
       for(const [key,c] of cards){const a=items.get(key);if(a)c.time.textContent=elapsed(a);}
