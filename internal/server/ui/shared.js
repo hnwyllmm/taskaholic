@@ -15,6 +15,27 @@ window.WA=(()=>{
 	Object.assign(labels,{WAITING_AUTHORIZATION:'等待授权',WAITING_ENVIRONMENT:'等待环境'});
   const badge=state=>{const n=el('span',labels[state]||state,'status-pill');n.dataset.state=state;return n;};
   const date=ms=>new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  // Small safe Markdown renderer for work records. It builds DOM nodes rather
+  // than accepting HTML, so Agent/user content cannot inject page markup.
+  const markdown=(source,cls='markdown-body')=>{
+    const root=el('div',null,cls),lines=String(source||'').replace(/\r\n?/g,'\n').split('\n');
+    const inline=(parent,text)=>{
+      const re=/(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|__([^_\n]+)__|\*([^*\n]+)\*|_([^_\n]+)_)/g;let at=0,match;
+      while((match=re.exec(text))){if(match.index>at)parent.append(document.createTextNode(text.slice(at,match.index)));let item;if(match[2]){item=el('a',match[2]);item.href=match[3];item.target='_blank';item.rel='noopener noreferrer';}else if(match[4])item=el('code',match[4]);else if(match[5]||match[6])item=el('strong',match[5]||match[6]);else item=el('em',match[7]||match[8]);parent.append(item);at=re.lastIndex;}if(at<text.length)parent.append(document.createTextNode(text.slice(at)));
+    };
+    const cells=line=>line.replace(/^\s*\||\|\s*$/g,'').split('|').map(value=>value.trim());
+    let paragraph=[];
+    const flush=()=>{if(!paragraph.length)return;const p=el('p');inline(p,paragraph.join('\n'));root.append(p);paragraph=[];};
+    for(let i=0;i<lines.length;){const line=lines[i];
+      if(/^\s*```/.test(line)){flush();const language=line.trim().slice(3).trim(),body=[];i++;while(i<lines.length&&!/^\s*```/.test(lines[i]))body.push(lines[i++]);if(i<lines.length)i++;const pre=el('pre'),code=el('code',body.join('\n'));if(language)code.dataset.language=language;pre.append(code);root.append(pre);continue;}
+      if(line.includes('|')&&i+1<lines.length&&/^\s*\|?\s*:?-{3,}/.test(lines[i+1])){flush();const table=el('table'),head=el('thead'),headRow=el('tr');for(const value of cells(line)){const th=el('th');inline(th,value);headRow.append(th);}head.append(headRow);table.append(head);i+=2;const body=el('tbody');while(i<lines.length&&lines[i].includes('|')&&lines[i].trim()){const row=el('tr');for(const value of cells(lines[i++])){const td=el('td');inline(td,value);row.append(td);}body.append(row);}table.append(body);root.append(table);continue;}
+      const heading=line.match(/^\s*(#{1,4})\s+(.+)$/);if(heading){flush();const h=el('h'+heading[1].length);inline(h,heading[2]);root.append(h);i++;continue;}
+      if(/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)){flush();root.append(el('hr'));i++;continue;}
+      const quote=line.match(/^\s*>\s?(.*)$/);if(quote){flush();const block=el('blockquote'),parts=[];while(i<lines.length){const q=lines[i].match(/^\s*>\s?(.*)$/);if(!q)break;parts.push(q[1]);i++;}inline(block,parts.join('\n'));root.append(block);continue;}
+      const bullet=line.match(/^\s*[-+*]\s+(.+)$/),ordered=line.match(/^\s*\d+[.)]\s+(.+)$/);if(bullet||ordered){flush();const list=el(ordered?'ol':'ul');while(i<lines.length){const itemLine=lines[i].match(ordered?/^\s*\d+[.)]\s+(.+)$/:/^\s*[-+*]\s+(.+)$/);if(!itemLine)break;let value=itemLine[1],checked=value.match(/^\[([ xX])\]\s+(.*)$/),li=el('li');if(checked){const box=el('input');box.type='checkbox';box.disabled=true;box.checked=checked[1].toLowerCase()==='x';li.append(box);value=checked[2];}inline(li,value);list.append(li);i++;}root.append(list);continue;}
+      if(!line.trim()){flush();i++;continue;}paragraph.push(line);i++;
+    }flush();return root;
+  };
   const syncAccess=async(settings,indicator)=>{
     try{
       const response=await fetch('/api/v1/auth/config',{cache:'no-store'});
@@ -36,5 +57,5 @@ window.WA=(()=>{
     if(page==='tasks'){const b=el('button','备份');b.id='backup';connection.append(b);}header.append(connection);
   }
   if(header){const a=link('执行权限','/permissions',document.body.dataset.page==='permissions'?'selected':'');if(document.body.dataset.page==='permissions')a.setAttribute('aria-current','page');header.querySelector('.app-nav')?.append(a);}
-  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,syncAccess};
+  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,markdown,syncAccess};
 })();

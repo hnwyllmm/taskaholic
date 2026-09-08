@@ -39,7 +39,7 @@
     const tools=el('div',null,'activity-toolbar'),filterLabel=el('label','查看轮次'),filter=el('select'),count=el('span',null,'small muted'),reconnect=el('button','重新连接');
     filter.setAttribute('aria-label','筛选行动轮次');filterLabel.append(filter);tools.append(filterLabel,count,reconnect);
     const list=el('div',null,'activity-list'),empty=el('p',null,'activity-empty'),older=el('button','加载更早的行动'),note=el('p','只展示 Agent 实际上报的行动；更新粒度取决于执行器，不展示内部思考。常见密钥格式会脱敏，长输出会截断。','activity-note');
-    older.className='activity-older';container.classList.add('panel','activity-panel');container.append(head,now,tools,empty,list,older,note);
+    older.className='activity-older';container.classList.add('panel','activity-panel');container.append(head,now,tools,empty,older,list,note);
     let taskID='',detail=null,agents=[],runtimes=[],generation=0,cursor=0,before=0,hasMore=false,loadingOlder=false;
     let stream=null,retry=null,watchdog=null,frame=null,connected=false,disposed=false,lastByte=0,attempt=0,filterKey='',lastLegacy=null;
     const stateNames={RUNNING:'执行中',PENDING:'等待中',COMPLETED:'已完成',FAILED:'失败',INTERRUPTED:'已中断',UNKNOWN:'结果未知'};
@@ -72,7 +72,8 @@
       return c.box;
     }
     function render(){
-      const sorted=[...items.values()].sort((a,b)=>b.first_seq-a.first_seq),visible=sorted.filter(a=>!filter.value||a.run_id===filter.value);
+      const followTail=list.scrollTop+list.clientHeight>=list.scrollHeight-36;
+      const sorted=[...items.values()].sort((a,b)=>a.first_seq-b.first_seq),visible=sorted.filter(a=>!filter.value||a.run_id===filter.value);
       // Insert/move existing nodes only: keep expanded details, selection and scroll.
       let index=0;for(const a of visible){const box=card(a);if(list.children[index]!==box)list.insertBefore(box,list.children[index]||null);index++;}
       while(list.children.length>index)list.lastElementChild.remove();
@@ -81,7 +82,7 @@
       const running=detail?.runs?.some(r=>active(r.state)||r.state==='QUEUED');
       empty.textContent=lastLegacy?'最新日志：'+lastLegacy.message:running?'运行已开始，等待执行器上报行动。没有新事件不代表卡住。':'暂无结构化行动。升级前的历史任务请查看下方「运行与事件记录」。';
       older.hidden=!hasMore;older.disabled=loadingOlder||items.size>=500;
-      older.textContent=items.size>=500?'已显示 500 条；更早记录仍保存在数据库':'加载更早的行动';tick();
+      older.textContent=items.size>=500?'已显示 500 条；更早记录仍保存在数据库':'加载更早的行动';if(followTail)list.scrollTop=list.scrollHeight;tick();
     }
     function tick(){
       if(!taskID)return;
@@ -150,8 +151,8 @@
       if(legacy&&(!lastLegacy||legacy.occurred_at_ms>lastLegacy.time))lastLegacy={message:legacy.payload.message,time:legacy.occurred_at_ms};scheduleRender();
     }
     filter.onchange=render;reconnect.onclick=()=>attach(taskID,true);
-    older.onclick=async()=>{if(loadingOlder||!hasMore||items.size>=500)return;loadingOlder=true;render();const gen=generation;
-      try{const page=await WA.api('/work/tasks/'+encodeURIComponent(taskID)+'/activities?before='+before+'&limit=50');if(gen!==generation)return;for(const a of page.items)merge(items,a);before=page.next_before;hasMore=page.has_more;}
+    older.onclick=async()=>{if(loadingOlder||!hasMore||items.size>=500)return;loadingOlder=true;render();const gen=generation,oldHeight=list.scrollHeight;
+      try{const page=await WA.api('/work/tasks/'+encodeURIComponent(taskID)+'/activities?before='+before+'&limit=50');if(gen!==generation)return;for(const a of page.items)merge(items,a);before=page.next_before;hasMore=page.has_more;render();list.scrollTop+=list.scrollHeight-oldHeight;}
       catch(e){if(gen===generation)connectionState('历史读取失败：'+e.message,connected);}finally{loadingOlder=false;if(gen===generation)render();}
     };
     const ticker=setInterval(tick,1000);
