@@ -54,13 +54,6 @@ func requestEnvironmentTx(ctx context.Context, tx *sql.Tx, taskID, runID string,
 	if err != sql.ErrNoRows {
 		return err
 	}
-	var count, total int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(CASE WHEN state!='unavailable' AND state!='interrupted' THEN 1 END),COUNT(*) FROM environment_job WHERE parent_task_id=?`, taskID).Scan(&count, &total); err != nil {
-		return err
-	}
-	if count >= 3 || total >= 6 {
-		return fmt.Errorf("%w: Windows validation has reached three attempts; needs human direction", model.ErrConflict)
-	}
 	var session, agent string
 	if err = tx.QueryRowContext(ctx, `SELECT session_id,agent_id FROM run WHERE run_id=? AND task_id=? AND state='COMPLETED'`, runID, taskID).Scan(&session, &agent); err != nil {
 		return err

@@ -137,3 +137,19 @@ func TestDevelopmentDiagnosisPreservesApprovalAndSession(t *testing.T) {
 		t.Fatal("diagnosis invalidated session/approval")
 	}
 }
+
+func TestEnvironmentValidationHasNoAttemptLimit(t *testing.T) {
+	ctx := context.Background()
+	s, dev, task, impl := approvedEnvironmentFixture(t)
+	for i := 0; i < 7; i++ {
+		developmentFinish(t, s, impl, int64(3+2*i), workflow.Result{Outcome: "blocked", Message: "retry validation", Artifacts: []workflow.File{}, EnvironmentRequest: &workflow.EnvironmentRequest{Profile: "windows_seekdb_phase0", Reason: "repeat validation"}})
+		var childID string
+		if err := s.db.QueryRow(`SELECT task_id FROM environment_job WHERE source_run_id=?`, impl.ID).Scan(&childID); err != nil {
+			t.Fatalf("attempt %d: %v", i+1, err)
+		}
+		child, _ := s.GetTask(ctx, childID)
+		run := startWork(t, s, dev, child)
+		developmentFinish(t, s, run, int64(4+2*i), workflow.Result{Outcome: "review", Message: "failed", Artifacts: []workflow.File{}, EnvironmentResult: &model.EnvironmentResult{Profile: "windows_seekdb_phase0", Status: "failed", Message: "same input failed"}})
+		impl = startWork(t, s, dev, task)
+	}
+}

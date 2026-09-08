@@ -5,7 +5,6 @@ $root = 'C:\work-assistant'
 $policyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
 $result = @{status='unavailable';profile='windows_seekdb_phase0';snapshot_sha256=$p.snapshot_sha256;message=''}
 $lease = $null
-$fingerprintFile = $null
 $original = $null
 $journal = Join-Path $root 'policy-recovery.json'
 $job = Join-Path $root ('jobs\'+$p.job_id)
@@ -85,8 +84,6 @@ try {
         foreach($file in ($p.files | Sort-Object name)){if($file.name -ne 'README.md'){$inputs+=($file.name+':'+$file.data)}}
         $sha=[Security.Cryptography.SHA256]::Create()
         try{$fingerprint=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(($inputs -join "`n"))))).Replace('-','').ToLowerInvariant()}finally{$sha.Dispose()}
-        $fingerprintFile=Join-Path $root ('last-failed-'+$p.parent_task_id+'.json')
-        if(Test-Path -LiteralPath $fingerprintFile){$previous=Get-Content -LiteralPath $fingerprintFile -Raw | ConvertFrom-Json;if($previous.fingerprint -eq $fingerprint){$fingerprintFile=$null;throw ('Unchanged failed build inputs; inspect diagnosis from job '+$previous.job+' before retrying')}}
         Write-Output ('BUILD_INPUT_SHA256='+$fingerprint)
         $result.status='failed'
         Write-Output ('SOURCE_SNAPSHOT_SHA256='+$p.snapshot_sha256)
@@ -143,7 +140,6 @@ try {
         }
     }
     if($lease -ne $null){
-        if($fingerprintFile -and $result.status -eq 'failed'){try{Save-JSON $fingerprintFile @{fingerprint=$fingerprint;job=$p.job_id}}catch{$result.status='unavailable';$result.message='Cannot persist retry guard; inspect execution before further tests'}}
         if(Test-Path -LiteralPath $job){try{Save-JSON (Join-Path $job 'status.json') $result}catch{$result.status='unavailable';$result.message='Cannot persist Windows result; inspect job directory before retrying.'}}
         $lease.Dispose()
     }
