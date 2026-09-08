@@ -143,7 +143,8 @@ type Runtime struct {
 }
 
 type RunSpec struct {
-	ExecutionGrant *ExecutionGrant `json:"execution_grant,omitempty"`
+	Environment    *EnvironmentExecution `json:"environment,omitempty"`
+	ExecutionGrant *ExecutionGrant       `json:"execution_grant,omitempty"`
 	ExecutionSettings
 	RequireNativeSession bool            `json:"require_native_session,omitempty"`
 	ReadOnly             bool            `json:"read_only,omitempty"`

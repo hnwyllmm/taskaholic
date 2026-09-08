@@ -1,0 +1,49 @@
+#!/data/wangyunlai.wyl/vm/win11/config/winrm-client-venv/bin/python
+"""Host-only WinRM transport. Reuse protected host credentials; stream stdin.
+
+Large approved source snapshots must not pass through Windows' command line.
+This is a runtime entry point, not a tool exposed to sandboxed agents.
+"""
+import base64
+import runpy
+import sys
+
+host = runpy.run_path('/data/wangyunlai.wyl/vm/win11/config/winrm-run')
+
+def main():
+    script = sys.stdin.buffer.read(1024 * 1024 + 1)
+    if len(script) > 1024 * 1024:
+        raise ValueError('Windows script exceeds 1 MiB')
+    username, password = host['read_credentials']()
+    address = host['discover_ipv4']()
+    session = host['winrm'].Session(
+        f'http://{address}:5985/wsman', auth=(username, password),
+        transport='ntlm', operation_timeout_sec=60, read_timeout_sec=70)
+    protocol = session.protocol
+    # A short fixed bootstrap reads base64 UTF-8 from stdin, not PowerShell source lines.
+    bootstrap = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; & ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd()))))'
+    encoded = base64.b64encode(bootstrap.encode('utf-16-le')).decode('ascii')
+    shell = protocol.open_shell()
+    command = None
+    try:
+        command = protocol.run_command(shell, 'powershell.exe',
+            ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+            console_mode_stdin=False)
+        payload = base64.b64encode(script)
+        for offset in range(0, len(payload), 16384):
+            protocol.send_command_input(shell, command, payload[offset:offset+16384])
+        protocol.send_command_input(shell, command, b'', end=True)
+        out, err, code = protocol.get_command_output(shell, command)
+        sys.stdout.buffer.write(out)
+        if code:
+            sys.stderr.buffer.write(err)
+        return code
+    finally:
+        try:
+            if command is not None:
+                protocol.cleanup_command(shell, command)
+        finally:
+            protocol.close_shell(shell)
+
+if __name__ == '__main__':
+    sys.exit(main())

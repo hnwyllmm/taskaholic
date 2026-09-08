@@ -24,7 +24,7 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-const SchemaVersion = 17
+const SchemaVersion = 18
 
 // OpenProtected is the production entrypoint. Open remains available for
 // explicit first-time test fixtures and offline tools.
@@ -317,6 +317,7 @@ func (s *Store) GetTaskDetail(ctx context.Context, taskID string, eventLimits ..
 }
 
 type CreateRunRequest struct {
+	Environment          *model.EnvironmentExecution
 	ExecutionGrant       *model.ExecutionGrant
 	ExpectedTaskVersion  int64 // Scheduler snapshot guard; zero for legacy callers.
 	RequireNativeSession bool
@@ -509,6 +510,7 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	}
 	messageID := id.New("msg")
 	spec := model.RunSpec{
+		Environment:          request.Environment,
 		ExecutionGrant:       request.ExecutionGrant,
 		ExecutionSettings:    execution,
 		RequireNativeSession: request.RequireNativeSession,
@@ -1427,7 +1429,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateV16(db); err != nil {
 		return err
 	}
-	return migrateV17(db)
+	if err := migrateV17(db); err != nil {
+		return err
+	}
+	return migrateV18(db)
 }
 
 func migrateV2(db *sql.DB) error {

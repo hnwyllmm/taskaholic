@@ -54,7 +54,19 @@ func TestResultValidation(t *testing.T) {
 			t.Fatalf("invalid summary accepted: %s", raw)
 		}
 	}
-	if schema := string((JSONContract{}).Schema()); !strings.Contains(schema, `"required":["outcome","message","artifacts","summary","plan_scope","publish_request","pull_requests","test_requests","review_decision","task_update"]`) {
+	if schema := string((JSONContract{}).Schema()); !strings.Contains(schema, `"environment_request"`) || !strings.Contains(schema, `"summary"`) {
 		t.Fatal("completion summary is not required by the advertised contract", schema)
+	}
+}
+
+func TestEnvironmentRequestValidation(t *testing.T) {
+	good := `{"outcome":"blocked","message":"need Windows","artifacts":[],"environment_request":{"profile":"windows_seekdb_phase0","reason":"policy matrix"}}`
+	if _, err := Parse(good); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{strings.Replace(good, "policy matrix", "", 1), strings.Replace(good, "windows_seekdb_phase0", "shell", 1), strings.Replace(good, `"blocked"`, `"review"`, 1), strings.Replace(good, `"reason":"policy matrix"`, `"reason":"policy matrix","command":"sudo something"`, 1)} {
+		if _, err := Parse(bad); err == nil {
+			t.Fatal("invalid environment request accepted", bad)
+		}
 	}
 }

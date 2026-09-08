@@ -246,6 +246,11 @@ func messageWorkFromTx(ctx context.Context, tx *sql.Tx, taskID, content, key str
 		return model.TaskMessage{}, fmt.Errorf("%w: pending messages exceed 96 KB; wait for the agent", model.ErrConflict)
 	}
 	d, devErr := developmentTx(ctx, tx, taskID)
+	if speaker == "user" {
+		if err = pauseEnvironmentChildrenTx(ctx, tx, taskID); err != nil {
+			return model.TaskMessage{}, err
+		}
+	}
 	if devErr != nil && devErr != sql.ErrNoRows {
 		return model.TaskMessage{}, devErr
 	}
@@ -332,6 +337,9 @@ func (s *Store) PauseWork(ctx context.Context, taskID string) error {
 }
 
 func pauseWorkTx(ctx context.Context, tx *sql.Tx, taskID string) error {
+	if err := pauseEnvironmentChildrenTx(ctx, tx, taskID); err != nil {
+		return err
+	}
 	w, err := scanWork(tx.QueryRowContext(ctx, workSelect+` WHERE task_id=?`, taskID))
 	if err != nil {
 		return err
@@ -502,6 +510,9 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if err != nil {
 		return model.Run{}, err
 	}
+	if err = environmentInstructionsTx(ctx, tx, &req); err != nil {
+		return model.Run{}, err
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
@@ -541,6 +552,10 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 	}
 	state := model.TaskStateBlocked
 	if e.Type != "run.completed" {
+		e.TaskID = taskID
+		if handled, err := finishEnvironmentTx(ctx, tx, e, workflow.Result{}); handled || err != nil {
+			return err
+		}
 		if e.Type == "run.interrupted" {
 			state = model.TaskStatePaused
 			if !w.Paused && pending > 0 {
@@ -559,6 +574,11 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 	}
 	result, parseErr := workflow.Parse(e.Output)
 	if parseErr != nil {
+		e.TaskID = taskID
+		e.Error = parseErr.Error()
+		if handled, err := finishEnvironmentTx(ctx, tx, e, workflow.Result{}); handled || err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=1,scheduler_error=? WHERE task_id=?`, parseErr.Error(), taskID); err != nil {
 			return err
 		}
@@ -585,6 +605,26 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 		artifactIDs = append(artifactIDs, a.ID)
 	}
 	registrationFailed := false
+	e.TaskID = taskID
+	if handled, err := finishEnvironmentTx(ctx, tx, e, result); handled || err != nil {
+		return err
+	}
+	if result.EnvironmentRequest != nil {
+		if w.Paused || pending > 0 {
+			state := model.TaskStateQueued
+			if w.Paused {
+				state = model.TaskStatePaused
+			}
+			return setWorkStateTx(ctx, tx, taskID, state)
+		}
+		if err := requestEnvironmentTx(ctx, tx, taskID, e.RunID, *result.EnvironmentRequest); err != nil {
+			if !errors.Is(err, model.ErrConflict) && !errors.Is(err, model.ErrValidation) && err != sql.ErrNoRows {
+				return err
+			}
+			return blockDevelopmentTx(ctx, tx, taskID, "Windows 执行申请未接受："+err.Error())
+		}
+		return nil
+	}
 	var planRun bool
 	if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM development_run WHERE run_id=? AND phase!='IMPLEMENTING')`, e.RunID).Scan(&planRun); err != nil {
 		return err

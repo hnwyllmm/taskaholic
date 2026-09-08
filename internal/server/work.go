@@ -12,9 +12,11 @@ import (
 	"work-assistant/internal/model"
 	"work-assistant/internal/router"
 	"work-assistant/internal/store"
+	"work-assistant/internal/workflow"
 )
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/environment", s.apiAuth(http.HandlerFunc(s.handleEnvironmentRequest)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/retry", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRetry)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/restart", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRestart)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
@@ -39,6 +41,20 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 	} {
 		mux.Handle(pattern, s.apiAuth(handler))
 	}
+}
+
+func (s *Server) handleEnvironmentRequest(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		Profile         string `json:"profile"`
+		Reason          string `json:"reason"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	err := s.store.RequestEnvironment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, workflow.EnvironmentRequest{Profile: req.Profile, Reason: req.Reason})
+	reply(w, http.StatusAccepted, map[string]string{"status": "WAITING_SUBTASKS"}, err)
 }
 
 func (s *Server) handleDevelopmentRetry(w http.ResponseWriter, r *http.Request) {

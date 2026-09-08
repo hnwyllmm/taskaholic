@@ -47,6 +47,7 @@ type Daemon struct {
 	modelMu       sync.Mutex
 	modelCache    map[string]*modelCacheEntry
 	preparationMu sync.Mutex // Serialize shared-base worktree preparation on this runtime.
+	windowsGate   chan struct{}
 }
 
 type activeRun struct {
@@ -404,7 +405,9 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 		})
 	}
 	result := agent.Result{ExitCode: -1, Err: preparationErr}
-	if preparationErr == nil {
+	if spec.Environment != nil {
+		result = d.executeEnvironment(ctx, spec, emit)
+	} else if preparationErr == nil {
 		result = adapter.Run(ctx, spec, workingDir, active.directives, emit)
 	}
 	if result.Err == nil && spec.ExecutionGrant != nil && ctx.Err() == nil {
