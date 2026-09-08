@@ -1,7 +1,8 @@
 # 执行权限
 
-第一版接入 `development.execute`（已批准的隔离仓库开发及受控 PR 发布）和
-`windows_seekdb_phase0`。权限由 Manager 持久化检查，不通过提示词授予 sudo。
+当前接入 `development.execute`、兼容旧流程的 `windows_seekdb_phase0`，以及
+开发 Agent 主动申请的 `agent.network_access` 和 `agent.host_full_access`。
+权限由 Manager 持久化检查，不通过提示词自我授权。
 其他执行器可按同一结构扩展，但 GitHub 评论、GitLab pipeline 和系统升级目前
 仍使用原有边界，不宣称已被这个页面统一管理。
 
@@ -26,6 +27,15 @@ Windows 子任务在创建 Run/outbox 前检查 runtime 声明的执行器能力
 待处理消息序号和任务 revision。批准使用版本 CAS，放行与 Run/outbox 同事务消费。
 暂停或用户修改要求使未消费授权失效；新的输入/方案/执行范围不能复用旧授权。
 拒绝和失效保留记录。没有宿主执行器/宿主权限上限时，页面批准也不能凭空提供能力。
+
+开发 Agent 在已批准方案的实施阶段可通过结构化 `capability_request` 申请能力。
+批准后 Manager 将一次性能力写入下一轮 `ExecutionGrant`，Codex 沿用原生 Session：
+
+- `network_access`：保留 workspace-write 文件沙箱，允许该轮网络访问。
+- `host_full_access`：高风险，使用 Codex danger-full-access；仅在确需宿主机操作时批准。
+
+两者都绑定 task、Agent、runtime、仓库、plan hash 和 review ID。Agent 输出的申请
+本身不是授权；审批前不会创建有扩展权限的 Run。一次性授权在 Run 入队时消费。
 
 ## 存储/API
 

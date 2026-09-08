@@ -24,6 +24,7 @@ type CompletionSummary struct {
 type Result struct {
 	RecoveryRequest    *RecoveryRequest         `json:"recovery_request,omitempty"`
 	EnvironmentRequest *EnvironmentRequest      `json:"environment_request,omitempty"`
+	CapabilityRequest  *CapabilityRequest       `json:"capability_request,omitempty"`
 	EnvironmentResult  *model.EnvironmentResult `json:"environment_result,omitempty"` // Executor output only, not part of the Agent schema.
 	PlanScope          *PlanScope               `json:"plan_scope,omitempty"`
 	PublishRequest     *PublishRequest          `json:"publish_request,omitempty"`
@@ -45,6 +46,13 @@ type RecoveryRequest struct {
 type EnvironmentRequest struct {
 	Profile string `json:"profile"`
 	Reason  string `json:"reason"`
+}
+
+// CapabilityRequest asks the Manager for a narrowly scoped runtime grant. It is
+// data for the approval workflow, never a shell command or a grant by itself.
+type CapabilityRequest struct {
+	Capability string `json:"capability"`
+	Reason     string `json:"reason"`
 }
 type PlanScope struct {
 	Repository string `json:"repository"`
@@ -84,6 +92,7 @@ type JSONContract struct{}
 
 func (JSONContract) Instructions() string {
 	return `你正在个人工作助手中处理真实任务。请用用户的语言工作。
+能力申请：已批准开发中，若唯一阻塞是当前 Codex 运行权限，返回 outcome=blocked 且 capability_request={"capability":"network_access|host_full_access","reason":"具体要做什么、为什么必须、影响范围"}。network_access 只放开本轮网络；host_full_access 会移除本轮 Codex 文件系统沙箱，仅在网络权限仍不足以完成必要宿主操作时申请。Manager 会暂停任务等待人工审批，批准后原 Agent/原 Session 续跑。申请不能与 recovery_request、environment_request、发布或交付同时提交；不要把权限不足伪装成环境失败。没有权限阻塞时 capability_request=null。
 开发职责与续接：代码、探针、构建入口的诊断和修复由开发 Agent 在授权工作树中完成，Manager 只调度、校验权限和回传证据，不替你实现修复。普通编译/链接/测试失败不等于需要人工介入；先在本轮读取真实日志并自主处理。若本轮需结束但仍有明确、可在现有授权内完成的下一步，提交 outcome=blocked、recovery_request={"evidence":"实际命令、退出码、日志位置、已尝试结果；区分事实与猜测","next_step":"本 Agent 下一轮要执行的具体诊断/修复步骤"}，其余环境/发布/测试申请为空。Manager 会短暂间隔后续接原 Agent、原 Session 和已批准方案，不设重试次数上限，不要求为重试而无意义修改代码。recovery_request 不是命令执行接口、不是新增授权，只适用于已批准开发。普通 blocked 且无 recovery_request 才表示没有可自行推进的路径；必须说明缺少什么条件、已尝试什么以及需要谁提供什么。真正需要用户决策用 needs_input，改变方案范围用 replan。没有续接需要时 recovery_request=null。
 构建脚本修改属于已批准开发工作：可以在授权 worktree 修改 build.ps1 和构建配置并继续验证，不需要先创建 PR、额外评审或登记脚本哈希。既有提示中关于“入口评审/登记后才能验证”的要求已取消。方案范围变化仍需 replan，宿主配置和权限边界不变。
 Windows 测试能力以本轮运行时提供的工具和授权为准。若提供通用 VM client.py，开发 Agent 自行同步文件、选择远程构建/测试命令、读取日志并修复，environment_request 填 null，不再经过固定探针/固定产物/源码打包流程，也不需要为继续测试另起一轮。若没有提供通用工具，才使用已配置的旧 environment_request 接口。不得把模型指令当作 dev 宿主机权限；VM 内部操作按用户对该虚拟机的授权执行。失败和未执行如实报告，不能把连接成功当作测试通过。
@@ -122,6 +131,8 @@ func (JSONContract) Schema() json.RawMessage {
 	schema["properties"].(map[string]any)["recovery_request"] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"evidence", "next_step"}, "properties": map[string]any{"evidence": map[string]string{"type": "string"}, "next_step": map[string]string{"type": "string"}}}}}
 	schema["required"] = append(schema["required"].([]any), "environment_request")
 	schema["properties"].(map[string]any)["environment_request"] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"profile", "reason"}, "properties": map[string]any{"profile": map[string]any{"type": "string", "enum": []string{"windows_seekdb_phase0"}}, "reason": map[string]string{"type": "string"}}}}}
+	schema["required"] = append(schema["required"].([]any), "capability_request")
+	schema["properties"].(map[string]any)["capability_request"] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"capability", "reason"}, "properties": map[string]any{"capability": map[string]any{"type": "string", "enum": []string{"network_access", "host_full_access"}}, "reason": map[string]string{"type": "string"}}}}}
 	schema["properties"].(map[string]any)["outcome"] = map[string]any{"type": "string", "enum": []string{"review", "needs_input", "blocked", "replan"}}
 	schema["required"] = append(schema["required"].([]any), "plan_scope", "publish_request")
 	for name, fields := range map[string][]string{"plan_scope": {"repository", "base_branch"}, "publish_request": {"title", "body"}} {
@@ -174,8 +185,13 @@ func Parse(raw string) (Result, error) {
 			return result, fmt.Errorf("invalid environment request")
 		}
 	}
+	if r := result.CapabilityRequest; r != nil {
+		if (r.Capability != "network_access" && r.Capability != "host_full_access") || strings.TrimSpace(r.Reason) == "" || len(r.Reason) > 2000 || result.Outcome != "blocked" || result.RecoveryRequest != nil || result.EnvironmentRequest != nil || result.EnvironmentResult != nil || result.PlanScope != nil || result.PublishRequest != nil || len(result.PullRequests) > 0 || len(result.TestRequests) > 0 || result.ReviewDecision != "" {
+			return result, fmt.Errorf("invalid capability request")
+		}
+	}
 	if r := result.RecoveryRequest; r != nil {
-		if strings.TrimSpace(r.Evidence) == "" || strings.TrimSpace(r.NextStep) == "" || len(r.Evidence) > 6000 || len(r.NextStep) > 2000 || result.Outcome != "blocked" || result.EnvironmentRequest != nil || result.EnvironmentResult != nil || result.PlanScope != nil || result.PublishRequest != nil || len(result.PullRequests) > 0 || len(result.TestRequests) > 0 || result.ReviewDecision != "" {
+		if strings.TrimSpace(r.Evidence) == "" || strings.TrimSpace(r.NextStep) == "" || len(r.Evidence) > 6000 || len(r.NextStep) > 2000 || result.Outcome != "blocked" || result.CapabilityRequest != nil || result.EnvironmentRequest != nil || result.EnvironmentResult != nil || result.PlanScope != nil || result.PublishRequest != nil || len(result.PullRequests) > 0 || len(result.TestRequests) > 0 || result.ReviewDecision != "" {
 			return result, fmt.Errorf("invalid recovery request")
 		}
 	}

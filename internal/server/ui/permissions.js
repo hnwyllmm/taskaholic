@@ -1,7 +1,7 @@
 'use strict';
 window.WAPermissions=(()=>{
  const {el,api,link,notice}=WA;
- const names={'development.execute':'隔离开发 / PR 发布',windows_seekdb_phase0:'Windows Phase 0 验证'};
+ const names={'development.execute':'隔离开发 / PR 发布',windows_seekdb_phase0:'Windows Phase 0 验证','agent.network_access':'Agent 网络访问','agent.host_full_access':'Agent 宿主机完整访问'};
  const states={PENDING:'等待授权',APPROVED:'已授权，等待调度',USED:'已放行执行',DENIED:'已拒绝',STALE:'已失效'};
  const effects={allow:'预授权允许',ask:'每次确认',deny:'禁止'};
  let busy=false;
@@ -16,7 +16,7 @@ window.WAPermissions=(()=>{
    if(r.parent_task_id)card.append(link('原始任务 →','/tasks#'+r.parent_task_id));
    if(r.state==='PENDING'){
     for(const [decision,remember,text] of [['approve',false,'仅允许本次'],['approve',true,'允许并记住此范围'],['deny',false,'拒绝']]){
-     const button=el('button',text);button.onclick=()=>act(async()=>{if(decision==='approve'&&!confirm(`${text}：${names[r.operation]}\n机器：${r.runtime_id}\n仓库：${r.repository}\n${remember?'后续相同机器、仓库和操作无需再次确认。':'仅对应本次执行，不扩展权限。'}\n不会替代方案审批。`))return;button.disabled=true;try{await api('/execution-permissions/requests/'+r.request_id,'POST',{expected_version:r.version,decision,remember});await refresh();}finally{button.disabled=false;}});card.append(button);
+     const button=el('button',text);button.onclick=()=>act(async()=>{const highRisk=r.operation==='agent.host_full_access'?'\n高风险：这会移除该轮 Codex 的宿主机文件系统沙箱，请确认申请理由和范围。':'';if(decision==='approve'&&!confirm(`${text}：${names[r.operation]}\n机器：${r.runtime_id}\n仓库：${r.repository}\n${remember?'后续相同机器、仓库和操作无需再次确认。':'仅对应本次执行，不扩展权限。'}\n不会替代方案审批。${highRisk}`))return;button.disabled=true;try{await api('/execution-permissions/requests/'+r.request_id,'POST',{expected_version:r.version,decision,remember});await refresh();}finally{button.disabled=false;}});card.append(button);
     }
    }
    if(!compact&&['PENDING','DENIED'].includes(r.state)){const b=el('button','按最新规则重新检查');b.onclick=()=>act(async()=>{await api('/execution-permissions/requests/'+r.request_id,'POST',{expected_version:r.version,decision:'recheck'});await refresh();});card.append(b);}

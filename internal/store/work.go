@@ -527,9 +527,19 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 		}
 		return model.Run{}, fmt.Errorf("%w: waiting for execution permission or runtime capability", model.ErrConflict)
 	}
+	approvedCapabilities, err := approvedAgentCapabilitiesTx(ctx, tx, &req)
+	if err != nil {
+		return model.Run{}, err
+	}
 	run, err := createRunTx(ctx, tx, req)
 	if err != nil {
 		return run, err
+	}
+	for _, permission := range approvedCapabilities {
+		permission.State = "USED"
+		if err = savePermissionTx(ctx, tx, &permission, "ExecutionPermissionConsumed"); err != nil {
+			return run, err
+		}
 	}
 	if development != nil {
 		// The plan approval remains independent of execution policy.
@@ -642,6 +652,22 @@ func applyWorkResultTx(ctx context.Context, tx *sql.Tx, e model.RuntimeEvent, no
 			return setWorkStateTx(ctx, tx, taskID, model.TaskStateQueued)
 		}
 		return requestRecoveryTx(ctx, tx, taskID, e.RunID, *result.RecoveryRequest)
+	}
+	if result.CapabilityRequest != nil {
+		if w.Paused || pending > 0 {
+			state := model.TaskStateQueued
+			if w.Paused {
+				state = model.TaskStatePaused
+			}
+			return setWorkStateTx(ctx, tx, taskID, state)
+		}
+		if err := requestAgentCapabilityTx(ctx, tx, taskID, e.RunID, *result.CapabilityRequest); err != nil {
+			if !errors.Is(err, model.ErrConflict) && !errors.Is(err, model.ErrValidation) && err != sql.ErrNoRows {
+				return err
+			}
+			return blockDevelopmentTx(ctx, tx, taskID, "Agent 能力申请未受理："+err.Error())
+		}
+		return nil
 	}
 	if result.EnvironmentRequest != nil {
 		if w.Paused || pending > 0 {

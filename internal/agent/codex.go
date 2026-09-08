@@ -26,6 +26,7 @@ type CodexAdapter struct {
 	binary              string
 	sandbox             string
 	approvedDevelopment bool
+	networkAccess       bool
 }
 
 func NewCodexAdapter(binary, sandbox string) (*CodexAdapter, error) {
@@ -50,21 +51,22 @@ func (a *CodexAdapter) Name() string { return "codex-agent" }
 
 func (a *CodexAdapter) Capabilities() map[string]any {
 	return map[string]any{
-		"adapter":             a.Name(),
-		"binary":              a.binary,
-		"interruptible":       true,
-		"streaming_logs":      true,
-		"structured_activity": true,
-		"live_directives":     true,
-		"directive_mode":      "next-turn",
-		"native_session":      true,
-		"per_session_model":   true,
-		"task_goal_as_prompt": true,
-		"sandbox":             a.sandbox,
-		"role_instructions":   true,
-		"structured_output":   true,
-		"read_only_runs":      true,
-		"reasoning_effort":    true,
+		"adapter":                 a.Name(),
+		"binary":                  a.binary,
+		"interruptible":           true,
+		"streaming_logs":          true,
+		"structured_activity":     true,
+		"live_directives":         true,
+		"directive_mode":          "next-turn",
+		"native_session":          true,
+		"per_session_model":       true,
+		"task_goal_as_prompt":     true,
+		"sandbox":                 a.sandbox,
+		"role_instructions":       true,
+		"structured_output":       true,
+		"read_only_runs":          true,
+		"reasoning_effort":        true,
+		"approvable_capabilities": []string{"network_access", "host_full_access"},
 	}
 }
 
@@ -81,6 +83,17 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 		writable := *a
 		writable.sandbox = "workspace-write"
 		writable.approvedDevelopment = true
+		for _, capability := range spec.ExecutionGrant.Capabilities {
+			switch capability {
+			case "network_access":
+				writable.networkAccess = true
+			case "host_full_access":
+				writable.sandbox = "danger-full-access"
+				writable.networkAccess = true
+			default:
+				return Result{ExitCode: -1, Err: fmt.Errorf("unsupported approved Codex capability %q", capability)}
+			}
+		}
 		a = &writable
 	}
 	prompt := codexPrompt(spec)
@@ -161,8 +174,12 @@ type codexTurnResult struct {
 
 func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
 	args := []string{"exec", "-c", "approval_policy=\"never\""}
-	if a.approvedDevelopment {
-		for _, setting := range []string{"sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
+	if a.approvedDevelopment && a.sandbox == "workspace-write" {
+		network := "false"
+		if a.networkAccess {
+			network = "true"
+		}
+		for _, setting := range []string{"sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=" + network, "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
 			args = append(args, "-c", setting)
 		}
 	}

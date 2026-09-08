@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -178,5 +179,45 @@ func TestPermissionPauseInvalidatesAndUnavailableIsNotAuthorization(t *testing.T
 	requests, _ = s.PermissionRequests(ctx)
 	if requests[0].State != "STALE" {
 		t.Fatal(requests)
+	}
+}
+
+func TestAgentCapabilityApprovalResumesOriginalSessionOnce(t *testing.T) {
+	ctx := context.Background()
+	s, dev, parent, impl := approvedEnvironmentFixture(t)
+	developmentFinish(t, s, impl, 3, workflow.Result{
+		Outcome: "blocked", Message: "network is required", Artifacts: []workflow.File{},
+		CapabilityRequest: &workflow.CapabilityRequest{Capability: "network_access", Reason: "fetch dependency metadata for the approved implementation"},
+	})
+	current, err := s.GetTask(ctx, parent.ID)
+	if err != nil || current.State != waitingAuthorization {
+		t.Fatal(current.State, err)
+	}
+	requests, err := s.PermissionRequests(ctx)
+	if err != nil || len(requests) != 1 || requests[0].Operation != "agent.network_access" || requests[0].State != "PENDING" {
+		t.Fatal(requests, err)
+	}
+	request := requests[0]
+	if err = s.DecidePermission(ctx, request.ID, request.Version, "approve", false); err != nil {
+		t.Fatal(err)
+	}
+	next := startWork(t, s, dev, parent)
+	if next.SessionID != impl.SessionID {
+		t.Fatal("capability approval replaced the native session")
+	}
+	var raw []byte
+	if err = s.db.QueryRow(`SELECT params_json FROM outbox_message WHERE json_extract(params_json,'$.run_id')=?`, next.ID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var spec model.RunSpec
+	if err = json.Unmarshal(raw, &spec); err != nil {
+		t.Fatal(err)
+	}
+	if spec.ExecutionGrant == nil || len(spec.ExecutionGrant.Capabilities) != 1 || spec.ExecutionGrant.Capabilities[0] != "network_access" {
+		t.Fatalf("approved capability not injected: %#v", spec.ExecutionGrant)
+	}
+	requests, _ = s.PermissionRequests(ctx)
+	if requests[0].State != "USED" {
+		t.Fatal("one-shot capability not consumed", requests[0])
 	}
 }

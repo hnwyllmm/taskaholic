@@ -182,3 +182,52 @@ printf '%s\n' '{"type":"thread.started","thread_id":"original"}' '{"type":"turn.
 		t.Fatal("inherited unsafe default")
 	}
 }
+
+func TestApprovedCodexCapabilitiesChangeOnlyGrantedSandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	for _, tc := range []struct {
+		name       string
+		capability string
+		want       []string
+		reject     []string
+	}{
+		{name: "network", capability: "network_access", want: []string{`sandbox_mode="workspace-write"`, "sandbox_workspace_write.network_access=true"}, reject: []string{"danger-full-access"}},
+		{name: "host", capability: "host_full_access", want: []string{`sandbox_mode="danger-full-access"`}, reject: []string{"sandbox_workspace_write.network_access="}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "args")
+			binary := filepath.Join(dir, "codex")
+			script := `#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_LOG"; done
+printf '%s\n' '{"type":"thread.started","thread_id":"original"}' '{"type":"turn.completed"}'
+`
+			if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CODEX_FAKE_LOG", logPath)
+			adapter, err := NewCodexAdapter(binary, "read-only")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := adapter.Run(context.Background(), model.RunSpec{TaskGoal: "continue", AgentSessionRef: "codex:original", RequireNativeSession: true, ExecutionGrant: &model.ExecutionGrant{ReviewID: "approved", Capabilities: []string{tc.capability}}}, dir, nil, func(Event) {})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			raw, _ := os.ReadFile(logPath)
+			args := string(raw)
+			for _, want := range tc.want {
+				if !strings.Contains(args, want) {
+					t.Fatalf("missing %q in %s", want, args)
+				}
+			}
+			for _, reject := range tc.reject {
+				if strings.Contains(args, reject) {
+					t.Fatalf("unexpected %q in %s", reject, args)
+				}
+			}
+		})
+	}
+}

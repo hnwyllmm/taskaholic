@@ -90,3 +90,23 @@ func TestRecoveryRequestValidation(t *testing.T) {
 		t.Fatal("schema missing recovery")
 	}
 }
+
+func TestCapabilityRequestValidation(t *testing.T) {
+	good := `{"outcome":"blocked","message":"need network","artifacts":[],"capability_request":{"capability":"network_access","reason":"fetch the approved repository dependency"}}`
+	if _, err := Parse(good); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(good, `"network_access"`, `"sudo"`, 1),
+		strings.Replace(good, `"reason":"fetch the approved repository dependency"`, `"reason":""`, 1),
+		strings.Replace(good, `"blocked"`, `"review"`, 1),
+		strings.Replace(good, `"artifacts":[]`, `"artifacts":[],"recovery_request":{"evidence":"denied","next_step":"retry"}`, 1),
+	} {
+		if _, err := Parse(bad); err == nil {
+			t.Fatal("accepted invalid capability request", bad)
+		}
+	}
+	if schema := string((JSONContract{}).Schema()); !strings.Contains(schema, `"capability_request"`) || !strings.Contains(schema, `"host_full_access"`) {
+		t.Fatal("capability request missing from schema")
+	}
+}

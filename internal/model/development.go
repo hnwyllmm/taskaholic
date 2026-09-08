@@ -27,10 +27,11 @@ type Development struct {
 // ExecutionGrant is issued only by the Manager after a version-bound human
 // approval. It never comes directly from an Agent or an external task source.
 type ExecutionGrant struct {
-	ReviewID   string `json:"review_id"`
-	PlanHash   string `json:"plan_hash"`
-	Repository string `json:"repository"`
-	BaseBranch string `json:"base_branch"`
+	ReviewID     string   `json:"review_id"`
+	PlanHash     string   `json:"plan_hash"`
+	Repository   string   `json:"repository"`
+	BaseBranch   string   `json:"base_branch"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 var githubRepository = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$`)
