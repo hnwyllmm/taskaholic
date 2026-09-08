@@ -385,6 +385,7 @@ func decidePlanTx(ctx context.Context, tx *sql.Tx, d model.Development, r *model
 		}
 		d.Phase = "IMPLEMENTING"
 		d.ApprovedReviewID = r.ID
+		d.PublishApprovedPlan = true
 		if err := setWorkStateTx(ctx, tx, d.ReviewerTaskID, model.TaskStateCompleted); err != nil {
 			return err
 		}

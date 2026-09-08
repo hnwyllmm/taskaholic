@@ -284,3 +284,156 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 		t.Fatal("external endpoint accepted")
 	}
 }
+
+func TestIssuePlansPublishOnlyAfterHumanApproval(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, _ := developmentFixture(t)
+	ant := saveTestSource(t, s, "antmultica")
+	targets, _ := s.ListSourceTargets(ctx)
+	pollStore(t, s, ant, targets[0], "", model.SourceEvent{Key: "issue:one:v1", Kind: "antmultica.issue", Entity: "antmultica:workspace:one", Title: "SEEK-1 request", Message: "Original request", URL: "https://antmultica.alipay.com/seekdb/issues/one"})
+	events, _ := s.ListSourceEvents(ctx)
+	task, err := s.GetTask(ctx, events[0].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	github := saveTestSource(t, s, "github")
+	if err := s.BindGitHubIssue(ctx, task.ID, github.ID, "https://github.com/oceanbase/seekdb/issues/123"); err != nil {
+		t.Fatal(err)
+	}
+	// Already published comments are historical data, not candidates for cleanup.
+	old := model.Publication{Key: "historical-draft", TaskID: task.ID, Platform: "antmultica", Body: "old unapproved proposal", State: "SYNCED", Version: 1, AppliedVersion: 1, RemoteID: "old-comment"}
+	if err := s.sourceWrite(ctx, func(tx *sql.Tx) error { return savePublicationTx(ctx, tx, old) }); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := s.ListPublications(ctx, task.ID)
+	checkCount := func(want int) []model.Publication {
+		t.Helper()
+		if err := s.ReconcilePublications(ctx); err != nil {
+			t.Fatal(err)
+		}
+		p, err := s.ListPublications(ctx, task.ID)
+		if err != nil || len(p) != want {
+			t.Fatalf("publications=%d want=%d err=%v", len(p), want, err)
+		}
+		if !reflect.DeepEqual(p[0], before[0]) {
+			t.Fatal("historical comment changed")
+		}
+		return p
+	}
+	plan := func(name string) workflow.Result {
+		r := submittedPlan(name)
+		r.TaskUpdate = &workflow.TaskUpdate{Kind: "bug", Analysis: name, Approach: name, Reason: "repair root cause", Validation: "not tested"}
+		return r
+	}
+	review := func(seq int64, decision string) {
+		t.Helper()
+		if err := s.RoutePlanReviews(ctx); err != nil {
+			t.Fatal(err)
+		}
+		d := developmentState(t, s, task.ID)
+		child, err := s.GetTask(ctx, d.ReviewerTaskID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := startWork(t, s, reviewer, child)
+		developmentFinish(t, s, r, seq, workflow.Result{Outcome: "review", ReviewDecision: decision, Message: decision, Artifacts: []workflow.File{}})
+	}
+	first := startWork(t, s, dev, task)
+	checkCount(1) // Planning.
+	developmentFinish(t, s, first, 1, plan("draft one"))
+	checkCount(1) // Agent review.
+	review(2, "changes_requested")
+	checkCount(1) // Returned for changes.
+	second := startWork(t, s, dev, task)
+	developmentFinish(t, s, second, 3, plan("draft two"))
+	review(4, "passed")
+	checkCount(1) // Agent approval alone is insufficient.
+	w, _ := s.GetWorkDetail(ctx, task.ID)
+	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "CHANGES_REQUESTED", "revise"); err != nil {
+		t.Fatal(err)
+	}
+	checkCount(1)
+	third := startWork(t, s, dev, task)
+	developmentFinish(t, s, third, 5, plan("final approved proposal"))
+	review(6, "passed")
+	w, _ = s.GetWorkDetail(ctx, task.ID)
+	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "approved"); err != nil {
+		t.Fatal(err)
+	}
+	p := checkCount(3) // One final-plan comment per source.
+	for _, item := range p[1:] {
+		if !strings.Contains(item.Body, "final approved proposal") || strings.Contains(item.Body, "draft two") || !strings.Contains(item.Body, "人工确认") {
+			t.Fatal("wrong plan published", item)
+		}
+	}
+	implementation := startWork(t, s, dev, task)
+	if after := checkCount(3); !reflect.DeepEqual(p, after) {
+		t.Fatal("starting implementation republished the plan")
+	}
+	if _, err := s.RegisterPR(ctx, task.ID, github.ID, "https://github.com/oceanbase/seekdb/pull/321"); err != nil {
+		t.Fatal(err)
+	}
+	if after := checkCount(3); !reflect.DeepEqual(p, after) {
+		t.Fatal("PR link change rewrote the plan")
+	}
+	developmentFinish(t, s, implementation, 7, workflow.Result{Outcome: "blocked", Message: "test environment unavailable", Artifacts: []workflow.File{}, TaskUpdate: &workflow.TaskUpdate{Kind: "bug", Analysis: "implemented analysis", Approach: "implemented fix", Reason: "root cause", Validation: "tests pending", BlockedReason: "test environment unavailable"}})
+	p = checkCount(5)
+	for _, item := range p[3:] {
+		if !strings.Contains(item.Body, "/pull/321") || !strings.Contains(item.Body, "test environment unavailable") {
+			t.Fatal("implementation updates suppressed", item)
+		}
+	}
+	checkCount(5)
+}
+
+func TestIssuePlanPublicationLegacyAndFastImplementation(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "implementation_before_poll", true: "historical_approval_no_backfill"}[legacy], func(t *testing.T) {
+			ctx := context.Background()
+			s, dev, reviewer, task := developmentFixture(t)
+			source := saveTestSource(t, s, "github")
+			if err := s.BindGitHubIssue(ctx, task.ID, source.ID, "https://github.com/oceanbase/seekdb/issues/123"); err != nil {
+				t.Fatal(err)
+			}
+			r := startWork(t, s, dev, task)
+			plan := submittedPlan("approved plan")
+			plan.TaskUpdate = &workflow.TaskUpdate{Kind: "feature", Approach: "approved approach"}
+			developmentFinish(t, s, r, 1, plan)
+			if err := s.RoutePlanReviews(ctx); err != nil {
+				t.Fatal(err)
+			}
+			d := developmentState(t, s, task.ID)
+			child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+			rr := startWork(t, s, reviewer, child)
+			developmentFinish(t, s, rr, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "passed", Artifacts: []workflow.File{}})
+			w, _ := s.GetWorkDetail(ctx, task.ID)
+			if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "approved"); err != nil {
+				t.Fatal(err)
+			}
+			if legacy {
+				// A pre-upgrade persisted approval has no opt-in flag.
+				if _, err := s.db.Exec(`UPDATE development SET data_json=json_remove(data_json,'$.publish_approved_plan') WHERE task_id=?`, task.ID); err != nil {
+					t.Fatal(err)
+				}
+				before := developmentState(t, s, task.ID)
+				if err := s.ReconcilePublications(ctx); err != nil {
+					t.Fatal(err)
+				}
+				p, _ := s.ListPublications(ctx, task.ID)
+				if len(p) != 0 || !reflect.DeepEqual(before, developmentState(t, s, task.ID)) {
+					t.Fatal("historical approval backfilled or mutated")
+				}
+				return
+			}
+			impl := startWork(t, s, dev, task)
+			developmentFinish(t, s, impl, 3, workflow.Result{Outcome: "blocked", Message: "needs environment", Artifacts: []workflow.File{}, TaskUpdate: &workflow.TaskUpdate{Kind: "feature", Approach: "implementation output", BlockedReason: "needs environment"}})
+			if err := s.ReconcilePublications(ctx); err != nil {
+				t.Fatal(err)
+			}
+			p, _ := s.ListPublications(ctx, task.ID)
+			if len(p) != 2 || !strings.Contains(p[0].Body, "approved approach") || strings.Contains(p[0].Body, "implementation output") || !strings.Contains(p[1].Body, "implementation output") {
+				t.Fatal("latest implementation replaced approved plan", p)
+			}
+		})
+	}
+}

@@ -18,8 +18,10 @@ type Development struct {
 	ReviewerTaskID   string `json:"reviewer_task_id"`
 	ReviewerRunID    string `json:"reviewer_run_id"`
 	ApprovedReviewID string `json:"approved_review_id"`
-	Repository       string `json:"repository"`
-	BaseBranch       string `json:"base_branch"`
+	// Opt in on new approvals only; upgrading must not backfill old issue comments.
+	PublishApprovedPlan bool   `json:"publish_approved_plan,omitempty"`
+	Repository          string `json:"repository"`
+	BaseBranch          string `json:"base_branch"`
 }
 
 // ExecutionGrant is issued only by the Manager after a version-bound human

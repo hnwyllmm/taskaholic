@@ -249,6 +249,22 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		if err != nil {
 			return err
 		}
+		d, developmentErr := developmentTx(ctx, tx, b.task)
+		if developmentErr != nil && developmentErr != sql.ErrNoRows {
+			return developmentErr
+		}
+		if developmentErr == nil && (d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "") {
+			// Drafts and review discussions stay inside the task. Agent approval
+			// alone is not final approval; do not publish while waiting for a human.
+			continue
+		}
+		if developmentErr == nil {
+			// Publish the approved version even if implementation completed before
+			// the next reconciliation tick. Never substitute its latest output.
+			if err = queueApprovedIssuePlanTx(ctx, tx, p, b.entity, d); err != nil {
+				return err
+			}
+		}
 		var runID, output string
 		err = tx.QueryRowContext(ctx, `SELECT run_id,output FROM run WHERE task_id=? AND state='COMPLETED' ORDER BY created_at_ms DESC LIMIT 1`, b.task).Scan(&runID, &output)
 		if err != nil && err != sql.ErrNoRows {
@@ -257,6 +273,9 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		if runID == "" {
 			continue
 		} // Do not copy historical descriptions/credentials into comments.
+		if developmentErr == nil && runID == d.PlanRunID {
+			continue // The immutable approved-plan milestone was handled above.
+		}
 		result, err := workflow.Parse(output)
 		if err != nil {
 			continue
@@ -273,10 +292,8 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 			fmt.Fprintf(&links, "\n- Pipeline #%d：%s · %s · 被测 commit %s", pipeline.PipelineID, pipeline.State, pipeline.URL, pipeline.HeadSHA)
 		}
 		lifecycle := ""
-		if d, e := developmentTx(ctx, tx, b.task); e == nil {
+		if developmentErr == nil {
 			lifecycle = "\n开发阶段：" + d.Phase + "（方案批准前不开发；方案通过不代表工单完成）"
-		} else if e != sql.ErrNoRows {
-			return e
 		}
 		key := publicationKey("issue-progress", b.entity, b.task, runID, task.State, links.String())
 		if lifecycle != "" {
@@ -291,6 +308,32 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		}
 	}
 	return nil
+}
+
+func queueApprovedIssuePlanTx(ctx context.Context, tx *sql.Tx, p model.Publication, entity string, d model.Development) error {
+	if !d.PublishApprovedPlan {
+		return nil // Historical approvals are deliberately not backfilled.
+	}
+	// One immutable milestone per approval, independent of task status or links.
+	p.Key = publicationKey("issue-approved-plan", entity, p.TaskID, d.ApprovedReviewID, d.PlanHash)
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM publication WHERE publication_key=?)`, p.Key).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	var output string
+	if err := tx.QueryRowContext(ctx, `SELECT output FROM run WHERE task_id=? AND run_id=? AND state='COMPLETED'`, p.TaskID, d.PlanRunID).Scan(&output); err != nil {
+		return err
+	}
+	result, err := workflow.Parse(output)
+	if err != nil || result.TaskUpdate == nil {
+		return nil // Do not publish internal prose that was not authored for the source.
+	}
+	u := result.TaskUpdate
+	p.Body = fmt.Sprintf("<!-- work-assistant:progress:%s -->\n最终确认的方案\n\n方案已通过 Agent 评审及人工确认；不代表实现、测试或工单已完成。\n\n仓库：%s\n目标分支：%s\n方案版本：%d\n\n问题分析：%s\n\n实现/修复方案：%s\n\n修改理由：%s\n\n已有验证：%s\n\n待验证/限制：%s", p.Key, d.Repository, d.BaseBranch, d.Version, u.Analysis, u.Approach, u.Reason, u.Validation, u.BlockedReason)
+	return queuePublicationTx(ctx, tx, p)
 }
 
 func (s *Store) ListPublications(ctx context.Context, taskID string) ([]model.Publication, error) {
