@@ -127,6 +127,16 @@ func taskSummaryEligibleTx(ctx context.Context, tx *sql.Tx, taskID string) (bool
 	if routingTable > 0 {
 		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM routing_decision WHERE internal_task_id=?`, taskID).Scan(&internal)
 	}
+	if err != nil || internal != 0 {
+		return false, err
+	}
+	var consultationTable int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_consultation'`).Scan(&consultationTable); err != nil {
+		return false, err
+	}
+	if consultationTable > 0 {
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_consultation WHERE execution_task_id=?`, taskID).Scan(&internal)
+	}
 	return internal == 0, err
 }
 

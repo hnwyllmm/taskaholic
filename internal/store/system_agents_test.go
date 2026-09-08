@@ -54,7 +54,7 @@ func TestSystemBindingsValidationCASAndBackup(t *testing.T) {
 	ctx := context.Background()
 	s, a, _ := workFixture(t)
 	defaults, err := s.ListSystemBindings(ctx)
-	if err != nil || len(defaults) != 4 {
+	if err != nil || len(defaults) != len(model.SystemSlots) {
 		t.Fatal(defaults, err)
 	}
 	b := bindSystem(t, s, "home_chat", a)

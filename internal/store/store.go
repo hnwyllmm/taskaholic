@@ -24,7 +24,7 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-const SchemaVersion = 19
+const SchemaVersion = 20
 
 // OpenProtected is the production entrypoint. Open remains available for
 // explicit first-time test fixtures and offline tools.
@@ -328,6 +328,7 @@ type CreateRunRequest struct {
 	ReadOnly             bool
 	RoleDraftID          string
 	HomeChatID           string
+	ConsultationID       string
 	Instructions         string
 	OutputSchema         json.RawMessage
 	TaskID               string
@@ -392,6 +393,12 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	var chatID string
 	if err := tx.QueryRowContext(ctx, `SELECT chat_id FROM home_chat WHERE task_id=?`, request.TaskID).Scan(&chatID); err == nil && request.HomeChatID != chatID {
 		return model.Run{}, fmt.Errorf("%w: use the home chat messages endpoint", model.ErrConflict)
+	} else if err != nil && err != sql.ErrNoRows {
+		return model.Run{}, err
+	}
+	var consultationID string
+	if err := tx.QueryRowContext(ctx, `SELECT consultation_id FROM task_consultation WHERE execution_task_id=?`, request.TaskID).Scan(&consultationID); err == nil && request.ConsultationID != consultationID {
+		return model.Run{}, fmt.Errorf("%w: use the task consultation messages endpoint", model.ErrConflict)
 	} else if err != nil && err != sql.ErrNoRows {
 		return model.Run{}, err
 	}
@@ -892,6 +899,9 @@ func (s *Store) ApplyRuntimeEventFrom(ctx context.Context, connectionEpoch strin
 			return false, err
 		}
 		if err := applyHomeResultTx(ctx, tx, event, now); err != nil {
+			return false, err
+		}
+		if err := applyTaskConsultationResultTx(ctx, tx, event, now); err != nil {
 			return false, err
 		}
 		if err := applyRoutingResultTx(ctx, tx, event); err != nil {
@@ -1435,7 +1445,10 @@ func migrate(db *sql.DB) error {
 	if err := migrateV18(db); err != nil {
 		return err
 	}
-	return migrateV19(db)
+	if err := migrateV19(db); err != nil {
+		return err
+	}
+	return migrateV20(db)
 }
 
 func migrateV2(db *sql.DB) error {

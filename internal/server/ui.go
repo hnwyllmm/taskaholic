@@ -55,6 +55,8 @@ func (s *Server) handlePageUI(w http.ResponseWriter, r *http.Request) {
 		path, contentType = "review-chat.js", "text/javascript; charset=utf-8"
 	case "/assets/activity.js":
 		path, contentType = "activity.js", "text/javascript; charset=utf-8"
+	case "/assets/task-consultation.js":
+		path, contentType = "task-consultation.js", "text/javascript; charset=utf-8"
 	case "/assets/pages.js":
 		path, contentType = "pages.js", "text/javascript; charset=utf-8"
 	default:

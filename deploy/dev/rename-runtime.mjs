@@ -59,7 +59,7 @@ export function renameRuntime(control,spool,from,to){
   try{
     control.exec('BEGIN IMMEDIATE');active=true;
     control.exec('PRAGMA defer_foreign_keys=ON');
-    if(![11,12,13,14,15,16,17,18,19].includes(control.prepare('SELECT MAX(version) AS version FROM schema_version').get().version))throw Error('unreviewed schema version');
+    if(![11,12,13,14,15,16,17,18,19,20].includes(control.prepare('SELECT MAX(version) AS version FROM schema_version').get().version))throw Error('unreviewed schema version');
     const original=control.prepare('SELECT * FROM runtime WHERE runtime_id=?').get(from);
     if(!original)throw Error('source runtime does not exist');
     if(original.state!=='OFFLINE')throw Error('stop the runtime before renaming');

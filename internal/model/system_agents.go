@@ -11,6 +11,7 @@ type SystemSlot struct {
 
 var SystemSlots = []SystemSlot{
 	{"home_chat", "首页聊天", "新对话使用指定成员；已有对话继续原成员和 Session。", "auto"},
+	{"task_consultation", "任务旁路咨询", "只读解释任务已记录的信息；使用独立 Session，不打断或指导工作成员。", "auto"},
 	{"role_builder", "角色设计", "为新角色草案生成职责和能力配置；已有草案继续原 Session。", "auto"},
 	{"task_router", "任务路由", "新任务可由指定成员在合格候选人中选择执行者；已有任务保持归属。", "rules"},
 	{"upgrade_builder", "升级构建", "使用本机成员在隔离副本中修改并测试系统；安装仍需人工确认。", "auto"},

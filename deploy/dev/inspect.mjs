@@ -10,7 +10,7 @@ for(const name of ['control','runtime']){
   try{
     const tables=new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(x=>x.name));
     const counts={},digests={};
-    for(const table of ['task','run','session','task_session','agent_profile','home_chat','review_turn','upgrade_job','local_run','outbound_message','inbound_message']){
+    for(const table of ['task','run','session','task_session','agent_profile','home_chat','task_consultation','review_turn','upgrade_job','local_run','outbound_message','inbound_message']){
       if(!tables.has(table))continue;
       counts[table]=db.prepare('SELECT COUNT(*) AS n FROM '+table).get().n;
       if(['task','run','session','task_session','agent_profile','home_chat'].includes(table)){
