@@ -5,6 +5,28 @@
   const active=state=>state==='RUNNING'||state==='PENDING';
   const actionKey=a=>JSON.stringify([a.run_id,a.action_id]);
   const defaultOpen=kind=>kind==='message';
+  const oneLine=(value,max=260)=>{const text=String(value||'').replace(/\s+/g,' ').trim();return text.length>max?text.slice(0,max-1)+'…':text;};
+  function changedFiles(details){
+    try{
+      const entries=JSON.parse(details||'[]');
+      if(!Array.isArray(entries))return [];
+      return entries.map(entry=>entry?.path).filter(Boolean).map(path=>{
+        const repository='/repository/',index=path.lastIndexOf(repository);
+        return index===-1?path:path.slice(index+repository.length);
+      });
+    }catch{return [];}
+  }
+  function compactSummary(a){
+    if(a.kind==='command')return{prefix:'Run:',value:oneLine(a.command||a.title)};
+    if(a.kind==='file_change'){
+      const files=changedFiles(a.details),first=files[0]||oneLine(a.title)||'文件';
+      return{prefix:'Changed:',value:first+(files.length>1?'，另 '+(files.length-1)+' 个文件':'')};
+    }
+    if(a.kind==='search')return{prefix:'Search:',value:oneLine(a.details||a.command||a.title)};
+    if(a.kind==='tool')return{prefix:'Tool:',value:oneLine(a.title)};
+    return{prefix:'',value:oneLine(a.title)||'行动'};
+  }
+  const messageText=a=>a.output||a.details||a.title||'';
   function parser(onEvent,onHeartbeat=()=>{}){
     let buffer='',data=[],id='',type='',size=0;
     return chunk=>{
@@ -31,7 +53,7 @@
     if(old&&old.last_seq>=item.last_seq)return false;
     items.set(key,{...item,first_seq:item.first_seq||old?.first_seq||item.last_seq});return true;
   }
-  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey,defaultOpen};return;}
+  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey,defaultOpen,changedFiles,compactSummary,messageText};return;}
   function mount(container,{onTaskEvent=()=>{}}={}){
     const el=WA.el,items=new Map(),cards=new Map();
     const head=el('div',null,'panel-head activity-head'),heading=el('div',null,'activity-heading'),title=el('h2','Agent 实时行动'),subtitle=el('span','查看 Agent 当前正在做什么','small muted'),connection=el('span','尚未连接','activity-connection');
@@ -61,13 +83,25 @@
     function card(a){
       const key=actionKey(a);let c=cards.get(key);
       if(!c){
+        if(a.kind==='message'){
+          const box=el('article',null,'activity-card activity-message'),header=el('div',null,'activity-message-head'),identity=el('strong'),status=el('span',null,'activity-status'),time=el('span',null,'activity-time'),content=el('div',null,'activity-message-content');
+          header.append(identity,status,time);box.append(header,content);box.dataset.actionId=a.action_id;
+          c={box,identity,status,time,content,messageValue:''};cards.set(key,c);
+        }else{
         const box=el('details',null,'activity-card'),summary=el('summary'),marker=el('span',null,'activity-marker'),main=el('span',null,'activity-main'),top=el('span',null,'activity-card-top'),name=el('strong'),kind=el('span',null,'activity-kind'),bottom=el('span',null,'activity-card-bottom'),status=el('span',null,'activity-status'),time=el('span',null,'activity-time');
-        top.append(name,kind);bottom.append(status,time);main.append(top,bottom);summary.append(marker,main);box.append(summary);
+        const prefix=el('span',null,'activity-summary-prefix'),value=el('code',null,'activity-summary-value');name.append(prefix,value);top.append(name,kind);bottom.append(status,time);main.append(top,bottom);summary.append(marker,main);box.append(summary);
         const body=el('div',null,'activity-body'),meta=el('p',null,'activity-meta'),commandWrap=el('section',null,'activity-block'),commandLabel=el('h3','执行命令'),command=el('pre',null,'activity-command'),detailsWrap=el('section',null,'activity-block'),detailsLabel=el('h3','详细信息'),details=el('pre'),outputWrap=el('section',null,'activity-block'),outputLabel=el('h3','输出'),output=el('pre',null,'activity-output'),errorWrap=el('section',null,'activity-block activity-error-block'),errorLabel=el('h3','错误'),error=el('p',null,'activity-error'),flags=el('p',null,'small muted activity-flags');
         commandWrap.append(commandLabel,command);detailsWrap.append(detailsLabel,details);outputWrap.append(outputLabel,output);errorWrap.append(errorLabel,error);body.append(meta,commandWrap,detailsWrap,outputWrap,errorWrap,flags);box.append(body);box.open=defaultOpen(a.kind);box.dataset.actionId=a.action_id;
-        c={box,name,kind,status,time,meta,command,details,output,error,flags,commandWrap,detailsWrap,outputWrap,errorWrap};cards.set(key,c);
+        c={box,name,prefix,value,kind,status,time,meta,command,details,output,error,flags,commandWrap,detailsWrap,outputWrap,errorWrap};cards.set(key,c);
+        }
       }
-      c.box.dataset.state=a.state;c.box.dataset.kind=a.kind||'unknown';c.name.textContent=a.title;c.kind.textContent=kindNames[a.kind]||'行动';c.status.textContent=stateNames[a.state]||a.state;c.time.textContent=elapsed(a);c.meta.textContent=metadata(a)+'\n'+new Date(a.updated_at_ms).toLocaleString();
+      c.box.dataset.state=a.state;c.box.dataset.kind=a.kind||'unknown';c.status.textContent=stateNames[a.state]||a.state;c.time.textContent=elapsed(a);
+      if(a.kind==='message'){
+        const member=agents.find(x=>x.agent_id===a.agent_id);c.identity.textContent=member?.name||'Agent 消息';
+        const value=messageText(a);if(c.messageValue!==value){c.messageValue=value;c.content.replaceChildren(WA.markdown?WA.markdown(value):el('div',value));}
+        return c.box;
+      }
+      const summary=compactSummary(a);c.prefix.textContent=summary.prefix;c.value.textContent=summary.value;c.kind.textContent=kindNames[a.kind]||'行动';c.meta.textContent=metadata(a)+'\n'+new Date(a.updated_at_ms).toLocaleString();
       for(const field of ['command','details','output','error']){c[field+'Wrap'].hidden=!a[field];if(c[field].textContent!==(a[field]||'')){const bottom=c[field].scrollTop+c[field].clientHeight>=c[field].scrollHeight-20;c[field].textContent=a[field]||'';if(bottom)c[field].scrollTop=c[field].scrollHeight;}}
       c.flags.textContent=[a.exit_code!=null?'退出码 '+a.exit_code:'',a.redacted?'已对常见密钥格式脱敏':'',a.truncated?'内容已截断':''].filter(Boolean).join(' · ');
       return c.box;
