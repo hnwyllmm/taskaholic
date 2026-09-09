@@ -43,7 +43,8 @@ async function page({initialTasks=[],hierarchies={},hash=''}={}){
   const review={controls:noop,update:noop,reset:noop,isBusy:()=>false,isWaiting:()=>false,hasDraft:()=>false};
   const document={getElementById:$,createElement:tag=>new Element(tag),createTextNode:text=>({textContent:text}),querySelectorAll:()=>[],body:new Element('body')};
   const consultation={open:noop,update:async()=>{},reset:noop};
-  const ctx=vm.createContext({document,fetch,console,URLSearchParams,Uint8Array,crypto:{getRandomValues:array=>array.fill(1)},location:{hash,search:''},history:{replaceState:noop},confirm:()=>true,setTimeout:()=>1,clearTimeout:noop,addEventListener:noop,WA:{token:()=>'',el:(tag,text,cls)=>{const n=new Element(tag);n.textContent=text;n.className=cls;return n;},date:()=>'',badge:state=>{const n=new Element('span');n.textContent=state;return n;},labels:{}},WAActivity:{mount:()=>activity},WAReviewChat:{mount:()=>review},WATaskConsultation:{mount:()=>consultation}});
+  const taskPermissions={update:async()=>{},dispose:noop};
+  const ctx=vm.createContext({document,fetch,console,URLSearchParams,Uint8Array,crypto:{getRandomValues:array=>array.fill(1)},location:{hash,search:''},history:{replaceState:noop},confirm:()=>true,setTimeout:()=>1,clearTimeout:noop,addEventListener:noop,WA:{token:()=>'',el:(tag,text,cls)=>{const n=new Element(tag);n.textContent=text;n.className=cls;return n;},date:()=>'',badge:state=>{const n=new Element('span');n.textContent=state;return n;},labels:{}},WAActivity:{mount:()=>activity},WAReviewChat:{mount:()=>review},WATaskConsultation:{mount:()=>consultation},WAPermissions:{mountTask:()=>taskPermissions}});
   ctx.window=ctx;
   for(const file of ['assignment.js','task-hierarchy.js','test-pipelines.js','task-references.js','tasks.js'])vm.runInContext(fs.readFileSync(path.join(__dirname,file),'utf8'),ctx,{filename:file});
   const settle=async()=>{for(let i=0;i<4;i++)await new Promise(setImmediate);};await settle();

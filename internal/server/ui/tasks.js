@@ -6,6 +6,7 @@ const assignment=WAAssignment.mount($('assignment-panel'),{submit:(agentID,versi
 const activity=WAActivity.mount($('activity-panel'),{onTaskEvent:()=>{if(!activityRefresh)activityRefresh=setTimeout(refreshFromEvent,400);}});
 const consultation=WATaskConsultation.mount($('consultation-dialog'));
 const reviewChatBox=WA.el('section');reviewChatBox.id='task-review-chat';$('review-chat-slot').append(reviewChatBox);const reviewChat=WAReviewChat.mount(reviewChatBox,{changed:async()=>{if(state.id){await selectTask(state.id);await list();}},busyChanged:controls});
+const taskPermissions=WAPermissions.mountTask($('task-permission-panel'),$('task-permission-requests'),{changed:async()=>{if(state.id){await selectTask(state.id);await list();}}});
 const labels={NEW:'待分派',QUEUED:'排队中',IN_PROGRESS:'进行中',WAITING_REVIEW:'待我验收',WAITING_INPUT:'待我回复',BLOCKED:'受阻',PAUSED:'已暂停',COMPLETED:'已完成',WAITING_SUBTASKS:'等待子任务'};
 labels.ATTENTION='需要你';
 Object.assign(labels,{WAITING_AUTHORIZATION:'等待授权',WAITING_ENVIRONMENT:'等待环境'});
@@ -36,7 +37,7 @@ async function selectTask(id){
  if(switching&&($('message').value||$('review-comment').value||reviewChat.hasDraft())&&!confirm('放弃尚未发送的消息或验收意见，切换任务？')){history.replaceState(null,'',state.id?'#'+state.id:'/tasks');return;}
  const [current,relations]=await Promise.all([api('/work/tasks/'+encodeURIComponent(id)+'?event_limit=30'),api('/work/tasks/'+encodeURIComponent(id)+'/hierarchy')]);
  if(switching){reviewChat.reset();state.artifactID='';state.messageKey='';$('message').value='';$('review-comment').value='';}
- current.hierarchy=relations;state.current=current;state.id=id;history.replaceState(null,'','#'+id);renderTask();renderList();await consultation.update(id);
+ current.hierarchy=relations;state.current=current;state.id=id;history.replaceState(null,'','#'+id);renderTask();renderList();await Promise.all([consultation.update(id),taskPermissions.update(id,current.detail.task.state)]);
 }
 function renderTask(){const {detail,work}=state.current,t=detail.task,presentation=WATaskReferences.presentation(t,work);WATaskReferences.render($('task-references'),work.references);$('welcome').hidden=true;$('task').hidden=false;$('title').textContent=presentation.title;$('goal').textContent=presentation.goal;$('status').textContent=labels[t.state]||t.state;$('status').dataset.state=t.state;const owner=state.agents.find(a=>a.agent_id===t.assigned_agent_id);const preferred=state.agents.find(a=>a.agent_id===work.config.preferred_agent_id);$('owner').textContent=owner?owner.name+' · '+(detail.session?.model_id||'默认模型'):preferred?preferred.name+' · 等待执行':t.state==='NEW'?'待分派':'自动分派中';$('session').textContent=detail.session?JSON.stringify({task_id:t.task_id,agent_id:detail.session.agent_id,session_id:detail.session.session_id,native_session:detail.session.agent_session_ref,runtime:detail.session.runtime_id,role_version:detail.runs[0]?.role_snapshot?.version,team_material:work.config.project.name||'未附加团队资料',mode:'只读执行 · 本地产物'},null,2):'首次调度后建立 Session。';$('scheduler-error').hidden=!work.config.scheduler_error;$('scheduler-error').textContent='等待调度 / 需要处理：'+work.config.scheduler_error;
  $('goal').replaceChildren(markdown(presentation.goal));
@@ -107,5 +108,5 @@ function renderWorkOverview(){
 }
 $('back-to-list').onclick=()=>{if(($('message').value||reviewChat.hasDraft()||$('review-comment').value)&&!confirm('放弃尚未发送的消息或意见，返回工作列表？'))return;reviewChat.reset();consultation.reset();state.current=null;state.id='';activity.update(null);assignment.update(null);clearTimeout(activityRefresh);activityRefresh=null;state.messageKey='';$('message').value='';$('review-comment').value='';$('task').hidden=true;$('welcome').hidden=false;history.replaceState(null,'','/tasks');renderList();renderWorkOverview();};
 window.addEventListener('hashchange',()=>{const id=location.hash.slice(1);if(id&&id!==state.id)action(()=>selectTask(id));});
-window.addEventListener('pagehide',()=>{clearTimeout(activityRefresh);activity.dispose();});
+window.addEventListener('pagehide',()=>{clearTimeout(activityRefresh);activity.dispose();taskPermissions.dispose();});
 action(async()=>{await library();await list();const id=location.hash.slice(1);if(id)await selectTask(id);const project=new URLSearchParams(location.search).get('project');if(project&&state.projects.some(p=>p.project_id===project)){$('new-project').value=project;createDialog();}});setTimeout(poll,5000);

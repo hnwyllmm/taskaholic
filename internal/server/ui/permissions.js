@@ -23,6 +23,18 @@ window.WAPermissions=(()=>{
    if(!compact&&!['PENDING','DENIED'].includes(r.state)){const history=el('details');history.append(el('summary',(states[r.state]||r.state)+' · '+r.title),card);box.append(history);}else box.append(card);
   }
  }
+ function mountTask(panel,box,{changed}={}){
+  let taskID='',taskState='',disposed=false;
+  async function refresh(){
+   if(!taskID||disposed)return;
+   const data=await api('/execution-permissions'),items=(data.requests||[]).filter(r=>r.task_id===taskID||r.parent_task_id===taskID);
+   panel.hidden=taskState!=='WAITING_AUTHORIZATION'&&!items.some(r=>r.state==='PENDING');
+   renderRequests(box,items,async()=>{await refresh();if(changed)await changed();});
+  }
+  async function update(id,state){taskID=id;taskState=state;panel.hidden=state!=='WAITING_AUTHORIZATION';if(!panel.hidden)await refresh();}
+  const timer=setInterval(()=>{if(!disposed&&!busy&&!document.hidden&&!panel.hidden)void refresh().catch(e=>notice(e.message,true));},5000);
+  return{update,dispose(){disposed=true;clearInterval(timer);}};
+ }
  let rules=[];
  async function refresh(){
   const data=await api('/execution-permissions');
@@ -38,5 +50,5 @@ window.WAPermissions=(()=>{
  }
  const form=document.getElementById('policy-form');if(form)form.onsubmit=e=>{e.preventDefault();act(async()=>{const p={operation:document.getElementById('policy-operation').value,runtime_id:document.getElementById('policy-runtime').value.trim(),repository:document.getElementById('policy-repository').value.trim(),effect:document.getElementById('policy-effect').value};p.version=rules.find(x=>x.operation===p.operation&&x.runtime_id===p.runtime_id&&x.repository===p.repository)?.version||0;if(!confirm(`保存策略：${effects[p.effect]}\n${names[p.operation]} · ${p.runtime_id} · ${p.repository}\n只影响后续调度，不会中断已执行操作。`))return;await api('/execution-permissions/policies','PUT',p);await refresh();notice('规则已保存。待授权任务可按最新规则重新检查。');});};
  if(document.getElementById('permission-requests')){void refresh().catch(e=>notice(e.message,true));setInterval(()=>{if(!busy&&!document.hidden)void refresh().catch(e=>notice(e.message,true));},5000);}
- return {renderRequests};
+ return {renderRequests,mountTask};
 })();

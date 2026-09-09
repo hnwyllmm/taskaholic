@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工作列表 · Work Assistant</title><link rel="stylesheet" href="/tasks/tasks.css"><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/review-chat.js" defer></script><script src="/assets/activity.js" defer></script><script src="/assets/task-consultation.js" defer></script><link rel="stylesheet" href="/assets/assignment.css"><script src="/assets/assignment.js" defer></script><script src="/assets/task-hierarchy.js" defer></script><script src="/assets/test-pipelines.js" defer></script><script src="/assets/task-references.js" defer></script><script src="/tasks/tasks.js" defer></script></head>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>工作列表 · Work Assistant</title><link rel="stylesheet" href="/tasks/tasks.css"><link rel="stylesheet" href="/assets/shell.css"><script src="/assets/shared.js" defer></script><script src="/assets/review-chat.js" defer></script><script src="/assets/activity.js" defer></script><script src="/assets/task-consultation.js" defer></script><script src="/assets/permissions.js" defer></script><link rel="stylesheet" href="/assets/assignment.css"><script src="/assets/assignment.js" defer></script><script src="/assets/task-hierarchy.js" defer></script><script src="/assets/test-pipelines.js" defer></script><script src="/assets/task-references.js" defer></script><script src="/tasks/tasks.js" defer></script></head>
 <body data-page="tasks">
 <header data-app-shell></header>
 <div id="notice" role="status" aria-live="polite" hidden></div>
@@ -13,6 +13,7 @@
 <div class="task-heading"><div><span class="eyebrow">TASK WORKSPACE</span><h1 id="title"></h1><div class="row"><span id="status" class="badge"></span><span id="owner" class="muted"></span></div></div><div class="row"><button id="consultation-open" class="consultation-open">旁路问答</button><button id="pause">暂停任务</button></div></div>
 <section id="task-references" class="task-references" aria-label="来源与关联链接" hidden></section>
 <p id="scheduler-error" class="warning" hidden></p>
+<section id="task-permission-panel" class="panel task-permission" aria-label="任务执行授权" hidden><div class="panel-head"><div><span class="eyebrow">ACTION REQUIRED</span><h2>这个任务正在等待执行授权</h2></div><a href="/permissions">管理全部预授权规则 →</a></div><p class="small muted">“仅允许本次”只放行当前申请；“允许并记住此范围”会让相同操作、机器和仓库以后自动通过。不会扩大其它权限。</p><div id="task-permission-requests"></div></section>
 <details class="metadata"><summary>目标与执行信息</summary><div id="goal"></div><pre id="session"></pre></details>
 <section id="assignment-panel" aria-label="任务执行安排"></section>
 <section id="plan-change" class="panel plan-change" aria-label="最近一次重大方案变更" hidden></section>
