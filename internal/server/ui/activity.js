@@ -27,6 +27,10 @@
     return{prefix:'',value:oneLine(a.title)||'行动'};
   }
   const messageText=a=>a.output||a.details||a.title||'';
+  const roundMessages=(messages,runID)=>({
+    triggers:(messages||[]).filter(m=>m.run_id===runID&&m.delivery==='SENT'),
+    responses:(messages||[]).filter(m=>m.run_id===runID&&m.delivery!=='SENT'),
+  });
   function parser(onEvent,onHeartbeat=()=>{}){
     let buffer='',data=[],id='',type='',size=0;
     return chunk=>{
@@ -53,17 +57,17 @@
     if(old&&old.last_seq>=item.last_seq)return false;
     items.set(key,{...item,first_seq:item.first_seq||old?.first_seq||item.last_seq});return true;
   }
-  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey,defaultOpen,changedFiles,compactSummary,messageText};return;}
+  if(typeof module!=='undefined'&&module.exports){module.exports={parser,merge,active,actionKey,defaultOpen,changedFiles,compactSummary,messageText,roundMessages};return;}
   function mount(container,{onTaskEvent=()=>{}}={}){
-    const el=WA.el,items=new Map(),cards=new Map();
-    const head=el('div',null,'panel-head activity-head'),heading=el('div',null,'activity-heading'),title=el('h2','Agent 实时行动'),subtitle=el('span','查看 Agent 当前正在做什么','small muted'),connection=el('span','尚未连接','activity-connection');
+    const el=WA.el,items=new Map(),cards=new Map(),rounds=new Map();
+    const head=el('div',null,'panel-head activity-head'),heading=el('div',null,'activity-heading'),title=el('h2','任务对话与实时运行'),subtitle=el('span','每轮对话、Agent 行动和正式回复保存在一起','small muted'),connection=el('span','尚未连接','activity-connection');
     heading.append(title,subtitle);connection.setAttribute('role','status');head.append(heading,connection);
     const now=el('div',null,'activity-now'),pulse=el('span',null,'activity-pulse'),nowText=el('div'),current=el('strong'),last=el('p',null,'small muted');nowText.append(current,last);now.append(pulse,nowText);
-    const tools=el('div',null,'activity-toolbar'),filterLabel=el('label','查看轮次'),filter=el('select'),count=el('span',null,'small muted'),reconnect=el('button','重新连接');
-    filter.setAttribute('aria-label','筛选行动轮次');filterLabel.append(filter);tools.append(filterLabel,count,reconnect);
+    const tools=el('div',null,'activity-toolbar'),filter=el('select'),count=el('span',null,'small muted'),reconnect=el('button','重新连接');
+    filter.hidden=true;tools.append(count,reconnect);
     const list=el('div',null,'activity-list'),empty=el('p',null,'activity-empty'),older=el('button','加载更早的行动'),note=el('p','只展示 Agent 实际上报的行动；更新粒度取决于执行器，不展示内部思考。常见密钥格式会脱敏，长输出会截断。','activity-note');
     older.className='activity-older';container.classList.add('panel','activity-panel');container.append(head,now,tools,empty,older,list,note);
-    let taskID='',detail=null,agents=[],runtimes=[],generation=0,cursor=0,before=0,hasMore=false,loadingOlder=false;
+    let taskID='',detail=null,work=null,agents=[],runtimes=[],generation=0,cursor=0,before=0,hasMore=false,loadingOlder=false,lastRoundID='';
     let stream=null,retry=null,watchdog=null,frame=null,connected=false,disposed=false,lastByte=0,attempt=0,filterKey='',lastLegacy=null;
     const stateNames={RUNNING:'执行中',PENDING:'等待中',COMPLETED:'已完成',FAILED:'失败',INTERRUPTED:'已中断',UNKNOWN:'结果未知'};
     const kindNames={command:'命令',tool:'工具',file_change:'文件',search:'检索',plan:'计划',message:'消息'};
@@ -106,18 +110,59 @@
       c.flags.textContent=[a.exit_code!=null?'退出码 '+a.exit_code:'',a.redacted?'已对常见密钥格式脱敏':'',a.truncated?'内容已截断':''].filter(Boolean).join(' · ');
       return c.box;
     }
+    function messageContent(message){
+      if(root.WATaskReferences&&detail?.task&&work)return root.WATaskReferences.message(detail.task,work,message);
+      return message.content||'';
+    }
+    function messageBubble(message,position){
+      const bubble=el('article',null,'round-message '+position+' '+(message.speaker||'system'));
+      const label=message.speaker==='assistant'?'Agent 正式回复':message.speaker==='user'?'你发起':'系统发起';
+      bubble.append(el('span',label+' · '+new Date(message.created_at_ms).toLocaleString(),'round-message-label'));
+      bubble.append(WA.markdown?WA.markdown(messageContent(message)):el('div',messageContent(message)));
+      if(message.delivery==='PENDING')bubble.append(el('span','已保存，等待下一轮处理','round-message-delivery'));
+      return bubble;
+    }
+    function roundCard(run,index,isLatest){
+      let round=rounds.get(run.run_id);
+      if(!round){
+        const box=el('details',null,'activity-round'),summary=el('summary'),main=el('span',null,'round-summary-main'),name=el('strong'),meta=el('span',null,'round-summary-meta'),state=el('span',null,'round-summary-state'),body=el('div',null,'round-body'),inputs=el('div',null,'round-inputs'),actions=el('div',null,'round-actions'),replies=el('div',null,'round-replies');
+        main.append(name,meta);summary.append(main,state);body.append(inputs,actions,replies);box.append(summary,body);summary.addEventListener('click',()=>{round.touched=true;});
+        round={box,name,meta,state,body,inputs,actions,replies,touched:false};rounds.set(run.run_id,round);
+      }
+      const {triggers,responses}=roundMessages(work?.messages,run.run_id);
+      const trigger=triggers.at(-1),member=agents.find(a=>a.agent_id===run.agent_id),label=trigger?oneLine(messageContent(trigger),90):'自动进入本轮处理';
+      round.name.textContent=`第 ${index+1} 轮 · ${label}`;
+      round.meta.textContent=[member?.name||run.agent_id||'Agent',run.model_id||'默认模型',new Date(run.created_at_ms).toLocaleString()].filter(Boolean).join(' · ');
+      round.state.textContent=stateNames[run.state]||run.state;round.box.dataset.state=run.state;
+      round.inputs.replaceChildren(...triggers.map(m=>messageBubble(m,'trigger')));
+      round.replies.replaceChildren(...responses.map(m=>messageBubble(m,m.speaker==='assistant'?'reply':'result')));
+      if(!round.touched)round.box.open=isLatest;
+      return round;
+    }
+    function pendingRound(messages){
+      const run={run_id:'pending',state:'PENDING',created_at_ms:messages[0]?.created_at_ms||Date.now()};
+      let round=rounds.get(run.run_id);
+      if(!round){
+        const box=el('details',null,'activity-round pending-round'),summary=el('summary'),main=el('span',null,'round-summary-main'),name=el('strong','等待下一轮'),meta=el('span','消息已经保存，调度后会与新 Run 自动关联','round-summary-meta'),state=el('span','等待中','round-summary-state'),body=el('div',null,'round-body'),inputs=el('div',null,'round-inputs'),actions=el('div',null,'round-actions'),replies=el('div',null,'round-replies');
+        main.append(name,meta);summary.append(main,state);body.append(inputs,actions,replies);box.append(summary,body);round={box,name,meta,state,body,inputs,actions,replies,touched:false};rounds.set(run.run_id,round);
+      }
+      round.inputs.replaceChildren(...messages.map(m=>messageBubble(m,'trigger')));round.box.open=true;return round;
+    }
     function render(){
       const followTail=list.scrollTop+list.clientHeight>=list.scrollHeight-36;
-      const sorted=[...items.values()].sort((a,b)=>a.first_seq-b.first_seq),visible=sorted.filter(a=>!filter.value||a.run_id===filter.value);
-      // Insert/move existing nodes only: keep expanded details, selection and scroll.
-      let index=0;for(const a of visible){const box=card(a);if(list.children[index]!==box)list.insertBefore(box,list.children[index]||null);index++;}
-      while(list.children.length>index)list.lastElementChild.remove();
+      const sorted=[...items.values()].sort((a,b)=>a.first_seq-b.first_seq),runs=detail?.runs||[],pending=(work?.messages||[]).filter(m=>!m.run_id&&m.delivery==='PENDING');
+      const newest=runs.at(-1)?.run_id||'',newRound=newest&&newest!==lastRoundID;if(newRound){for(const [id,round] of rounds)if(id!==newest&&!round.touched)round.box.open=false;lastRoundID=newest;}
+      const visible=[];for(const [index,run] of runs.entries()){
+        const round=roundCard(run,index,run.run_id===newest);round.actions.replaceChildren(...sorted.filter(a=>a.run_id===run.run_id).map(card));visible.push(round.box);
+      }
+      if(pending.length)visible.push(pendingRound(pending).box);else if(rounds.has('pending')){rounds.get('pending').box.remove();rounds.delete('pending');}
+      list.replaceChildren(...visible);if(newRound||followTail)list.scrollTop=list.scrollHeight;
       for(const [key,c] of cards)if(!items.has(key)){c.box.remove();cards.delete(key);}
-      count.textContent=visible.length+' 条行动';empty.hidden=visible.length>0;
+      count.textContent=runs.length+' 轮对话 · '+sorted.length+' 条行动';empty.hidden=visible.length>0;
       const running=detail?.runs?.some(r=>active(r.state)||r.state==='QUEUED');
       empty.textContent=lastLegacy?'最新日志：'+lastLegacy.message:running?'运行已开始，等待执行器上报行动。没有新事件不代表卡住。':'暂无结构化行动。升级前的历史任务请查看下方「运行与事件记录」。';
       older.hidden=!hasMore;older.disabled=loadingOlder||items.size>=500;
-      older.textContent=items.size>=500?'已显示 500 条；更早记录仍保存在数据库':'加载更早的行动';if(followTail)list.scrollTop=list.scrollHeight;tick();
+      older.textContent=items.size>=500?'已显示 500 条；更早记录仍保存在数据库':'加载更早的行动';tick();
     }
     function tick(){
       if(!taskID)return;
@@ -166,7 +211,7 @@
     }
     async function attach(id,force=false){
       if(id===taskID&&!force)return;
-      close();taskID=id;cursor=0;before=0;hasMore=false;lastLegacy=null;items.clear();cards.clear();list.replaceChildren();filter.value='';filterKey='';
+      close();taskID=id;cursor=0;before=0;hasMore=false;lastLegacy=null;lastRoundID='';items.clear();cards.clear();rounds.clear();list.replaceChildren();filter.value='';filterKey='';
       if(!id){connectionState('尚未连接');return;}
       connectionState('读取行动记录…');render();const gen=generation;
       async function snapshot(){
@@ -177,7 +222,7 @@
       await snapshot();
     }
     function update(data,knownAgents=[],knownRuntimes=[]){
-      detail=data?.detail||null;agents=knownAgents;runtimes=knownRuntimes;
+      detail=data?.detail||null;work=data?.work||null;agents=knownAgents;runtimes=knownRuntimes;
       if(!detail){attach('');return;}
       attach(detail.task.task_id);
       const signature=detail.runs.map(r=>r.run_id+':'+r.state).join('|');
