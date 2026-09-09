@@ -79,13 +79,14 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	mutex.Lock()
 	defer mutex.Unlock()
-	foundSession, foundMessage, foundApplied := false, false, false
+	foundSession, foundMessage, foundApplied, foundUsage := false, false, false, false
 	for _, event := range events {
 		foundSession = foundSession || (event.Type == "session.bound" && event.AgentSessionRef == "codex:thread-123")
 		foundMessage = foundMessage || (event.Stream == "agent" && event.Message == "agent answer")
 		foundApplied = foundApplied || (event.Type == "directive.applied" && event.DirectiveID == "directive-1")
+		foundUsage = foundUsage || (event.Usage != nil && event.Usage.Provider == "codex" && event.Usage.InputTokens == 1 && event.Usage.OutputTokens == 2)
 	}
-	if !foundSession || !foundMessage || !foundApplied {
+	if !foundSession || !foundMessage || !foundApplied || !foundUsage {
 		t.Fatalf("events = %#v", events)
 	}
 }

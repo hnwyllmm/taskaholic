@@ -351,7 +351,11 @@ func scanCodexEvents(reader io.Reader, emit func(Event)) parsedCodexTurn {
 			}
 		case "turn.completed":
 			if len(envelope.Usage) > 0 {
-				emit(Event{Message: string(envelope.Usage), Stream: "codex-usage"})
+				if usage, ok := parseTokenUsage(envelope.Usage, "codex"); ok {
+					emit(Event{Usage: &usage, Stream: "usage"})
+				} else {
+					emit(Event{Message: string(envelope.Usage), Stream: "codex-usage"})
+				}
 			}
 		case "turn.failed", "error":
 			message := codexErrorMessage(envelope.Message, envelope.Error)
@@ -365,6 +369,18 @@ func scanCodexEvents(reader io.Reader, emit func(Event)) parsedCodexTurn {
 		result.Err = fmt.Errorf("read Codex JSONL: %w", err)
 	}
 	return result
+}
+
+func parseTokenUsage(raw json.RawMessage, provider string) (model.TokenUsage, bool) {
+	var usage model.TokenUsage
+	if len(raw) == 0 || json.Unmarshal(raw, &usage) != nil {
+		return usage, false
+	}
+	usage.Provider = provider
+	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CachedInputTokens < 0 || usage.CacheWriteInputTokens < 0 || usage.ReasoningOutputTokens < 0 {
+		return model.TokenUsage{}, false
+	}
+	return usage, usage.InputTokens > 0 || usage.OutputTokens > 0
 }
 
 func emitCodexItem(raw json.RawMessage, emit func(Event)) {

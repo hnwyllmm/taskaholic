@@ -240,6 +240,7 @@ func scanCursorEvents(reader io.Reader, expected string, requireJSON bool, emit 
 			Result    string          `json:"result"`
 			Error     json.RawMessage `json:"error"`
 			ToolCall  json.RawMessage `json:"tool_call"`
+			Usage     json.RawMessage `json:"usage"`
 			Message   struct {
 				Content []struct {
 					Type string `json:"type"`
@@ -263,6 +264,9 @@ func scanCursorEvents(reader io.Reader, expected string, requireJSON bool, emit 
 				parsed.SessionID = e.SessionID
 				emit(Event{Type: "session.bound", AgentSessionRef: "cursor:" + e.SessionID})
 			}
+		}
+		if usage, ok := parseTokenUsage(e.Usage, "cursor"); ok {
+			emit(Event{Usage: &usage, Stream: "usage"})
 		}
 		switch e.Type {
 		case "assistant":

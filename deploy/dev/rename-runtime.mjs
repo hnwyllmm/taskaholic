@@ -25,7 +25,7 @@ export function verifyRename(before,after,from,to,{restarted=false}={}){
     }
     const expected=rows.map(row=>{
       const copy={...row};
-      if(['runtime','agent_profile','session','run','execution_policy'].includes(table)&&copy.runtime_id===from){
+      if(['runtime','agent_profile','session','run','execution_policy','run_token_usage'].includes(table)&&copy.runtime_id===from){
         copy.runtime_id=to;
         if(table==='agent_profile'||table==='execution_policy'){
           const profile=parse(copy.data_json);assert.equal(profile.runtime_id,from,'member JSON/reference mismatch');
@@ -59,7 +59,7 @@ export function renameRuntime(control,spool,from,to){
   try{
     control.exec('BEGIN IMMEDIATE');active=true;
     control.exec('PRAGMA defer_foreign_keys=ON');
-    if(![11,12,13,14,15,16,17,18,19,20].includes(control.prepare('SELECT MAX(version) AS version FROM schema_version').get().version))throw Error('unreviewed schema version');
+    if(![11,12,13,14,15,16,17,18,19,20,21].includes(control.prepare('SELECT MAX(version) AS version FROM schema_version').get().version))throw Error('unreviewed schema version');
     const original=control.prepare('SELECT * FROM runtime WHERE runtime_id=?').get(from);
     if(!original)throw Error('source runtime does not exist');
     if(original.state!=='OFFLINE')throw Error('stop the runtime before renaming');
@@ -83,7 +83,7 @@ export function renameRuntime(control,spool,from,to){
       control.prepare('INSERT INTO idempotency_key(scope,key,resource_id,created_at_ms) VALUES(?,?,?,?)').run(bootstrap.scope,'local-helper-role:'+to,bootstrap.resource_id,bootstrap.created_at_ms);
     }
     for(const table of Object.keys(before)){
-      if(control.prepare('PRAGMA table_info('+quote(table)+')').all().some(c=>c.name==='runtime_id')&&!['runtime','agent_profile','session','run','runtime_event_dedupe','execution_policy'].includes(table))throw Error('unreviewed runtime reference table: '+table);
+      if(control.prepare('PRAGMA table_info('+quote(table)+')').all().some(c=>c.name==='runtime_id')&&!['runtime','agent_profile','session','run','runtime_event_dedupe','execution_policy','run_token_usage'].includes(table))throw Error('unreviewed runtime reference table: '+table);
     }
     const updateProfile=control.prepare('UPDATE agent_profile SET runtime_id=?, data_json=? WHERE agent_id=?');
     for(const row of before.agent_profile.filter(a=>a.runtime_id===from)){
@@ -92,7 +92,7 @@ export function renameRuntime(control,spool,from,to){
       const raw=JSON.stringify(profile);
       updateProfile.run(to,typeof row.data_json==='string'?raw:Buffer.from(raw),row.agent_id);
     }
-    for(const table of ['runtime','session','run'])control.prepare('UPDATE '+quote(table)+' SET runtime_id=? WHERE runtime_id=?').run(to,from);
+    for(const table of ['runtime','session','run','run_token_usage'])control.prepare('UPDATE '+quote(table)+' SET runtime_id=? WHERE runtime_id=?').run(to,from);
     if(before.execution_policy){
       assert.ok(!before.permission_request.some(r=>['PENDING','APPROVED'].includes(r.state)&&parse(r.data_json).runtime_id===from),'resolve execution permission requests before renaming runtime');
       for(const row of before.execution_policy.filter(p=>p.runtime_id===from)){

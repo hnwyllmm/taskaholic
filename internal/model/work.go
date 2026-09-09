@@ -135,6 +135,7 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
+	TokenUsage    TaskTokenUsage  `json:"token_usage"`
 	Development   *Development    `json:"development,omitempty"`
 	Publications  []Publication   `json:"publications"`
 	References    []TaskReference `json:"references"`
@@ -145,6 +146,43 @@ type WorkDetail struct {
 	Messages      []TaskMessage   `json:"messages"`
 	Artifacts     []Artifact      `json:"artifacts"`
 	Reviews       []Review        `json:"reviews"`
+}
+
+type TokenUsageTotals struct {
+	InputTokens           int64 `json:"input_tokens"`
+	CachedInputTokens     int64 `json:"cached_input_tokens"`
+	CacheWriteInputTokens int64 `json:"cache_write_input_tokens"`
+	OutputTokens          int64 `json:"output_tokens"`
+	ReasoningOutputTokens int64 `json:"reasoning_output_tokens"`
+	TotalTokens           int64 `json:"total_tokens"`
+}
+
+type RunTokenUsage struct {
+	TokenUsageTotals
+	RunID      string `json:"run_id"`
+	TaskID     string `json:"task_id"`
+	TaskTitle  string `json:"task_title"`
+	Stage      string `json:"stage"`
+	StageLabel string `json:"stage_label"`
+	Provider   string `json:"provider"`
+	ModelID    string `json:"model_id,omitempty"`
+	Turns      int    `json:"turns"`
+}
+
+type StageTokenUsage struct {
+	TokenUsageTotals
+	Stage string          `json:"stage"`
+	Label string          `json:"label"`
+	Runs  []RunTokenUsage `json:"runs"`
+}
+
+type TaskTokenUsage struct {
+	TokenUsageTotals
+	Stages         []StageTokenUsage `json:"stages"`
+	RunCount       int               `json:"run_count"`
+	ReportedRuns   int               `json:"reported_runs"`
+	PendingRuns    int               `json:"pending_runs"`
+	UnreportedRuns int               `json:"unreported_runs"`
 }
 
 // References resolve persisted source identities. Historical Run inputs and

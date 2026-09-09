@@ -903,6 +903,10 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDetail, error) {
 	w := model.WorkDetail{Messages: []model.TaskMessage{}, Artifacts: []model.Artifact{}, Reviews: []model.Review{}}
 	var err error
+	w.TokenUsage, err = s.TaskTokenUsage(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
 	d, devErr := readJSONRow[model.Development](s.db.QueryRowContext(ctx, `SELECT data_json FROM development WHERE task_id=?`, taskID))
 	if devErr == nil {
 		w.Development = &d
