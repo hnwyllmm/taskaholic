@@ -137,6 +137,16 @@ func taskSummaryEligibleTx(ctx context.Context, tx *sql.Tx, taskID string) (bool
 	if consultationTable > 0 {
 		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM task_consultation WHERE execution_task_id=?`, taskID).Scan(&internal)
 	}
+	if err != nil || internal != 0 {
+		return false, err
+	}
+	var improvementTable int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='improvement_job'`).Scan(&improvementTable); err != nil {
+		return false, err
+	}
+	if improvementTable > 0 {
+		err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM improvement_job WHERE internal_task_id=?`, taskID).Scan(&internal)
+	}
 	return internal == 0, err
 }
 
@@ -259,7 +269,11 @@ func createTaskSummaryTx(ctx context.Context, tx *sql.Tx, taskID, sourceType, so
 		"summary_id": summary.ID, "version": summary.Version, "source_type": sourceType,
 		"source_id": sourceID, "completed_at_ms": completedAt, "metrics": metrics,
 	})
-	return summary, err
+	if err != nil {
+		return summary, err
+	}
+	tryEnqueueCompletionImprovementTx(ctx, tx, taskID, summary)
+	return summary, nil
 }
 
 func taskSummaryMetricsTx(ctx context.Context, tx *sql.Tx, task model.Task, completedAt int64) (model.TaskSummaryMetrics, error) {

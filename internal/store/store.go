@@ -24,7 +24,13 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-const SchemaVersion = 20
+const SchemaVersion = 22
+
+var ErrPostMigrationValidation = errors.New("post-migration database validation failed")
+
+// Kept replaceable only inside package tests so the fail-closed path can be
+// exercised without deliberately corrupting a real SQLite file.
+var validateMigratedDatabase = verifyOpenDatabase
 
 // OpenProtected is the production entrypoint. Open remains available for
 // explicit first-time test fixtures and offline tools.
@@ -35,18 +41,117 @@ func OpenProtected(path string) (*Store, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	if err := backup.CheckBeforeOpen(ctx, path, directory, SchemaVersion, "task", "run", "event_log"); err != nil {
-		return nil, err
-	}
-	s, err := Open(path)
+	recoveryPoint, previousSchema, migrating, err := backup.CheckBeforeOpenWithResult(ctx, path, directory, SchemaVersion, "task", "run", "event_log")
 	if err != nil {
 		return nil, err
+	}
+	return openProtectedAfterGuard(ctx, path, directory, recoveryPoint, previousSchema, migrating)
+}
+
+// OpenProtectedWithRecoveryPoint is used only by a stopped, combined local
+// deployment after it atomically captured control.sqlite and runtime.sqlite in
+// one verified recovery directory. It verifies that exact point again and
+// binds its ID to the migration audit, instead of creating a second control-
+// only backup and losing the combined recovery relationship.
+func OpenProtectedWithRecoveryPoint(path string, supplied backup.Snapshot) (*Store, error) {
+	directory, err := backup.Directory(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	wantPrefix := fmt.Sprintf("pre-schema-v%d-", SchemaVersion)
+	if supplied.ID == "" || !strings.HasPrefix(supplied.ID, wantPrefix) {
+		return nil, errors.New("combined migration recovery point does not match the target schema")
+	}
+	point, err := backup.Verify(ctx, filepath.Join(directory, "pre-migration", supplied.ID))
+	if err != nil {
+		return nil, fmt.Errorf("combined migration recovery point failed verification: %w", err)
+	}
+	if point.ID != supplied.ID {
+		return nil, errors.New("combined migration recovery point identity changed")
+	}
+	previousSchema, found := 0, false
+	for _, file := range point.Files {
+		if file.Name == filepath.Base(path) {
+			previousSchema, found = file.SchemaVersion, true
+			break
+		}
+	}
+	if !found || previousSchema >= SchemaVersion {
+		return nil, errors.New("combined recovery point has no migratable control database")
+	}
+	liveSchema, err := backup.SQLiteSchemaVersion(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("read live control schema after combined backup: %w", err)
+	}
+	if liveSchema != previousSchema {
+		return nil, fmt.Errorf("control database changed after combined backup: live schema %d, recovery schema %d", liveSchema, previousSchema)
+	}
+	// Re-run the ordinary missing/corrupt/table/newer-schema checks, but set the
+	// accepted schema to the already backed-up version so the guard does not
+	// create a redundant recovery point.
+	if _, guardedSchema, _, guardErr := backup.CheckBeforeOpenWithResult(ctx, path, directory, previousSchema, "task", "run", "event_log"); guardErr != nil {
+		return nil, guardErr
+	} else if guardedSchema != previousSchema && previousSchema > 0 {
+		return nil, errors.New("control schema changed while entering migration")
+	}
+	return openProtectedAfterGuard(ctx, path, directory, point, previousSchema, true)
+}
+
+func openProtectedAfterGuard(ctx context.Context, path, directory string, recoveryPoint backup.Snapshot, previousSchema int, migrating bool) (*Store, error) {
+	s, err := Open(path)
+	if err != nil {
+		if errors.Is(err, ErrPostMigrationValidation) {
+			fenceErr := backup.FenceRecoveryRequired(filepath.Dir(path), err.Error())
+			if fenceErr != nil {
+				return nil, errors.Join(err, fmt.Errorf("write RECOVERY_REQUIRED fence: %w", fenceErr))
+			}
+		}
+		return nil, err
+	}
+	if migrating {
+		if err := s.recordSchemaMigration(ctx, previousSchema, SchemaVersion, recoveryPoint); err != nil {
+			s.Close()
+			fenceErr := backup.FenceRecoveryRequired(filepath.Dir(path), "schema migration completed but its audit record could not be persisted: "+err.Error())
+			return nil, errors.Join(err, fenceErr)
+		}
 	}
 	if err := backup.Register(path, directory); err != nil {
 		s.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+func (s *Store) recordSchemaMigration(ctx context.Context, before, after int, point backup.Snapshot) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	record := map[string]any{
+		"recovery_point_id":  point.ID,
+		"schema_before":      before,
+		"schema_after":       after,
+		"backup_verified_at": point.VerifiedAt,
+		"integrity_check":    "ok",
+		"foreign_key_check":  "ok",
+		"recorded_at_ms":     time.Now().UTC().UnixMilli(),
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO improvement_meta(key,value) VALUES(?,?)`, fmt.Sprintf("schema-migration:%d", after), raw); err != nil {
+		return err
+	}
+	if _, err = appendEventTx(ctx, tx, "schema", fmt.Sprintf("v%d", after), "SchemaMigrated", point.ID, fmt.Sprintf("schema-v%d", after), record); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func Open(path string) (*Store, error) {
@@ -78,6 +183,10 @@ func Open(path string) (*Store, error) {
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err := validateMigratedDatabase(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("%w; stop and recover from the verified pre-migration snapshot: %v", ErrPostMigrationValidation, err)
 	}
 	if err := backup.SecureSQLiteFiles(path); err != nil {
 		db.Close()
@@ -324,7 +433,10 @@ type CreateRunRequest struct {
 	SystemBinding        *model.SystemBinding
 	RoutingDecisionID    string // Internal router run guard.
 	AssignmentDecisionID string // AI decision used for a business assignment.
-	Managed              bool   // Only the durable work scheduler may start managed tasks.
+	ImprovementJobID     string // Hidden analyst/judge run guard.
+	Optimization         *model.OptimizationAssignment
+	InjectedExperiences  []model.Experience
+	Managed              bool // Only the durable work scheduler may start managed tasks.
 	ReadOnly             bool
 	RoleDraftID          string
 	HomeChatID           string
@@ -422,6 +534,12 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 			taskTitle, taskGoal = brief.Title, brief.Goal
 		}
 	}
+	var improvementJobID string
+	if err := tx.QueryRowContext(ctx, `SELECT job_id FROM improvement_job WHERE internal_task_id=?`, request.TaskID).Scan(&improvementJobID); err == nil && request.ImprovementJobID != improvementJobID {
+		return model.Run{}, fmt.Errorf("%w: improvement runs must use the improvement scheduler", model.ErrConflict)
+	} else if err != nil && err != sql.ErrNoRows {
+		return model.Run{}, err
+	}
 	if request.IdempotencyKey != "" {
 		var existingRunID string
 		scope := "task.run:" + request.TaskID
@@ -457,8 +575,15 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 		return model.Run{}, err
 	}
 	if created {
-		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding, "execution_defaults": execution})
+		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding, "execution_defaults": execution, "optimization": request.Optimization})
 		if _, err := tx.ExecContext(ctx, `UPDATE session SET metadata_json = ? WHERE session_id = ?`, session.Metadata, session.ID); err != nil {
+			return model.Run{}, err
+		}
+		pinned, pinErr := persistSessionExperiencesTx(ctx, tx, session.ID, request.InjectedExperiences)
+		if pinErr != nil {
+			return model.Run{}, pinErr
+		}
+		if _, err := appendEventTx(ctx, tx, "session", session.ID, "SessionExperienceCatalogPinned", "", request.TaskID, map[string]any{"experiences": pinned}); err != nil {
 			return model.Run{}, err
 		}
 	}
@@ -907,6 +1032,9 @@ func (s *Store) ApplyRuntimeEventFrom(ctx context.Context, connectionEpoch strin
 		if err := applyRoutingResultTx(ctx, tx, event); err != nil {
 			return false, err
 		}
+		if err := applyImprovementResultTx(ctx, tx, event); err != nil {
+			return false, err
+		}
 	}
 	switch event.Type {
 	case "session.bound":
@@ -1000,6 +1128,11 @@ func (s *Store) ApplyRuntimeEventFrom(ctx context.Context, connectionEpoch strin
 		}
 	} else if _, err := appendEventTx(ctx, tx, aggregateType, aggregateID, runtimeEventName(event.Type), event.CausationID, taskID, event); err != nil {
 		return false, err
+	}
+	if event.Usage != nil {
+		if err := recordTokenUsageTx(ctx, tx, event, now); err != nil {
+			return false, err
+		}
 	}
 	if terminal {
 		if err := finishActivitiesTx(ctx, tx, event); err != nil {
@@ -1448,7 +1581,48 @@ func migrate(db *sql.DB) error {
 	if err := migrateV19(db); err != nil {
 		return err
 	}
-	return migrateV20(db)
+	if err := migrateV20(db); err != nil {
+		return err
+	}
+	if err := migrateV21(db); err != nil {
+		return err
+	}
+	return migrateV22(db)
+}
+
+func verifyOpenDatabase(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA integrity_check`)
+	if err != nil {
+		return err
+	}
+	ok := false
+	for rows.Next() {
+		var result string
+		if err = rows.Scan(&result); err != nil {
+			rows.Close()
+			return err
+		}
+		if result != "ok" {
+			rows.Close()
+			return fmt.Errorf("integrity_check: %s", result)
+		}
+		ok = true
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("integrity_check returned no result")
+	}
+	rows, err = db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("foreign_key_check reported a violation")
+	}
+	return rows.Err()
 }
 
 func migrateV2(db *sql.DB) error {

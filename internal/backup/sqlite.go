@@ -78,6 +78,28 @@ func VerifySQLite(ctx context.Context, path string) error {
 	return rows.Err()
 }
 
+// SQLiteSchemaVersion is included in every new recovery-point manifest. Older
+// snapshots without the field remain readable for backward compatibility.
+func SQLiteSchemaVersion(ctx context.Context, path string) (int, error) {
+	db, err := openReadOnly(path)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var tableCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='schema_version'`).Scan(&tableCount); err != nil {
+		return 0, err
+	}
+	if tableCount == 0 {
+		return 0, nil
+	}
+	var version int
+	if err := db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version),0) FROM schema_version`).Scan(&version); err != nil {
+		return 0, err
+	}
+	return version, nil
+}
+
 // SQLiteSnapshot includes committed WAL contents, validates and fsyncs the
 // result, then publishes without ever replacing an existing destination.
 func SQLiteSnapshot(ctx context.Context, db *sql.DB, destination string) error {

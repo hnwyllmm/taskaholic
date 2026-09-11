@@ -169,11 +169,19 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	if spec.ReadOnly || spec.ExecutionGrant == nil || spec.ExecutionGrant.PlanHash != w.Development.PlanHash || implementation.SessionID != first.SessionID {
 		t.Fatal("wrong execution grant or session")
 	}
-	// Merely returning a document cannot satisfy implementation acceptance.
+	// A premature implementation review is corrected in the original Session;
+	// it neither creates human acceptance nor invents a pre-PR review gate.
 	developmentFinish(t, s, implementation, 5, workflow.Result{Outcome: "review", Message: "Only wrote a document", Artifacts: []workflow.File{{Name: "report.md", Content: "Not implemented"}}})
 	state, _ := s.GetTask(ctx, task.ID)
-	if state.State != model.TaskStateBlocked {
-		t.Fatal("document accepted as implementation", state.State)
+	if state.State != model.TaskStateQueued {
+		t.Fatal("premature delivery was not continued", state.State)
+	}
+	continued := startWork(t, s, dev, task)
+	if continued.SessionID != implementation.SessionID || outboxSpec(t, s, continued.ID).ExecutionGrant == nil {
+		t.Fatal("premature delivery lost session or approval")
+	}
+	if instructions := outboxSpec(t, s, continued.ID).Instructions; !strings.Contains(instructions, "不要安排 PR 前的独立 Agent 复审") || !strings.Contains(instructions, "publish_request") {
+		t.Fatal("missing corrective continuation", instructions)
 	}
 	snapshot := filepath.Join(t.TempDir(), "copy.sqlite")
 	if e := s.Backup(ctx, snapshot); e != nil {

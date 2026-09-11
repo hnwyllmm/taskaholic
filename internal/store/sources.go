@@ -274,7 +274,7 @@ func (s *Store) CommitSourcePoll(ctx context.Context, source model.TaskSource, t
 			return fmt.Errorf("%w: 任务源快照过大或无效", model.ErrValidation)
 		}
 		for _, e := range events {
-			if e.Key == "" || len(e.Key) > 500 || len(e.Message) > 32000 || (e.HeadSHA != "" && !model.CommitSHA.MatchString(e.HeadSHA)) {
+			if e.Key == "" || len(e.Key) > 500 || len(e.Message) > 32000 || (e.HeadSHA != "" && !model.CommitSHA.MatchString(e.HeadSHA)) || validateTaskProfileHints(e.TaskType, e.Repository, e.WorkflowType, true) != nil {
 				return fmt.Errorf("%w: 无效的任务源事件", model.ErrValidation)
 			}
 			e.SourceID, e.TargetID = source.ID, target.ID

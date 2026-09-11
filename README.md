@@ -17,6 +17,7 @@
 | `/members` 成员管理 | 按角色分组浏览 Agent 成员，管理角色职责、AI 草稿及成员的模型/容量/启停；支持角色及草稿深链接 |
 | `/team` 团队资料 | 搜索、阅读、添加和复制资料；跳转创建工作时自动选中资料，旧工作快照不变 |
 | `/sources` 任务源 | 配置 AntMultica/GitHub 采集范围与频率，查看事件及任务；执行成员与评审分工由 Router/Manager 管理 |
+| `/improvements` 持续改进 | 查看观测完整性、候选、50/50 灰度实验、经验库、策略版本、推广/回滚依据及改进系统自身开销 |
 | `/system` 系统状态 | 数据库与调度、在线/离线机器、适配器能力、Agent 容量、执行边界和在线备份 |
 
 任务源的接入、同 Session 续接、评审规则、持久化和当前边界见 [任务源说明](deploy/dev/TASK-SOURCES.md)。
@@ -42,7 +43,7 @@ API：`POST /api/v1/work/tasks` 增加可选 `defer_assignment:true`（不能同
 
 ### 系统岗位与可替换 Agent
 
-在 **成员管理 → 系统岗位**（`/members#system-agents`）分别选择首页聊天、角色设计、任务路由、升级构建的执行成员。岗位只保存成员绑定；机器、Adapter、模型和角色指令来自成员配置。修改配置有版本校验与事件记录，SQLite v9 迁移保留原数据，岗位与路由决策随现有备份保存。
+在 **成员管理 → 系统岗位**（`/members#system-agents`）分别选择首页聊天、任务旁路咨询、角色设计、任务路由、改进分析、改进盲评和升级构建的执行成员。岗位只保存成员绑定；机器、Adapter、模型和角色指令来自成员配置。修改配置有版本校验与事件记录，岗位、路由决策及持续改进记录随现有备份保存。
 
 - 首页聊天、角色设计默认自动选取在线空闲成员；没有成员时仍可在支持的 Runtime 上设计首个角色。配置具体成员后，离线、停用或满载会明确报错，不偷偷换人。角色设计可对单个新草案显式选择手动执行环境。
 - 任务路由默认沿用规则。改为成员后，该成员以只读结构化 Run 从满足角色、能力、排除规则及容量的候选中选人。决策与 Run/outbox 原子保存；轮询和重启不会重复发起同一任务版本的推理。派发前再次校验任务版本、选择结果、成员状态和并发。失败不无限重试：追加任务消息开始新一轮，或显式切回规则路由。路由内部任务不进入业务工作列表或效率总结。
@@ -104,14 +105,14 @@ go build -o bin/ ./cmd/...
 
 当前闭环的明确边界：
 
-- 面向文档、分析、代码建议和只读评审。团队资料和上传的 UTF-8 文本是输入，不是自动读取/写入本机仓库的路径授权；Git worktree、仓库写入、PR 和外部系统事件尚未接入。
+- 托管代码任务可以在已配置 Runtime 的隔离工作目录中执行、推送分支、创建 PR，并由任务源接收 GitHub、GitLab Pipeline 和 AntMultica 事件；这些能力仍受角色、Runtime、仓库配置和有效 `ExecutionGrant` 约束。团队资料、上传文本或外部工单正文只是输入，不能据此扩大本机路径、仓库写入或外部授权范围。
 - 手工任务使用 `/api/v1/work/tasks`，底层仍是同一套 Task/Run/Event/Session。旧 `/api/v1/tasks` 和角色生成任务保留原手动运行语义，不会在升级时突然自动执行历史任务。
 - SQLite 消息表是持久队列：忙碌或离线会持续等待并显示原因；重复调度不会产生并行的重复 Run。执行 Router 仍按角色、能力（AND）或 Agent 确定性选择；首页助理可以建议角色，必须由人确认。表单默认选本机工作助手。
 - 普通发送在当前轮结束后处理；“打断并发送”通过可靠 outbox 请求停止，再沿用原 Session 执行待处理消息。暂停阻止自动续跑。中断是请求，不保证瞬间停止，也不会撤销已经发生的操作。
 - 原生 Session 记忆仍归具体 Agent。角色和模型修改只影响新 Session；现有 Session 保留快照，原机器离线时等待，不静默迁移。停用 Agent 阻止后续调度，但不杀死当前运行。
 - Run 结束不是 Task 完成。Agent 明确返回 `review` / `needs_input` / `blocked`；格式错误会受阻，不能直接批准。验收绑定 Run 和文件版本；普通工作消息使旧验收失效，专用验收沟通不使其失效；关闭后不可继续发消息。
 - 每个业务 Task 真正完成时，在同一事务内写入不可变的 `TaskSummary`。Agent 提供实际结果、可复用经验和改进建议；系统独立计算总周期、调度/Runtime 排队、运行、人工验收等待、返工、失败、打断、交付版本和子任务指标，并生成机器可读的效率信号。普通托管工作在人工验收通过时总结，手动 API 创建的业务任务在完成时总结；角色草案和首页聊天的内部 Task 不作为效率样本。旧完成任务由 schema v8 自动回填。
-- Task Summary 属于可查询的团队工作记录，不等同于具体 Agent 的 Session Memory。本版不会把所有历史总结无选择地塞回提示词，也不会自动修改角色或路由；后续的效率分析器可通过总结 API 按角色、模型、任务类型和效率信号筛选，再由人确认哪些经验进入团队资料或角色规范。
+- Task Summary 属于可查询的团队工作记录，不等同于具体 Agent 的 Session Memory。持续改进平面只召回作用域匹配且经过灰度验证的版本化经验；每个新 Session 最多 5 条、合计 6 KiB，并记录实际注入版本。执行中的 Session、已有任务及历史总结不会被新经验改写。
 - 产物为 UTF-8 完整文件，最多 8 个，总结果不超过 120 KiB。SQLite 保存内容、SHA-256 和版本，不覆盖历史。页面纯文本安全预览，可在验收前下载；不执行产物内 HTML/脚本。
 - 系统状态页可创建经过校验的恢复点。启动时和每 5 分钟自动备份，默认保存在应用目录之外；组合部署覆盖控制端数据库和 Runtime spool。单独下载的数据库仍只有控制端记录。工作目录、原生 Agent Session、源码/升级候选、认证和外部仓库不在本版自动备份范围，不能把数据库恢复等同于完整环境迁移。
 - Runtime 异常退出后的未完成运行会标记失败；用户从页面发送下一步要求后继续，避免自动重复外部动作。`assistant-supervisor` 会维护本机组合进程，但没有无限业务重试。dev 由启用 linger 的 systemd 用户服务在后台托管；Mac 双击启动方式仍是终端前台运行。
@@ -146,13 +147,21 @@ go build -o bin/ ./cmd/...
 
 自动化与页面演练记录见 `ACTIVITY-VERIFICATION.md`。
 
+### 持续改进
+
+schema v22 在 Task、Run、Session、Event、Activity、TaskSummary 和 schema v21 阶段 Token 统计之上增加本地持续改进平面。确定性投影器先从根任务及开发、Review、测试、环境子任务证明无进展、重复失败、阶段回退、重复授权、人工改向、过度测试、排队与环境阻塞；低优先级 `improvement_analyst` 只解释这些事实并产生类型化候选，`improvement_judge` 只盲评目标、已接受交付物和持久化验证证据。两个岗位均可在“成员管理 → 系统岗位”更换成员，内部任务不出现在工作列表，也不计入业务实验 Token。
+
+候选只允许版本化 Experience 以及预定义 Prompt、Routing、Recovery、Test、Workflow 字段。权限、ExecutionGrant、凭据、备份、迁移、外部写入、评分权重、50/50 比例和推广规则不在候选模型中；非法字段或扩大证据作用域会被 Manager 拒绝。用户还可“拒绝并锁定”候选实际改变的字段，并按同一策略类型额外锁定预定义字段；相同作用域的后续候选会在静态校验阶段被拒绝，解除锁定同样要求版本、幂等键和审计原因。根任务在首次 Run 前固定 TaskProfile、实验分组、策略版本和经验目录代次，子任务继承；每个新 Session 按实际角色召回最多 5 条、总计不超过 6 KiB 的固定版本经验。早于实验创建的任务和已有 Session 不进入新实验，手动指定成员的任务不进入路由策略实验。
+
+首个实验必须先连续观测 24 小时且关键数据覆盖率达到 80%。实验每组至少 5 个成熟样本且综合改善达到 +8 才自动推广；坏候选可提前停止，推广后再观察 10 个成熟任务并自动回滚退化。缺失的 Token 或质量证据不按零处理、不重新分配权重。首页只提示改进任务失败或近期回滚；完整证据、样本、实际效果、毛节省、改进开销和净收益在 `/improvements` 查看。当前实现只使用本地 SQLite 和系统 Agent，不向 AgentLoop 或其他外部平台发送数据。
+
 ### 数据与恢复
 
 schema v8 在 v7 基础上增量添加版本化 `task_summary`，迁移事务会为已有的已完成业务任务回填总结，不清空原数据。首页对话和角色草案的内部执行 Task 不进入效率样本。本机切换到 v8 前的备份记录见 `HOME-PAGES-VERIFICATION.md`；更早的 v7/v6/v5/v4 备份仍保留。
 
-schema v9 增加系统岗位与 AI 路由决策；v10 增量添加 `review_turn`；当前 schema v11 增量添加 `run_activity` 和查询索引，原有任务、验收和聊天记录不重写。升级前必须创建并校验恢复点；旧程序不能直接打开新版数据库。
+schema v9 增加系统岗位与 AI 路由决策；v10 添加 `review_turn`；v11 添加 `run_activity`；v21 添加阶段 Token 统计；当前 schema v22 增加持续改进表、两个系统岗位和默认策略。v21→v22 不改写历史任务、TaskSummary 或已有 Session。旧程序不能直接打开新版数据库。
 
-生产入口拒绝打开已丢失、空白、损坏或 schema 比程序更新的数据库，不会静默创建空库。schema 升级前必须成功保存旧库恢复点；备份校验失败则拒绝迁移。原始数据不会被自动删除或自动覆盖恢复。
+生产入口拒绝打开已丢失、空白、损坏或 schema 比程序更新的数据库，不会静默创建空库。任何 schema 升级前必须成功创建不可覆盖的 `pre-schema-v<目标版本>-<时间戳>` 恢复点；组合部署在服务停止后把 control SQLite 和 Runtime spool 放入同一恢复目录。清单明确记录每个文件的原 schema（无版本 spool 为 0）、大小、SHA-256 和时间，并重新执行 `integrity_check`、`foreign_key_check` 与摘要复核。备份失败时不运行迁移；迁移事务失败保留恢复点；迁移后校验失败会留下 `RECOVERY_REQUIRED` 并拒绝新版启动。恢复只允许复制到新目录，不自动覆盖原库。
 
 自动恢复点位于 `os.UserConfigDir()/WorkAssistant/backups/<数据目录标识>/`；macOS 为 `~/Library/Application Support/WorkAssistant/backups/…`。`ASSISTANT_BACKUP_DIR` 可指定专用备份根目录，例如由用户管理的独立磁盘目录；不要指向共享公共目录，不要在原磁盘丢失后用同名本地目录代替外置磁盘。路径本身不能证明异机/异盘保护，本版不自动上传数据或确认外置设备挂载。
 
@@ -202,7 +211,7 @@ schema v9 增加系统岗位与 AI 路由决策；v10 增量添加 `review_turn`
 
 任务调度仍注入 `router.AgentSelector`，业务输出提示/Schema 由 `workflow.Contract` 提供，Adapter 保持原接口。当前业务结果解析采用固定版本的可移植协议；新增结果类型需要对应状态迁移，不是只改提示词。SQLite 持久层尚未抽成可热插拔数据库插件。前端通过 HTTP JSON 轮询；Runtime 仍用 JSON-RPC/WebSocket，无新增服务依赖。
 
-后续再补：Agent 自主拆单工具、跨 Agent 结果回传与多方评审、Multica/GitHub 事件关联、真实仓库工作空间、写入权限、PR 和合并流程。当前托管任务明确拒绝旧手动拆分/直接 Run/Directive 接口，避免绕过消息和验收闭环。
+当前托管流程已经覆盖方案 Agent 互审、人工方案门禁、执行、PR 跟踪、多角色 Review、测试 Pipeline、来源平台回写和任务树回传。下一步扩展重点是更多 Source Adapter、外部 Improvement Provider，以及普通工作 Runtime 的容器/虚拟机 Executor；旧手动拆分、直接 Run 和 Directive 接口仍被拒绝，避免绕过消息、授权和验收闭环。
 
 ## 底层分布式执行能力与手动 API
 
@@ -222,9 +231,9 @@ schema v9 增加系统岗位与 AI 路由决策；v10 增量添加 `review_turn`
 - 运行中的 Agent 可以接收持久化 Directive；
 - 手动 API 支持动态拆分旧式任务，不要求预编排 Task Graph；尚未提供 Agent 自主调用的拆单工具；
 - Agent Adapter 与 Router 都是可替换接口；
-- 所有记录可在线备份为单个 SQLite 文件。
+- 控制端记录可导出为一致的单个 SQLite 文件；组合部署的完整恢复点会把 `control.sqlite` 与 Runtime spool 一起备份并验证。工作目录、原生 Agent Session 和外部仓库仍属于独立存储边界。
 
-这仍不是完整的 Multica/PR 协作产品。托管任务已有人工作品验收门；多 Agent 评审、Claude 等更多 Agent Adapter、GitHub/Multica 连接器和容器级隔离尚未实现。
+托管任务现已具备 AntMultica 导入与回写、GitHub PR 轮询与多 Agent 评审、测试 Pipeline、方案和最终人工门禁。更多 Agent Adapter、更多来源 Provider 和普通工作 Runtime 的容器级隔离仍是可插拔扩展项。
 
 ## 结构
 
@@ -435,6 +444,14 @@ CLI 的等价操作：
 | `GET` | `/api/v1/admin/backup` | 下载一致性 SQLite 快照 |
 | `GET` | `/api/v1/admin/backups` | 自动备份状态、目录、最近恢复点与错误 |
 | `POST` | `/api/v1/admin/backups` | 在固定备份目录创建并验证一个手动恢复点，不接受客户端文件路径 |
+| `GET` | `/api/v1/improvements/overview` | 观测门槛、质量/周期/人工/Token 指标、运行实验与需处理故障 |
+| `GET` | `/api/v1/improvements/candidates[/{id}]` | 候选、证据、配置差异和关联实验 |
+| `POST` | `/api/v1/improvements/candidates/{id}/actions` | 带 `expected_version`、幂等键和审计原因的开始/暂停/拒绝/拒绝并锁字段/解除锁定/推广/回滚 |
+| `GET` | `/api/v1/improvements/experiences` | 版本化经验目录、作用域、来源和实际效果 |
+| `POST` | `/api/v1/improvements/experiences/{id}/actions` | 带版本、幂等键和原因的启用/暂停/停用 |
+| `GET` | `/api/v1/improvements/policies` | 类型化策略版本及推广/回滚历史 |
+| `GET` | `/api/v1/improvements/experiments/{id}` | 实验分组、样本、综合评分和决定依据 |
+| `GET` | `/api/v1/work/tasks/{id}/evaluation` | 根任务质量证据、覆盖率、效率与 Token 评价；子任务 ID 自动归并到根任务 |
 | `POST/GET` | `/api/v1/role-drafts` | 创建 / 列出草案 |
 | `GET/PUT` | `/api/v1/role-drafts/{id}` | 查看 / 编辑，写入携带 `expected_version` |
 | `POST` | `/api/v1/role-drafts/{id}/messages` | 异步 AI 生成/续聊，返回 draft 与 Run，携带 `message`、`expected_version` |
@@ -469,7 +486,7 @@ runtime WebSocket 上目前有七个 JSON-RPC 方法：
   - `stdio-agent`：在上述能力上增加 NDJSON/stdin Directive，可作为真实交互 Agent 的进程适配协议。
   - `codex-agent`：调用稳定的 Codex 非交互 CLI；解析 JSONL 事件，把 `codex:<thread_id>` 保存为不透明 Session 引用，并用 `codex exec resume` 续接。
 - [`internal/router/router.go`](internal/router/router.go)：替换 runtime 选择策略。当前新任务使用 `FirstOnline`；已有 Task 则强制使用 Task → Session 亲和性。
-- 事件源通过 `POST /api/v1/tasks` 接入，并把 GitHub delivery ID、Multica 工单 ID 等放入 `idempotency_key`。具体连接器不侵入核心状态机。
+- Source Adapter 只把 AntMultica/GitHub 等外部变化投影为幂等事件，创建或更新 Task；Router/Manager 再选择工作 Agent。适配器本身不执行任务，也不侵入核心状态机。
 
 ## Session 与记忆边界
 
@@ -492,10 +509,9 @@ runtime WebSocket 上目前有七个 JSON-RPC 方法：
 
 ## 下一步最自然的演进顺序
 
-1. 增加人工 Review Gate，使评审请求、回复、通过和打回都成为 Directive/Event。
-2. 为父 Agent 和 Review Gate 增加自动调度策略；当前活跃父 Run 会收到汇总 Directive，已结束的父 Run 只会把任务恢复为 `ASSIGNED`。
-3. 添加 GitHub、Multica 等 Source Adapter。
-4. 添加容器 Executor、资源配额与网络策略。
-5. 增加 Claude、自研文档 Agent 等 Adapter，并按能力与模型路由。
+1. 添加容器/虚拟机 Executor、资源配额与可审批网络策略。
+2. 增加更多 Source Adapter 和来源平台写回 Provider。
+3. 增加 Claude、自研文档 Agent 等 Adapter，并按能力、质量和成本路由。
+4. 在不放宽本地校验与安全内核的前提下，增加可选的外部 Improvement Provider。
 
 这个顺序可以保持本版协议兼容：新增的仍然是事件、命令和可替换策略，而不需要推翻控制面与 runtime 的可靠通信模型。

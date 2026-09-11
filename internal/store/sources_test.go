@@ -167,6 +167,83 @@ func TestSourceImportIdempotencyRestartAndIterationConfig(t *testing.T) {
 	}
 }
 
+func TestAntMulticaLifecycleUpdatesExistingTaskAndAuditEvidence(t *testing.T) {
+	ctx := context.Background()
+	s := roleTestStore(t)
+	source := saveTestSource(t, s, "antmultica")
+	target := targetByID(t, s, mustSingleTargetID(t, s))
+	entity := "antmultica:workspace:one"
+	pollStore(t, s, source, target, "", model.SourceEvent{Key: "issue:one:v1", Kind: "antmultica.issue", Entity: entity, Title: "SEEK-1", Message: "active issue"})
+	events, err := s.ListSourceEvents(ctx)
+	if err != nil || len(events) != 1 || events[0].TaskID == "" {
+		t.Fatal(events, err)
+	}
+	taskID := events[0].TaskID
+	target = targetByID(t, s, target.ID)
+	pollStore(t, s, source, target, "", model.SourceEvent{Key: "antmultica.closed:one:v2", Kind: "antmultica.closed", Entity: entity, Message: "issue closed"})
+	target = targetByID(t, s, target.ID)
+	pollStore(t, s, source, target, "", model.SourceEvent{Key: "antmultica.reopened:one:v3", Kind: "antmultica.reopened", Entity: entity, Message: "issue reopened"})
+	var latest string
+	if err = s.db.QueryRow(`SELECT event_type FROM event_log WHERE aggregate_type='task' AND aggregate_id=? AND event_type IN ('ExternalTaskClosed','ExternalTaskReopened') ORDER BY global_seq DESC LIMIT 1`, taskID).Scan(&latest); err != nil || latest != "ExternalTaskReopened" {
+		t.Fatalf("source lifecycle was not auditable: %q, %v", latest, err)
+	}
+	work, err := s.GetWorkDetail(ctx, taskID)
+	if err != nil || len(work.Messages) < 3 || work.Messages[len(work.Messages)-1].Content != "issue reopened" {
+		t.Fatalf("reopen did not update the existing task: %#v, %v", work.Messages, err)
+	}
+	tasks, err := s.ListWork(ctx)
+	if err != nil || len(tasks) != 1 || tasks[0].ID != taskID {
+		t.Fatalf("lifecycle transition created a duplicate task: %#v, %v", tasks, err)
+	}
+}
+
+func TestSourceAdapterCanSupplyDeterministicTaskProfileFacts(t *testing.T) {
+	ctx := context.Background()
+	s := roleTestStore(t)
+	source := saveTestSource(t, s, "antmultica")
+	target := targetByID(t, s, mustSingleTargetID(t, s))
+	event := model.SourceEvent{
+		Key:          "issue:profile:v1",
+		Kind:         "antmultica.issue",
+		Entity:       "workspace:profile",
+		Title:        "SEEK-42",
+		Message:      "Fix the confirmed regression",
+		TaskType:     "bug",
+		Repository:   "oceanbase/seekdb",
+		WorkflowType: "standard",
+	}
+	pollStore(t, s, source, target, "", event)
+	events, err := s.ListSourceEvents(ctx)
+	if err != nil || len(events) != 1 || events[0].TaskID == "" {
+		t.Fatal(events, err)
+	}
+	assignment, _, err := s.PrepareTaskOptimization(ctx, events[0].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := assignment.Profile
+	if profile.SourceType != "antmultica" || profile.TaskType != "bug" || profile.Repository != "oceanbase/seekdb" || profile.Workflow != "standard" {
+		t.Fatalf("source facts were not pinned exactly: %#v", profile)
+	}
+
+	badTarget := targetByID(t, s, target.ID)
+	err = s.CommitSourcePoll(ctx, source, badTarget, json.RawMessage(`{"next":true}`), "", []model.SourceEvent{{
+		Key: "issue:invalid-profile", Kind: "antmultica.issue", Entity: "workspace:bad", Title: "bad", Message: "bad", TaskType: "guessed",
+	}}, 0, false)
+	if !errors.Is(err, model.ErrValidation) {
+		t.Fatal("invalid source profile was accepted", err)
+	}
+}
+
+func mustSingleTargetID(t *testing.T, s *Store) string {
+	t.Helper()
+	targets, err := s.ListSourceTargets(context.Background())
+	if err != nil || len(targets) != 1 {
+		t.Fatal(targets, err)
+	}
+	return targets[0].ID
+}
+
 func TestPRUpdatesKeepOwnerSessionAndHumanPause(t *testing.T) {
 	ctx := context.Background()
 	s, author, task := workFixture(t)

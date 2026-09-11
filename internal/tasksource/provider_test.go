@@ -71,6 +71,38 @@ func TestAntMulticaExactFilterPaginationAndNoReplay(t *testing.T) {
 	}
 }
 
+func TestAntMulticaEmitsLifecycleOnlyForPreviouslyObservedWork(t *testing.T) {
+	status, category := "todo", "todo"
+	provider := AntMultica{Binary: "multica", Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		if slices.Contains(args, "property") {
+			return []byte(`[{"id":"iteration","name":"迭代","config":{"options":[{"id":"v15","name":"1.5.0"}]}}]`), nil
+		}
+		issue := multicaIssue{ID: "one", Identifier: "SEEK-1", WorkspaceID: "workspace", AssigneeID: "me", AssigneeType: "member", Title: "task", Description: "scope", Status: status, StatusCategory: category, Properties: map[string]json.RawMessage{"iteration": json.RawMessage(`"v15"`)}}
+		raw, _ := json.Marshal(map[string]any{"issues": []multicaIssue{issue}, "has_more": false})
+		return raw, nil
+	}}
+	source := model.TaskSource{Config: model.SourceConfig{WorkspaceID: "workspace", WorkspaceSlug: "seekdb", AssigneeID: "me", IterationKey: "迭代", IterationValue: "1.5.0"}}
+	target := model.SourceTarget{Cursor: json.RawMessage("{}")}
+	active, err := provider.Poll(context.Background(), source, target)
+	if err != nil || len(active.Events) != 1 || active.Events[0].Kind != "antmultica.issue" {
+		t.Fatalf("initial active issue was not imported: %#v, %v", active, err)
+	}
+	target.Cursor = active.Cursor
+	// AntMultica status spelling/casing is provider-owned. Lifecycle detection
+	// must not lose a close event when the API changes presentation only.
+	status, category = "DONE", " Done "
+	closed, err := provider.Poll(context.Background(), source, target)
+	if err != nil || len(closed.Events) != 1 || closed.Events[0].Kind != "antmultica.closed" {
+		t.Fatalf("terminal transition was not emitted: %#v, %v", closed, err)
+	}
+	target.Cursor = closed.Cursor
+	status, category = "doing", "started"
+	reopened, err := provider.Poll(context.Background(), source, target)
+	if err != nil || len(reopened.Events) != 1 || reopened.Events[0].Kind != "antmultica.reopened" {
+		t.Fatalf("reopen transition was not emitted: %#v, %v", reopened, err)
+	}
+}
+
 func TestAntMulticaDoesNotCommitPartialPage(t *testing.T) {
 	call := 0
 	provider := AntMultica{Run: func(context.Context, string, ...string) ([]byte, error) {

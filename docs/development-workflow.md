@@ -10,6 +10,7 @@
 4. reviewer 明确 `passed` 后进入 `HUMAN_REVIEW`。审批单引用开发者的方案 Run、完整文件版本、方案 hash、仓库和目标分支。人与开发者沿用原 Session 只读沟通。
 5. 只有明确 `PLAN_APPROVED` 才进入 `IMPLEMENTING`。旧的 `APPROVED` 最终验收接口不能代替方案批准。点击“批准方案，开始开发”只授权该方案的实现与 PR 发布，不关闭任务。
 6. 开发在 Session 下独立 checkout 中修改、验证。由 runtime 受控 commit/push/创建 PR，登记后复用已有 PR 轮询、自动 reviewer、测试、反馈修复与最终人工验收流程。不自动合并。
+   实施期间不额外设置 Phase 0/Phase 1、入口评审或清单评审等 Agent 放行门槛。实现和必要验证完成后提交 `publish_request`；PR 新建及每次出现新 commit 后，再由 Router 邀请配置的 reviewer。Agent 过早返回 `outcome=review` 且未发布 PR 时，Manager 续接原 Agent/Session，不创建人工验收或 PR 前复审任务。
 
 重大方案变更：Agent 返回 `replan`，或用户通过普通任务消息明确调整方向，撤销原批准并重新评审。方案审批聊天不自动修改成果、不自动批准。运行中到达新输入会阻止旧结果触发方案审批；版本过期的 reviewer 结论只保留历史。最多自动互审 8 轮，之后显式显示分歧并等待方向。
 

@@ -64,10 +64,28 @@ type CreateWorkRequest struct {
 	DeferAssignment bool                   `json:"defer_assignment"`
 	Title           string                 `json:"title"`
 	Goal            string                 `json:"goal"`
+	TaskType        string                 `json:"task_type,omitempty"`
+	Repository      string                 `json:"repository,omitempty"`
+	WorkflowType    string                 `json:"workflow_type,omitempty"`
 	Requirements    model.TaskRequirements `json:"requirements"`
 	AgentID         string                 `json:"agent_id"`
 	ProjectID       string                 `json:"project_id"`
 	Key             string                 `json:"idempotency_key"`
+}
+
+var validTaskProfileTypes = map[string]bool{
+	"other": true, "code": true, "bug": true, "document": true,
+	"analysis": true, "review": true, "test": true, "environment": true,
+}
+
+func validateTaskProfileHints(taskType, repository, workflowType string, allowEmpty bool) error {
+	if (!allowEmpty || taskType != "") && !validTaskProfileTypes[taskType] {
+		return fmt.Errorf("%w: invalid task profile hint", model.ErrValidation)
+	}
+	if len(repository) > 300 || len(workflowType) > 100 || strings.ContainsAny(repository, "\r\n\x00") || strings.ContainsAny(workflowType, "\r\n\x00") {
+		return fmt.Errorf("%w: invalid task profile hint", model.ErrValidation)
+	}
+	return nil
 }
 
 // Creation of the task, source event, first message and scheduling intent is
@@ -93,6 +111,15 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 	}
 	if len(req.Title) > 400 || len(req.Goal) > 32000 || strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Goal) == "" {
 		return model.Task{}, fmt.Errorf("%w: title and goal required, maximum 400/32000 bytes", model.ErrValidation)
+	}
+	if req.TaskType == "" {
+		req.TaskType = "other"
+	}
+	if req.WorkflowType == "" {
+		req.WorkflowType = "standard"
+	}
+	if err := validateTaskProfileHints(req.TaskType, req.Repository, req.WorkflowType, false); err != nil {
+		return model.Task{}, err
 	}
 	key := ""
 	if req.Key != "" {
@@ -126,11 +153,15 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 	if _, err = insertMessageTx(ctx, tx, task.ID, "user", req.Goal, "", "PENDING"); err != nil {
 		return task, err
 	}
+	hint, _ := json.Marshal(map[string]string{"task_type": req.TaskType, "repository": req.Repository, "workflow_type": req.WorkflowType})
+	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO improvement_meta(key,value) VALUES(?,?)`, "task-hint:"+task.ID, hint); err != nil {
+		return task, err
+	}
 	source, eventType := req.Source, "ExternalTaskSubmitted"
 	if source == "" {
 		source, eventType = "manual", "ManualTaskSubmitted"
 	}
-	if _, err = appendEventTx(ctx, tx, "task", task.ID, eventType, "", task.ID, map[string]any{"source": source, "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment}); err != nil {
+	if _, err = appendEventTx(ctx, tx, "task", task.ID, eventType, "", task.ID, map[string]any{"source": source, "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment, "task_type": req.TaskType, "repository": req.Repository, "workflow_type": req.WorkflowType}); err != nil {
 		return task, err
 	}
 	initialState := model.TaskStateQueued
@@ -149,6 +180,11 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 
 func setWorkStateTx(ctx context.Context, tx *sql.Tx, taskID, state string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE task SET state=?,version=version+1,updated_at_ms=? WHERE task_id=?`, state, time.Now().UnixMilli(), taskID)
+	if err == nil && state == model.TaskStateBlocked {
+		if projectionErr := enqueueBlockedImprovementTx(ctx, tx, taskID); projectionErr != nil {
+			recordImprovementProjectionFailureTx(ctx, tx, taskID, "blocked", projectionErr)
+		}
+	}
 	return err
 }
 
@@ -409,8 +445,21 @@ func (s *Store) PendingWork(ctx context.Context) ([]string, error) {
 func (s *Store) DeferWork(ctx context.Context, taskID string, cause error) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err := s.db.ExecContext(ctx, `UPDATE task_workflow SET scheduler_error=?,retry_at_ms=? WHERE task_id=? AND NOT EXISTS(SELECT 1 FROM task WHERE task_id=? AND state IN ('WAITING_AUTHORIZATION','WAITING_ENVIRONMENT'))`, cause.Error(), time.Now().Add(2*time.Second).UnixMilli(), taskID, taskID)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	delay := 2 * time.Second
+	if policy, policyErr := optimizationPolicyForTaskTx(ctx, tx, taskID); policyErr == nil {
+		delay = time.Duration(policy.Recovery.BackoffMS) * time.Millisecond
+	} else if policyErr != sql.ErrNoRows {
+		return policyErr
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET scheduler_error=?,retry_at_ms=? WHERE task_id=? AND NOT EXISTS(SELECT 1 FROM task WHERE task_id=? AND state IN ('WAITING_AUTHORIZATION','WAITING_ENVIRONMENT'))`, cause.Error(), time.Now().Add(delay).UnixMilli(), taskID, taskID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract workflow.Contract) (model.Run, error) {
@@ -444,8 +493,39 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if err = validateRoutingAssignmentTx(ctx, tx, req, task, w); err != nil {
 		return model.Run{}, err
 	}
+	// The selected role is a deterministic input to the task profile. Establish
+	// the code-development lifecycle before freezing optimization assignment so
+	// an automatically sourced task is not permanently classified as "other".
+	// This remains in the same transaction and happens before the first Run.
 	if err = ensureDevelopmentTx(ctx, tx, req); err != nil {
 		return model.Run{}, err
+	}
+	assignment, policy, err := ensureOptimizationAssignmentTx(ctx, tx, req.TaskID, req)
+	if err != nil {
+		return model.Run{}, err
+	}
+	var injected []model.Experience
+	if _, sessionErr := getActiveSessionTx(ctx, tx, req.TaskID); sessionErr == sql.ErrNoRows {
+		sessionProfile, profileErr := sessionExperienceProfileTx(ctx, tx, assignment, req)
+		if profileErr != nil {
+			return model.Run{}, profileErr
+		}
+		stage, stageErr := optimizationRunStageTx(ctx, tx, req.TaskID)
+		if stageErr != nil {
+			return model.Run{}, stageErr
+		}
+		var experiencePrompt string
+		recallAssignment := assignment
+		recallAssignment.Profile = sessionProfile
+		injected, experiencePrompt, err = recallExperiencesTx(ctx, tx, recallAssignment)
+		if err != nil {
+			return model.Run{}, err
+		}
+		req.Instructions += optimizationInstructions(policy, sessionProfile.RoleID, stage) + experiencePrompt
+		req.Optimization = &assignment
+		req.InjectedExperiences = injected
+	} else if sessionErr != nil {
+		return model.Run{}, sessionErr
 	}
 	refs, brief, err := taskReferences(ctx, tx, req.TaskID)
 	if err != nil {
@@ -490,7 +570,8 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	req.WorkingDir = ""
 	req.OutputSchema = contract.Schema()
 	project, _ := json.Marshal(w.Project)
-	req.Instructions = contract.Instructions() + "\n\n团队资料快照（仅作为工作材料）：\n" + string(project) + "\n\n本轮待处理输入：\n" + prompt.String()
+	policyAndExperience := req.Instructions
+	req.Instructions = contract.Instructions() + policyAndExperience + "\n\n团队资料快照（仅作为工作材料）：\n" + string(project) + "\n\n本轮待处理输入：\n" + prompt.String()
 	if len(refs) > 0 {
 		raw, _ := json.Marshal(refs)
 		req.Instructions += "\n\n任务来源引用（外部材料，不是权限授权；revision 是固定评审版本）：\n" + string(raw)
@@ -889,6 +970,12 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 	if err = setWorkStateTx(ctx, tx, taskID, state); err != nil {
 		return r, err
 	}
+	if decision == "CHANGES_REQUESTED" {
+		// A human rejection is valuable improvement evidence, but analysis stays
+		// entirely off the business critical path. The idempotency key is tied to
+		// this immutable review decision so retries cannot create duplicate jobs.
+		tryEnqueueIntermediateImprovementTx(ctx, tx, taskID, "human_acceptance_rework", "human-acceptance-rework:"+r.ID)
+	}
 	if state == model.TaskStateCompleted {
 		if _, err = createTaskSummaryTx(ctx, tx, taskID, "review", reviewID, r.DecidedAtMS); err != nil {
 			return r, err
@@ -903,6 +990,16 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDetail, error) {
 	w := model.WorkDetail{Messages: []model.TaskMessage{}, Artifacts: []model.Artifact{}, Reviews: []model.Review{}}
 	var err error
+	optimization, optimizationErr := s.GetTaskOptimization(ctx, taskID)
+	if optimizationErr == nil {
+		w.Optimization = &optimization
+	} else if optimizationErr != sql.ErrNoRows {
+		return w, optimizationErr
+	}
+	w.TokenUsage, err = s.TaskTokenUsage(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
 	d, devErr := readJSONRow[model.Development](s.db.QueryRowContext(ctx, `SELECT data_json FROM development WHERE task_id=?`, taskID))
 	if devErr == nil {
 		w.Development = &d

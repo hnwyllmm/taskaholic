@@ -137,6 +137,7 @@ func New(config Config, state *store.Store, logger *slog.Logger) *Server {
 	server.registerHomeRoutes(mux)
 	server.registerUpgradeRoutes(mux)
 	server.registerSystemAgentRoutes(mux)
+	server.registerImprovementRoutes(mux)
 	mux.HandleFunc("GET /tasks", server.handleWorkUI)
 	mux.HandleFunc("GET /tasks/", server.handleWorkUI)
 	mux.HandleFunc("GET /roles", server.handleRoleUI)
@@ -167,6 +168,14 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.dispatchLoop(dispatchCtx)
 	go s.workLoop(dispatchCtx)
+	improvementDone := make(chan struct{}, 2)
+	for _, kind := range []string{"ANALYZE", "JUDGE"} {
+		go func(kind string) {
+			defer func() { improvementDone <- struct{}{} }()
+			s.improvementLoop(dispatchCtx, kind)
+		}(kind)
+	}
+	defer func() { cancelDispatch(); <-improvementDone; <-improvementDone }()
 	sourceDone := make(chan struct{})
 	go func() { defer close(sourceDone); s.sourceLoop(dispatchCtx) }()
 	defer func() { cancelDispatch(); <-sourceDone }()

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Directory is outside the application / workspace by default, so removing or
@@ -48,87 +50,158 @@ func markerPaths(path, directory string) ([]string, error) {
 // CheckBeforeOpen fails closed on corruption, missing previously registered
 // data, unfinished restoration, or a newer schema. Never auto-restore / replay.
 func CheckBeforeOpen(ctx context.Context, path, directory string, schema int, requiredTables ...string) error {
+	_, _, _, err := CheckBeforeOpenWithResult(ctx, path, directory, schema, requiredTables...)
+	return err
+}
+
+// CheckBeforeOpenWithResult returns the verified recovery point used by a
+// migration so the store can append an auditable migration record only after
+// the new schema passes its post-migration checks.
+func CheckBeforeOpenWithResult(ctx context.Context, path, directory string, schema int, requiredTables ...string) (Snapshot, int, bool, error) {
+	var recoveryPoint Snapshot
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(path), "RECOVERY_REQUIRED")); err == nil {
-		return errors.New("restored data is fenced by RECOVERY_REQUIRED; reconcile pending work before starting")
+		return recoveryPoint, 0, false, errors.New("restored data is fenced by RECOVERY_REQUIRED; reconcile pending work before starting")
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return recoveryPoint, 0, false, err
 	}
 	markers, err := markerPaths(path, directory)
 	if err != nil {
-		return err
+		return recoveryPoint, 0, false, err
 	}
 	registered := false
 	for _, marker := range markers {
 		if _, err := os.Lstat(marker); err == nil {
 			registered = true
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
+			return recoveryPoint, 0, false, err
 		}
 	}
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		if registered {
-			return fmt.Errorf("registered database is missing: %s; refusing to create an empty replacement; backups: %s", path, directory)
+			return recoveryPoint, 0, false, fmt.Errorf("registered database is missing: %s; refusing to create an empty replacement; backups: %s", path, directory)
 		}
 		for _, suffix := range []string{"-wal", "-shm"} {
 			if _, err := os.Lstat(path + suffix); err == nil {
-				return fmt.Errorf("database is missing but %s exists; preserve it for recovery", path+suffix)
+				return recoveryPoint, 0, false, fmt.Errorf("database is missing but %s exists; preserve it for recovery", path+suffix)
 			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
+				return recoveryPoint, 0, false, err
 			}
 		}
-		return nil
+		return recoveryPoint, 0, false, nil
 	}
 	if err != nil {
-		return err
+		return recoveryPoint, 0, false, err
 	}
 	if !info.Mode().IsRegular() || info.Size() == 0 {
-		return fmt.Errorf("database is empty or not a regular file: %s; refusing initialization", path)
+		return recoveryPoint, 0, false, fmt.Errorf("database is empty or not a regular file: %s; refusing initialization", path)
 	}
 	if err := VerifySQLite(ctx, path); err != nil {
-		return fmt.Errorf("database validation failed, original data preserved: %w", err)
+		return recoveryPoint, 0, false, fmt.Errorf("database validation failed, original data preserved: %w", err)
 	}
 	if len(requiredTables) > 0 {
 		db, err := openReadOnly(path)
 		if err != nil {
-			return err
+			return recoveryPoint, 0, false, err
 		}
 		defer db.Close()
 		for _, name := range requiredTables {
 			var count int
 			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", name).Scan(&count); err != nil {
-				return err
+				return recoveryPoint, 0, false, err
 			}
 			if count != 1 {
-				return fmt.Errorf("required table %s is missing; refusing to initialize over existing data", name)
+				return recoveryPoint, 0, false, fmt.Errorf("required table %s is missing; refusing to initialize over existing data", name)
 			}
 		}
 	}
 	if schema > 0 {
 		db, err := openReadOnly(path)
 		if err != nil {
-			return err
+			return recoveryPoint, 0, false, err
 		}
 		var version int
 		err = db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version), 0) FROM schema_version").Scan(&version)
 		db.Close()
 		if err != nil {
-			return fmt.Errorf("unrecognized database schema: %w", err)
+			return recoveryPoint, 0, false, fmt.Errorf("unrecognized database schema: %w", err)
 		}
 		if version > schema {
-			return fmt.Errorf("database schema %d is newer than supported schema %d; downgrade refused", version, schema)
+			return recoveryPoint, version, false, fmt.Errorf("database schema %d is newer than supported schema %d; downgrade refused", version, schema)
 		}
 		if version < schema {
-			m, err := New(Config{Directory: filepath.Join(directory, "pre-migration"), Sources: map[string]Source{filepath.Base(path): DatabaseSource{Path: path}}})
+			m, err := New(Config{Directory: filepath.Join(directory, "pre-migration"), IDPrefix: fmt.Sprintf("pre-schema-v%d-", schema), Sources: map[string]Source{filepath.Base(path): DatabaseSource{Path: path}}})
 			if err != nil {
-				return err
+				return recoveryPoint, version, false, err
 			}
-			if _, err := m.Capture(ctx, fmt.Sprintf("before-schema-%d-to-%d", version, schema)); err != nil {
-				return fmt.Errorf("required pre-migration backup failed: %w", err)
+			recoveryPoint, err = m.Capture(ctx, fmt.Sprintf("before-schema-%d-to-%d", version, schema))
+			if err != nil {
+				return recoveryPoint, version, false, fmt.Errorf("required pre-migration backup failed: %w", err)
 			}
+			return recoveryPoint, version, true, nil
 		}
+		return recoveryPoint, version, false, nil
 	}
-	return nil
+	return recoveryPoint, 0, false, nil
+}
+
+// CapturePreMigrationSet is the combined-deployment gate. Call it while the
+// service is stopped, before opening either database with a newer binary. The
+// ordinary per-database CheckBeforeOpen remains a second fail-closed guard.
+func CapturePreMigrationSet(ctx context.Context, primaryPath, directory string, targetSchema int, sources map[string]Source) (Snapshot, bool, error) {
+	var empty Snapshot
+	info, err := os.Lstat(primaryPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return empty, false, nil
+	}
+	if err != nil {
+		return empty, false, err
+	}
+	if !info.Mode().IsRegular() || info.Size() == 0 {
+		return empty, false, fmt.Errorf("database is empty or not a regular file: %s", primaryPath)
+	}
+	if err := VerifySQLite(ctx, primaryPath); err != nil {
+		return empty, false, err
+	}
+	version, err := SQLiteSchemaVersion(ctx, primaryPath)
+	if err != nil {
+		return empty, false, err
+	}
+	if version >= targetSchema {
+		return empty, false, nil
+	}
+	manager, err := New(Config{Directory: filepath.Join(directory, "pre-migration"), IDPrefix: fmt.Sprintf("pre-schema-v%d-", targetSchema), Sources: sources})
+	if err != nil {
+		return empty, false, err
+	}
+	snapshot, err := manager.Capture(ctx, fmt.Sprintf("before-schema-%d-to-%d-combined", version, targetSchema))
+	if err != nil {
+		return empty, false, fmt.Errorf("required combined pre-migration backup failed: %w", err)
+	}
+	return snapshot, true, nil
+}
+
+// FenceRecoveryRequired is used only after a migration committed but the
+// mandatory post-migration integrity checks failed. It never replaces an
+// existing fence and never restores over the original database.
+func FenceRecoveryRequired(dataDirectory, reason string) error {
+	if strings.TrimSpace(reason) == "" {
+		return errors.New("recovery fence reason is required")
+	}
+	path := filepath.Join(dataDirectory, "RECOVERY_REQUIRED")
+	if _, err := os.Lstat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := writeJSONExclusive(path, map[string]any{
+		"reason":     reason,
+		"created_at": time.Now().UTC(),
+		"warning":    "Post-migration validation failed. Restore the verified pre-migration recovery point into a new directory and reconcile it before switching paths.",
+	}); err != nil {
+		return err
+	}
+	return syncDir(dataDirectory)
 }
 
 func Register(path, directory string) error {

@@ -402,6 +402,7 @@ func (d *Daemon) execute(ctx context.Context, messageID string, spec model.RunSp
 			Stream: event.Stream, Error: event.Error, CausationID: causationID,
 			Activity:  event.Activity,
 			Execution: event.Execution,
+			Usage:     event.Usage,
 		})
 	}
 	result := agent.Result{ExitCode: -1, Err: preparationErr}

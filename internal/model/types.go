@@ -94,6 +94,7 @@ type SubtaskResult struct {
 
 const (
 	TaskEdgeDecomposedInto = "DECOMPOSED_INTO"
+	TaskEdgeReviews        = "REVIEWS"
 
 	DirectiveKindMessage   = "message"
 	DirectiveKindInterrupt = "interrupt"
@@ -179,6 +180,7 @@ type RuntimeHello struct {
 type RuntimeEvent struct {
 	Execution       *ExecutionSettings `json:"execution,omitempty"`
 	Activity        *Action            `json:"activity,omitempty"`
+	Usage           *TokenUsage        `json:"usage,omitempty"`
 	Output          string             `json:"output,omitempty"`
 	RuntimeID       string             `json:"runtime_id"`
 	Epoch           string             `json:"epoch"`
@@ -196,6 +198,17 @@ type RuntimeEvent struct {
 	Error           string             `json:"error,omitempty"`
 	Attributes      map[string]any     `json:"attributes,omitempty"`
 	CausationID     string             `json:"causation_id,omitempty"`
+}
+
+// TokenUsage is one provider-reported turn snapshot. Cached input and
+// reasoning output are subsets of input/output and are not added twice.
+type TokenUsage struct {
+	Provider              string `json:"provider,omitempty"`
+	InputTokens           int64  `json:"input_tokens"`
+	CachedInputTokens     int64  `json:"cached_input_tokens,omitempty"`
+	CacheWriteInputTokens int64  `json:"cache_write_input_tokens,omitempty"`
+	OutputTokens          int64  `json:"output_tokens"`
+	ReasoningOutputTokens int64  `json:"reasoning_output_tokens,omitempty"`
 }
 
 type OutboxMessage struct {

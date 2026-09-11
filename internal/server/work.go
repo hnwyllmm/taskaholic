@@ -339,6 +339,9 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 		return e
 	} else {
 		selectedID := config.AgentID
+		if _, _, e := s.store.PrepareTaskOptimization(ctx, taskID); e != nil {
+			return e
+		}
 		if selectedID == "" {
 			d, e := s.store.GetRoutingDecision(ctx, taskID, task.Version)
 			if e != nil && e != sql.ErrNoRows {
@@ -380,6 +383,18 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 					return e
 				}
 				return fmt.Errorf("%w: AI 路由已排队，等待选择执行者", model.ErrConflict)
+			}
+			if selectedID == "" && binding.Mode == "rules" {
+				pool := []model.AgentProfile{}
+				for _, candidate := range eligible {
+					if candidate.State == "ACTIVE" && candidate.ActiveRuns < candidate.MaxConcurrent && router.Matches(task.Requirements, candidate) {
+						pool = append(pool, candidate)
+					}
+				}
+				selectedID, e = s.store.SelectAgentByOptimizationPolicy(ctx, taskID, pool)
+				if e != nil {
+					return e
+				}
 			}
 		}
 		a, e := s.agentRouter.SelectAgent(ctx, router.AgentRequest{Requirements: task.Requirements, AgentID: selectedID}, eligible, runtimes)

@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>持续改进 · Work Assistant</title><link rel="stylesheet" href="/assets/shell.css"><link rel="stylesheet" href="/assets/improvements.css"><script src="/assets/shared.js" defer></script><script src="/assets/improvements.js" defer></script></head>
+<body class="app-page" data-page="improvements"><header data-app-shell></header><div id="notice" role="status" aria-live="polite" hidden></div>
+<main><div class="page-heading"><div><span class="eyebrow">LEARN FROM WORK</span><h1>持续改进</h1><p>从任务证据中验证经验和策略；灰度、推广与回滚由 Manager 决定，不改变安全内核。</p></div><button id="refresh">刷新</button></div>
+<section class="metric-grid" id="metrics"></section>
+<p id="readiness" class="scope-note"></p>
+<section class="improvement-section"><div class="section-heading"><h2>正在运行的实验</h2><span class="small muted">固定 50% 基线 / 50% 候选；子任务继承根任务分组</span></div><div class="table-scroll"><table><thead><tr><th>候选</th><th>状态</th><th>样本</th><th>综合分</th><th>决定</th></tr></thead><tbody id="experiments"></tbody></table></div></section>
+<section class="improvement-section"><div class="section-heading"><h2>候选与证据</h2><span class="small muted">Agent 建议先经静态校验</span></div><div id="candidates" class="improvement-list"></div></section>
+<section class="improvement-section"><div class="section-heading"><h2>经验库</h2><span class="small muted">新 Session 最多 5 条、合计 6 KiB</span></div><div id="experiences" class="improvement-list"></div></section>
+<section class="improvement-section"><div class="section-heading"><h2>策略版本</h2><span class="small muted">仅包含预定义 Prompt、路由、恢复、测试与工作流字段</span></div><div id="policies" class="improvement-list"></div></section>
+<p class="page-footer">改进 Analyst 与 Judge 使用独立低优先级 Run，其 Token 不计入业务实验成绩。当前数据不发送到 AgentLoop 或其他外部平台。</p></main>
+<dialog id="action-dialog" class="decision-dialog"><form id="action-form"><div class="dialog-heading"><h2 id="action-title">处理候选</h2><button type="button" id="close-action">取消</button></div><label>操作<select id="action-name"></select></label><label id="action-lock-label" hidden>额外锁定字段（可选，逗号分隔）<input id="action-lock-fields" autocomplete="off"></label><label>审计原因<textarea id="action-reason" required maxlength="2000"></textarea></label><p id="action-error" class="dialog-error" hidden></p><button class="primary" type="submit">确认</button></form></dialog>
+</body></html>

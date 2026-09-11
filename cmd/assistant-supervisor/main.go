@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"work-assistant/internal/backup"
 	"work-assistant/internal/id"
 	"work-assistant/internal/localconfig"
 	"work-assistant/internal/model"
@@ -109,7 +110,28 @@ func run() error {
 			}
 		}
 	}
-	state, err := store.OpenProtected(filepath.Join(o.dataDir, "control.sqlite"))
+	controlPath, spoolPath := filepath.Join(o.dataDir, "control.sqlite"), filepath.Join(o.dataDir, "runtime.sqlite")
+	backupDirectory, err := backup.Directory(o.dataDir)
+	if err != nil {
+		return err
+	}
+	migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelMigration()
+	var migrationPoint backup.Snapshot
+	combinedMigration := false
+	if _, spoolErr := os.Lstat(spoolPath); spoolErr == nil {
+		if migrationPoint, combinedMigration, err = backup.CapturePreMigrationSet(migrationCtx, controlPath, backupDirectory, store.SchemaVersion, map[string]backup.Source{"control.sqlite": backup.DatabaseSource{Path: controlPath}, "runtime.sqlite": backup.DatabaseSource{Path: spoolPath}}); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(spoolErr) {
+		return spoolErr
+	}
+	var state *store.Store
+	if combinedMigration {
+		state, err = store.OpenProtectedWithRecoveryPoint(controlPath, migrationPoint)
+	} else {
+		state, err = store.OpenProtected(controlPath)
+	}
 	if err != nil {
 		return err
 	}

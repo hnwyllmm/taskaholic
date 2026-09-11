@@ -198,6 +198,10 @@ func TestGuardPreventsSilentEmptyDatabaseAndBacksUpBeforeMigration(t *testing.T)
 	if _, err := Verify(ctx, filepath.Join(root, "pre-migration", entries[0].Name())); err != nil {
 		t.Fatal(err)
 	}
+	point, err := Verify(ctx, filepath.Join(root, "pre-migration", entries[0].Name()))
+	if err != nil || !strings.HasPrefix(point.ID, "pre-schema-v2-") || len(point.Files) != 1 || point.Files[0].SchemaVersion != 1 {
+		t.Fatalf("migration manifest is incomplete: %#v, %v", point, err)
+	}
 	if err := Register(path, root); err != nil {
 		t.Fatal(err)
 	}
@@ -228,6 +232,63 @@ func TestGuardPreventsSilentEmptyDatabaseAndBacksUpBeforeMigration(t *testing.T)
 	}
 	if err := CheckBeforeOpen(ctx, path, root, 1); err == nil {
 		t.Fatal("external registration was ignored")
+	}
+}
+
+func TestPreMigrationBackupFailureLeavesSchemaUntouched(t *testing.T) {
+	db, path := fixture(t)
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pre-migration"), []byte("blocks backup directory creation"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckBeforeOpen(context.Background(), path, root, 2); err == nil || !strings.Contains(err.Error(), "pre-migration") {
+		t.Fatalf("migration continued after backup failure: %v", err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT MAX(version) FROM schema_version`).Scan(&version); err != nil || version != 1 {
+		t.Fatalf("schema changed despite backup failure: %d, %v", version, err)
+	}
+}
+
+func TestCombinedMigrationRecoveryPointContainsControlAndRuntime(t *testing.T) {
+	_, control := fixture(t)
+	runtimePath := filepath.Join(t.TempDir(), "runtime.sqlite")
+	runtimeDB, err := sql.Open("sqlite", runtimePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { runtimeDB.Close() })
+	for _, statement := range []string{
+		"PRAGMA journal_mode=WAL",
+		"CREATE TABLE inbound_message(message_id TEXT PRIMARY KEY, params_json TEXT NOT NULL)",
+		"CREATE TABLE outbound_message(runtime_seq INTEGER PRIMARY KEY, params_json TEXT)",
+		"CREATE TABLE local_run(run_id TEXT PRIMARY KEY, spec_json TEXT NOT NULL)",
+	} {
+		if _, err := runtimeDB.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory := t.TempDir()
+	point, created, err := CapturePreMigrationSet(context.Background(), control, directory, 2, map[string]Source{
+		"control.sqlite": DatabaseSource{Path: control},
+		"runtime.sqlite": DatabaseSource{Path: runtimePath},
+	})
+	if err != nil || !created || len(point.Files) != 2 {
+		t.Fatalf("combined recovery point: %#v, created=%v, err=%v", point, created, err)
+	}
+	verified, err := Verify(context.Background(), filepath.Join(directory, "pre-migration", point.ID))
+	if err != nil || len(verified.Files) != 2 {
+		t.Fatalf("combined recovery point verification: %#v, %v", verified, err)
+	}
+	versions := map[string]int{"control.sqlite": 1, "runtime.sqlite": 0}
+	for _, file := range verified.Files {
+		if file.SchemaVersion != versions[file.Name] || file.Size == 0 || len(file.SHA256) != 64 {
+			t.Fatalf("invalid combined manifest entry: %#v", file)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(directory, "pre-migration", point.ID, "manifest.json"))
+	if err != nil || !strings.Contains(string(raw), `"runtime.sqlite"`) || !strings.Contains(string(raw), `"schema_version": 0`) {
+		t.Fatalf("unversioned runtime schema must be explicit in manifest: %s, %v", raw, err)
 	}
 }
 

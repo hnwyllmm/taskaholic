@@ -49,21 +49,27 @@ type SourceTarget struct {
 }
 
 type SourceEvent struct {
-	ID          string               `json:"event_id"`
-	SourceID    string               `json:"source_id"`
-	TargetID    string               `json:"target_id"`
-	Key         string               `json:"key"`
-	Kind        string               `json:"kind"`
-	Entity      string               `json:"entity"`
-	TaskID      string               `json:"task_id,omitempty"`
-	Title       string               `json:"title,omitempty"`
-	Message     string               `json:"message"`
-	HeadSHA     string               `json:"head_sha,omitempty"`
-	URL         string               `json:"url,omitempty"`
-	State       string               `json:"state"`
-	Error       string               `json:"error,omitempty"`
-	CreatedAtMS int64                `json:"created_at_ms"`
-	Pipeline    *PipelineObservation `json:"pipeline,omitempty"`
+	ID       string `json:"event_id"`
+	SourceID string `json:"source_id"`
+	TargetID string `json:"target_id"`
+	Key      string `json:"key"`
+	Kind     string `json:"kind"`
+	Entity   string `json:"entity"`
+	TaskID   string `json:"task_id,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Message  string `json:"message"`
+	// Profile hints are optional deterministic facts supplied by a source
+	// adapter. Leaving them empty records the corresponding value as "other";
+	// neither the source inbox nor Manager asks a model to invent them.
+	TaskType     string               `json:"task_type,omitempty"`
+	Repository   string               `json:"repository,omitempty"`
+	WorkflowType string               `json:"workflow_type,omitempty"`
+	HeadSHA      string               `json:"head_sha,omitempty"`
+	URL          string               `json:"url,omitempty"`
+	State        string               `json:"state"`
+	Error        string               `json:"error,omitempty"`
+	CreatedAtMS  int64                `json:"created_at_ms"`
+	Pipeline     *PipelineObservation `json:"pipeline,omitempty"`
 }
 
 type SourceReview struct {

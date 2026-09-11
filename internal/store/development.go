@@ -210,7 +210,7 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		req.ExecutionGrant = &model.ExecutionGrant{ReviewID: d.ApprovedReviewID, PlanHash: d.PlanHash, Repository: d.Repository, BaseBranch: d.BaseBranch}
 		req.Instructions = strings.ReplaceAll(req.Instructions, "当前运行使用只读沙箱。", "当前运行使用已批准的隔离开发沙箱。")
 		req.Instructions = strings.ReplaceAll(req.Instructions, "不自行执行仓库写入、发布、推送、合并、发消息或其它外部变更。", "本轮允许在批准的隔离源码目录写入和验证；发布、推送、合并、发消息或其它外部变更仍必须走受控执行器。")
-		req.Instructions += "\n当前阶段：人工已批准方案，开始实施。执行范围仅为下述批准的仓库和隔离工作目录。角色历史快照中关于普通任务只读的旧部署说明由本轮执行授权取代，其它职责和边界不变。请真正修改代码、运行可行的验证。不要修改共享仓库，不要自行 commit/push/创建 PR，Manager 会在你提交 publish_request 后受控发布。需要重大调整方案时返回 replan，不要擅自扩大范围。不得用文档代替代码实现；如果无法验证，明确未验证和阻塞，不要虚报完成。\n"
+		req.Instructions += "\n当前阶段：人工已批准方案，开始实施。执行范围仅为下述批准的仓库和隔离工作目录。角色历史快照中关于普通任务只读的旧部署说明由本轮执行授权取代，其它职责和边界不变。请真正修改代码、运行可行的验证。实施期间没有 Phase 0/Phase 1、入口评审、清单评审或其它由你自行设立的 Agent 放行门槛；不得因“等待 Manager 安排独立复审”而停止实施。尚有批准范围内的工作时继续完成；如果本轮必须结束但仍可自主继续，使用 recovery_request 续接原 Session。只有代码和必要验证完成后才提交 publish_request。不要修改共享仓库，不要自行 commit/push/创建 PR，Manager 会在你提交 publish_request 后受控发布。PR 创建后，新建 PR 及每个新 commit 由任务源和 Router 触发独立 reviewer，不要在 PR 前自行邀请 reviewer。需要重大调整方案时返回 replan，不要擅自扩大范围。不得用文档代替代码实现；如果无法验证，明确未验证和阻塞，不要虚报完成。\n"
 	} else if d.Phase == "PLANNING" {
 		req.Instructions += "\n当前阶段：形成/修订方案（只读）。需求给设计文档，BUG 给问题分析与修复方案；检查真实代码、明确范围、风险、测试方法和验收标准，完整方案放 artifacts。outcome=review 时 plan_scope 填 GitHub owner/repository 和 base_branch；这是待审批的执行范围，不是权限。Manager 会安排另一个 Agent 互审，达成一致后用户审批，通过前严禁开发或创建 PR。历史方案可参考，但本轮必须提交完整方案。不要自行邀请人验收。\n"
 	} else {
@@ -322,7 +322,10 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 			return true, err
 		}
 		if result.Outcome == "review" && len(result.PullRequests) == 0 {
-			return true, blockDevelopmentTx(ctx, tx, parent, "开发交付缺少真实 PR，不能把文档当作开发完成。请检查发布状态并继续处理。")
+			return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{
+				Evidence: "Agent 在实施阶段返回 outcome=review，但没有提交 publish_request，受控执行器因此未创建 PR。\n" + truncateRunes(result.Message, 3000),
+				NextStep: "不要安排 PR 前的独立 Agent 复审，也不要自行增加 Phase 0/Phase 1 放行门槛。继续原已批准方案内的实现和必要验证；完成后提交 publish_request，由 Runtime 创建 PR。PR 新建及后续新 commit 再由 Router 邀请 reviewer。",
+			})
 		}
 		return false, nil // Existing PR registration/review/testing lifecycle.
 	}
@@ -374,7 +377,15 @@ func (s *Store) RoutePlanReviews(ctx context.Context) error {
 			return err
 		}
 		for _, d := range ds {
-			if d.Rounds > 8 {
+			policy, policyErr := optimizationPolicyForTaskTx(ctx, tx, d.TaskID)
+			if policyErr != nil {
+				return policyErr
+			}
+			limit := policy.Workflow.PlanReviewRoundLimit
+			if limit < 2 {
+				limit = 8
+			}
+			if d.Rounds > limit {
 				if err = blockDevelopmentTx(ctx, tx, d.TaskID, "方案互审达到自动轮次上限，请查看分歧后决定方向。"); err != nil {
 					return err
 				}
@@ -396,7 +407,7 @@ func (s *Store) RoutePlanReviews(ctx context.Context) error {
 					}
 					continue
 				}
-				child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "方案评审 · " + truncateRunes(task.Title, 100), Goal: "独立评审原任务的方案，反馈开发 Agent，多轮讨论后提交人工确认。", Source: "router.plan-review", Key: "plan-review:" + d.TaskID, Requirements: model.TaskRequirements{RoleID: roleID, ExcludedAgentIDs: []string{task.AssignedAgentID}}})
+				child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "方案评审 · " + truncateRunes(task.Title, 100), Goal: "独立评审原任务的方案，反馈开发 Agent，多轮讨论后提交人工确认。", TaskType: "review", Repository: d.Repository, WorkflowType: "standard", Source: "router.plan-review", Key: "plan-review:" + d.TaskID, Requirements: model.TaskRequirements{RoleID: roleID, ExcludedAgentIDs: []string{task.AssignedAgentID}}})
 				if err != nil {
 					return err
 				}
@@ -463,6 +474,9 @@ func decidePlanTx(ctx context.Context, tx *sql.Tx, d model.Development, r *model
 	}
 	if _, err := insertMessageTx(ctx, tx, d.TaskID, "user", message, "", "PENDING"); err != nil {
 		return err
+	}
+	if decision == "CHANGES_REQUESTED" {
+		tryEnqueueIntermediateImprovementTx(ctx, tx, d.TaskID, "human_plan_rework", "human-plan-rework:"+r.ID)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE task_workflow SET paused=0,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, d.TaskID); err != nil {
 		return err

@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {parser,merge,actionKey,defaultOpen,changedFiles,compactSummary,messageText}=require('./activity.js');
+const {parser,merge,actionKey,defaultOpen,changedFiles,compactSummary,messageText,roundMessages}=require('./activity.js');
 
 test('SSE arbitrary UTF-8 network chunks, CRLF, comments and multiline data',()=>{
   const wire=': connected\r\n\r\nid: 81\r\nevent: RunActivity\r\ndata: {"message":\r\ndata: "中文输出"}\r\n\r\n: heartbeat\n\nid: 82\ndata: {"done":true}\n\n';
@@ -37,4 +37,16 @@ test('Collapsed action summaries expose commands and repository-relative file ch
 
 test('Agent message body prefers complete output for direct rendering',()=>{
   assert.equal(messageText({title:'Agent 消息',details:'detail',output:'**完成**'}),'**完成**');
+});
+
+test('Conversation messages are associated with their run and ordered around live activity',()=>{
+  const messages=[
+    {run_id:'run-1',speaker:'user',delivery:'SENT',content:'first request'},
+    {run_id:'run-2',speaker:'system',delivery:'SENT',content:'continue'},
+    {run_id:'run-1',speaker:'assistant',delivery:'RECORDED',content:'first answer'},
+    {run_id:'run-2',speaker:'system',delivery:'RECORDED',content:'failed'},
+    {speaker:'user',delivery:'PENDING',content:'next'},
+  ];
+  assert.deepEqual(roundMessages(messages,'run-1'),{triggers:[messages[0]],responses:[messages[2]]});
+  assert.deepEqual(roundMessages(messages,'run-2'),{triggers:[messages[1]],responses:[messages[3]]});
 });

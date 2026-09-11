@@ -22,7 +22,7 @@ func createSourceReviewsTx(ctx context.Context, tx *sql.Tx, planner router.Revie
 	if task.State == model.TaskStateCompleted {
 		return nil
 	}
-	_, repo, _, _, err := model.ParseGitHubPR(target.Entity)
+	owner, repo, _, _, err := model.ParseGitHubPR(target.Entity)
 	if err != nil {
 		return err
 	}
@@ -37,6 +37,14 @@ func createSourceReviewsTx(ctx context.Context, tx *sql.Tx, planner router.Revie
 	plan, err := planner.PlanReviews(request, agents)
 	if err != nil {
 		return err
+	}
+	policy, err := optimizationPolicyForTaskTx(ctx, tx, task.ID)
+	if err != nil {
+		return err
+	}
+	if limit := policy.Test.ReviewerCount; limit > 0 && len(plan.RoleIDs) > limit {
+		plan.RoleIDs = append([]string{}, plan.RoleIDs[:limit]...)
+		plan.Reason += fmt.Sprintf(" 当前任务固定策略将本次评审限制为 %d 个角色。", limit)
 	}
 	if err = router.ValidateReviewPlan(request, plan, agents); err != nil {
 		return err
@@ -89,7 +97,7 @@ func createSourceReviewsTx(ctx context.Context, tx *sql.Tx, planner router.Revie
 			return err
 		}
 		brief := sourceReviewBrief(target, event.HeadSHA, role.Name)
-		child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: brief.Title, Goal: brief.Goal, Key: event.ID + ":" + roleID, Source: "router.review", Requirements: needs})
+		child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: brief.Title, Goal: brief.Goal, TaskType: "review", Repository: owner + "/" + repo, WorkflowType: "standard", Key: event.ID + ":" + roleID, Source: "router.review", Requirements: needs})
 		if err != nil {
 			return err
 		}

@@ -67,12 +67,33 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	state, err := store.OpenProtected(filepath.Join(*dataDir, "control.sqlite"))
+	controlPath, spoolPath := filepath.Join(*dataDir, "control.sqlite"), filepath.Join(*dataDir, "runtime.sqlite")
+	directory, err := backup.Directory(*dataDir)
+	if err != nil {
+		return err
+	}
+	migrationCtx, cancelMigration := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancelMigration()
+	var migrationPoint backup.Snapshot
+	combinedMigration := false
+	if _, spoolErr := os.Lstat(spoolPath); spoolErr == nil {
+		if migrationPoint, combinedMigration, err = backup.CapturePreMigrationSet(migrationCtx, controlPath, directory, store.SchemaVersion, map[string]backup.Source{"control.sqlite": backup.DatabaseSource{Path: controlPath}, "runtime.sqlite": backup.DatabaseSource{Path: spoolPath}}); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(spoolErr) {
+		return spoolErr
+	}
+	var state *store.Store
+	if combinedMigration {
+		state, err = store.OpenProtectedWithRecoveryPoint(controlPath, migrationPoint)
+	} else {
+		state, err = store.OpenProtected(controlPath)
+	}
 	if err != nil {
 		return err
 	}
 	defer state.Close()
-	spool, err := runtimehost.OpenSpoolProtected(filepath.Join(*dataDir, "runtime.sqlite"))
+	spool, err := runtimehost.OpenSpoolProtected(spoolPath)
 	if err != nil {
 		return err
 	}
@@ -81,10 +102,6 @@ func run() error {
 	defer stop()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	directory, err := backup.Directory(*dataDir)
-	if err != nil {
-		return err
-	}
 	backups, err := backup.New(backup.Config{Directory: directory, Sources: map[string]backup.Source{"control.sqlite": state, "runtime.sqlite": spool}})
 	if err != nil {
 		return err
