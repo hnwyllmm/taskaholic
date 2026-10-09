@@ -239,7 +239,7 @@ func (s *Store) MessageWork(ctx context.Context, taskID, content, key string, in
 
 const (
 	// Only an explicit user choice can return a task to an earlier phase.
-	WorkMessagePlanChange  = "plan_change"
+	WorkMessagePlanChange  = "return_to_planning"
 	WorkMessageAgentReview = "agent_review"
 	// Ordinary guidance stays in the current phase and never grants permissions.
 	WorkMessageExecutionDirection = "execution_direction"
@@ -248,7 +248,9 @@ const (
 // Omitted mode means current-stage guidance. Phase rollback requires an
 // explicit user choice, including when the caller uses the legacy API.
 func (s *Store) MessageWorkWithMode(ctx context.Context, taskID, content, key string, interrupt bool, mode string) (model.TaskMessage, error) {
-	if mode == "" {
+	// Old browser pages sent plan_change automatically outside implementation.
+	// Intentional returns use a distinct mode so stale clients cannot roll back.
+	if mode == "" || mode == "plan_change" {
 		mode = WorkMessageExecutionDirection
 	}
 	if mode != WorkMessagePlanChange && mode != WorkMessageExecutionDirection && mode != WorkMessageAgentReview {

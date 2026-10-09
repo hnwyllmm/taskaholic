@@ -174,10 +174,10 @@ test('Implementation messages default to execution direction and require an expl
  p.$('message').value='Stop optional tests and prepare the PR';p.$('send').onclick();await p.settle();
  let request=p.requests.find(r=>r.method==='POST'&&r.route.endsWith('/messages'));
  assert.equal(request.body.mode,'execution_direction');assert.equal(request.body.interrupt,false);
- p.$('message-mode').value='plan_change';p.$('message-mode').onchange();p.$('message').value='Change the approved scope';p.$('steer').onclick();await p.settle();
+ p.$('message-mode').value='return_to_planning';p.$('message-mode').onchange();p.$('message').value='Change the approved scope';p.$('steer').onclick();await p.settle();
  request=p.requests.filter(r=>r.method==='POST'&&r.route.endsWith('/messages')).at(-1);
- assert.equal(request.body.mode,'plan_change');assert.equal(request.body.interrupt,true);
- assert.match(p.$('message-mode-hint').textContent,/明确打回方案设计/);
+ assert.equal(request.body.mode,'return_to_planning');assert.equal(request.body.interrupt,true);
+ assert.equal(p.$('message-mode').value,'execution_direction');
 });
 
 test('Review-stage messages default to current-stage guidance',async()=>{

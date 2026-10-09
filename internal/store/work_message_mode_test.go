@@ -78,7 +78,7 @@ func TestGuidanceCannotAuthorizePlanning(t *testing.T) {
 }
 
 func TestDefaultGuidanceAndExplicitReturn(t *testing.T) {
-	for _, mode := range []string{"", WorkMessageExecutionDirection} {
+	for _, mode := range []string{"", "plan_change", WorkMessageExecutionDirection} {
 		t.Run("default-"+mode, func(t *testing.T) {
 			s, _, task, _ := approvedImplementation(t)
 			before := *developmentState(t, s, task.ID)
