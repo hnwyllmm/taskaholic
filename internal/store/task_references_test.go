@@ -25,8 +25,12 @@ func TestTaskReferencesLegacyReviewInputsAndSessionContinuity(t *testing.T) {
 	}
 	first := startWork(t, s, author, parent)
 	link := "https://antmultica.alipay.com/seekdb/issues/one"
-	if !strings.Contains(runSpec(t, s, first.ID).Instructions, link) {
+	firstSpec := runSpec(t, s, first.ID)
+	if !strings.Contains(firstSpec.Instructions, link) {
 		t.Fatal("agent missing source link")
+	}
+	if !firstSpec.ReadOnly || !firstSpec.NetworkAccess || firstSpec.ExecutionGrant != nil || !strings.Contains(firstSpec.Instructions, "经 Manager 校验并持久化的 AntMultica 来源引用") || !strings.Contains(firstSpec.Instructions, "不得执行创建、更新、评论") {
+		t.Fatalf("source-linked Agent missing managed read network boundary: %#v", firstSpec)
 	}
 	finishWork(t, s, first, 1, "review", "implementation")
 	qaRole := publishTestRole(t, s, "qa.review")

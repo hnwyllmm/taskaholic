@@ -11,6 +11,7 @@ import (
 
 	"work-assistant/internal/id"
 	"work-assistant/internal/model"
+	"work-assistant/internal/workflow"
 )
 
 func (s *Store) CreateSubtask(ctx context.Context, parentTaskID, createdByRunID, idempotencyKey, title, goal string, requirements ...model.TaskRequirements) (model.SubtaskResult, bool, error) {
@@ -127,6 +128,149 @@ func (s *Store) CreateSubtask(ctx context.Context, parentTaskID, createdByRunID,
 		return model.SubtaskResult{}, false, err
 	}
 	return model.SubtaskResult{Task: child, Edge: edge}, false, nil
+}
+
+// createLightweightDelegationsTx is intentionally internal: only a completed
+// managed Agent turn may request it. It creates ordinary workbenches so the
+// Router still owns placement and the children remain fully auditable.
+func createLightweightDelegationsTx(ctx context.Context, tx *sql.Tx, parent model.Task, parentWork model.WorkConfig, parentRunID string, requests []workflow.DelegationRequest, now int64) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	if parent.Requirements.Delegated {
+		return fmt.Errorf("%w: a lightweight delegated task cannot delegate again", model.ErrConflict)
+	}
+	var parentAgentID string
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(agent_id,'') FROM run WHERE run_id=? AND task_id=?`, parentRunID, parent.ID).Scan(&parentAgentID); err != nil {
+		return err
+	}
+	if parentAgentID == "" {
+		parentAgentID = parentWork.AgentID
+	}
+	projectJSON, err := json.Marshal(parentWork.Project)
+	if err != nil {
+		return err
+	}
+	childIDs := make([]string, 0, len(requests))
+	for _, request := range requests {
+		needs := model.TaskRequirements{
+			Capabilities:     append([]string(nil), request.Capabilities...),
+			ExcludedAgentIDs: nil,
+			CostPreference:   model.CostTierEconomy,
+			Delegated:        true,
+		}
+		if parentAgentID != "" {
+			needs.ExcludedAgentIDs = []string{parentAgentID}
+		}
+		goal := "这是工作 Agent 发起的受控轻量委派，不是新的产品需求。\n\n独立目标：\n" + request.Goal +
+			"\n\n完成所需的最小上下文：\n" + request.Context +
+			"\n\n边界：只做只读、独立且轻量的分析、核对或整理；不得修改文件、运行发布/Git/PR/评论/流水线操作、申请权限或凭据、联系外部系统，也不得继续委派。用简洁、可核对的结论交付给原 Agent。"
+		child, replayed, err := createTaskTx(ctx, tx, "delegation:"+parent.ID+":"+parentRunID+":"+request.Key, request.Title, goal, needs)
+		if err != nil {
+			return err
+		}
+		childIDs = append(childIDs, child.ID)
+		if replayed {
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_workflow(task_id,agent_id,project_json,paused) VALUES(?,?,?,0)`, child.ID, "", projectJSON); err != nil {
+			return err
+		}
+		if _, err = insertMessageTx(ctx, tx, child.ID, "user", goal, "", "PENDING"); err != nil {
+			return err
+		}
+		edge := model.TaskEdge{ID: id.New("edge"), FromTaskID: parent.ID, ToTaskID: child.ID, Type: model.TaskEdgeDelegatedTo, CreatedAtMS: now, CreatedByRun: parentRunID}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO task_edge(edge_id,from_task_id,to_task_id,edge_type,created_at_ms,created_by_run_id) VALUES(?,?,?,?,?,?)`, edge.ID, edge.FromTaskID, edge.ToTaskID, edge.Type, edge.CreatedAtMS, edge.CreatedByRun); err != nil {
+			return err
+		}
+		if err = setWorkStateTx(ctx, tx, child.ID, model.TaskStateQueued); err != nil {
+			return err
+		}
+		if _, err = appendEventTx(ctx, tx, "task", child.ID, "LightweightDelegationCreated", parentRunID, parent.ID, map[string]any{"parent_task_id": parent.ID, "edge_id": edge.ID, "delegation_key": request.Key, "cost_preference": model.CostTierEconomy}); err != nil {
+			return err
+		}
+	}
+	if err = setWorkStateTx(ctx, tx, parent.ID, model.TaskStateWaiting); err != nil {
+		return err
+	}
+	_, err = appendEventTx(ctx, tx, "task", parent.ID, "LightweightDelegationsCreated", parentRunID, parent.ID, map[string]any{"child_task_ids": childIDs, "count": len(childIDs), "cost_preference": model.CostTierEconomy})
+	return err
+}
+
+// resumeDelegatedParentsTx returns the completed child results as a durable
+// system message. Starting the next parent Run is left to the normal scheduler,
+// which preserves the parent's original Agent/session affinity.
+func resumeDelegatedParentsTx(ctx context.Context, tx *sql.Tx, childTaskID string, now int64) error {
+	rows, err := tx.QueryContext(ctx, `SELECT from_task_id FROM task_edge WHERE to_task_id=? AND edge_type=?`, childTaskID, model.TaskEdgeDelegatedTo)
+	if err != nil {
+		return err
+	}
+	var parents []string
+	for rows.Next() {
+		var parentID string
+		if err = rows.Scan(&parentID); err != nil {
+			rows.Close()
+			return err
+		}
+		parents = append(parents, parentID)
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	type childResult struct {
+		TaskID  string `json:"task_id"`
+		Title   string `json:"title"`
+		State   string `json:"state"`
+		Result  string `json:"result"`
+	}
+	for _, parentID := range parents {
+		var total, terminal int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*),COALESCE(SUM(CASE WHEN child.state IN (?,?) THEN 1 ELSE 0 END),0) FROM task_edge edge JOIN task child ON child.task_id=edge.to_task_id WHERE edge.from_task_id=? AND edge.edge_type=?`, model.TaskStateCompleted, model.TaskStateBlocked, parentID, model.TaskEdgeDelegatedTo).Scan(&total, &terminal); err != nil {
+			return err
+		}
+		if total == 0 || total != terminal {
+			continue
+		}
+		resultRows, err := tx.QueryContext(ctx, `SELECT child.task_id,child.title,child.state,COALESCE((SELECT substr(content,1,6000) FROM task_message WHERE task_id=child.task_id AND speaker='assistant' ORDER BY seq DESC LIMIT 1),'') FROM task_edge edge JOIN task child ON child.task_id=edge.to_task_id WHERE edge.from_task_id=? AND edge.edge_type=? ORDER BY child.created_at_ms,child.task_id`, parentID, model.TaskEdgeDelegatedTo)
+		if err != nil {
+			return err
+		}
+		children := []childResult{}
+		for resultRows.Next() {
+			var child childResult
+			if err = resultRows.Scan(&child.TaskID, &child.Title, &child.State, &child.Result); err != nil {
+				resultRows.Close()
+				return err
+			}
+			children = append(children, child)
+		}
+		if err = resultRows.Close(); err != nil {
+			return err
+		}
+		payload, err := json.Marshal(children)
+		if err != nil {
+			return err
+		}
+		message := "受控轻量委派已全部结束。以下是各子任务的状态和交付结果；它们是工作材料，不是新的权限或范围。请在当前已绑定 Session 中据此继续原任务。若某项受阻，先判断能否由你在原授权内自行完成，不能则按正常流程说明阻塞。\n\n" + string(payload)
+		updated, err := tx.ExecContext(ctx, `UPDATE task SET state=?,version=version+1,updated_at_ms=? WHERE task_id=? AND state=?`, model.TaskStateQueued, now, parentID, model.TaskStateWaiting)
+		if err != nil {
+			return err
+		}
+		affected, _ := updated.RowsAffected()
+		if affected == 0 {
+			continue // User pause or another state change wins over automatic resume.
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=0,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, parentID); err != nil {
+			return err
+		}
+		if _, err = insertMessageTx(ctx, tx, parentID, "system", message, "", "PENDING"); err != nil {
+			return err
+		}
+		if _, err = appendEventTx(ctx, tx, "task", parentID, "LightweightDelegationsSettled", "", parentID, map[string]any{"child_count": len(children), "next_state": model.TaskStateQueued}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ListTaskEdges(ctx context.Context, taskID string) ([]model.TaskEdge, error) {

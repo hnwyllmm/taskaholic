@@ -9,7 +9,7 @@ window.WATaskConsultation={mount(dialog){
   const form=el('form',null,'consultation-form'),label=el('label','询问当前任务','sr'),input=document.createElement('textarea');
   input.rows=3;input.maxLength=16000;input.placeholder='例如：Agent 现在做到哪一步？为什么执行这个命令？当前还有什么风险？';
   const actions=el('div',null,'row consultation-actions'),send=el('button','发送问题','primary'),stop=el('button','停止本次回答');
-  send.type='submit';stop.type='button';actions.append(send,stop);form.append(label,input,actions,el('p','咨询只读取系统已经记录的信息；未上报的编辑和隐藏推理不可见。要改变工作方向，请使用任务页的“补充要求或修改方向”。','small muted'));
+  send.type='submit';stop.type='button';actions.append(send,el('span','Enter 发送 · Ctrl+Enter 换行','key-hint'),stop);form.append(label,input,actions,el('p','咨询只读取系统已经记录的信息；未上报的编辑和隐藏推理不可见。要改变工作方向，请使用任务页的“补充要求或修改方向”。','small muted'));
   shell.append(head,freshness,thread,form);dialog.append(shell);
   function headers(){const token=WA.token();return token?{Authorization:'Bearer '+token}:{};}
   async function api(path,method='GET',body){const response=await fetch('/api/v1'+path,{method,headers:{...headers(),'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)}),value=await response.json();if(!response.ok)throw Error(value.error||'请求失败');return value;}
@@ -28,6 +28,7 @@ window.WATaskConsultation={mount(dialog){
   async function ensure(){if(state.item)return;state.item=await api('/work/tasks/'+encodeURIComponent(state.taskID)+'/consultation','POST',{});draw();}
   close.onclick=()=>dialog.close();dialog.addEventListener('close',()=>{clearTimeout(state.timer);state.timer=null;});
   form.onsubmit=async event=>{event.preventDefault();const message=input.value.trim();if(!message)return;state.busy=true;draw();try{await ensure();if(!state.key)state.key=WA.key();state.item=await api('/work/tasks/'+encodeURIComponent(state.taskID)+'/consultation/messages','POST',{message,expected_version:state.item.version,idempotency_key:state.key});state.key='';input.value='';draw();schedule();}catch(error){WA.notice(error.message,true);}finally{state.busy=false;draw();}};
+  WA.bindChatInput?.(input,()=>send.click());
   stop.onclick=async()=>{state.busy=true;draw();try{await api('/work/tasks/'+encodeURIComponent(state.taskID)+'/consultation/stop','POST',{});await load();}catch(error){WA.notice(error.message,true);}finally{state.busy=false;draw();}};
   return{
     async open(){if(!state.taskID)return;dialog.showModal();try{await load();await ensure();}catch(error){WA.notice(error.message,true);}},

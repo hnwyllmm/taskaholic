@@ -55,13 +55,13 @@ func TestUpgradeRequiresImmutableApprovalAndDrainsRuns(t *testing.T) {
 	if _, err = state.CreateRun(ctx, CreateRunRequest{TaskID: task.ID, RuntimeID: "role-runtime", AdapterID: "exec-agent"}); !errors.Is(err, model.ErrConflict) {
 		t.Fatal("maintenance accepted a new run", err)
 	}
-	if _, err = state.BeginUpgradeInstall(ctx, u.ID); !errors.Is(err, model.ErrConflict) {
+	if _, err = state.BeginUpgradeInstall(ctx, u.ID, false); !errors.Is(err, model.ErrConflict) {
 		t.Fatal("install did not wait for active run", err)
 	}
 	if _, err = state.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: run.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 1, RunID: run.ID, Type: "run.completed"}); err != nil {
 		t.Fatal(err)
 	}
-	u, err = state.BeginUpgradeInstall(ctx, u.ID)
+	u, err = state.BeginUpgradeInstall(ctx, u.ID, false)
 	if err != nil || u.State != "INSTALLING" {
 		t.Fatal("begin after drain", u, err)
 	}
@@ -70,6 +70,36 @@ func TestUpgradeRequiresImmutableApprovalAndDrainsRuns(t *testing.T) {
 	}
 	if maintenance, _ := state.Maintenance(ctx); maintenance != "" {
 		t.Fatal("maintenance was not cleared")
+	}
+}
+
+func TestControlOnlyUpgradeCanBeginWhileRunIsActiveOnlyWithSplitRuntime(t *testing.T) {
+	ctx := context.Background()
+	state := roleTestStore(t)
+	u := readyUpgrade(t, state, "Control-only UI fix")
+	u.RestartScope = model.UpgradeRestartControl
+	var err error
+	u, err = state.ChangeUpgrade(ctx, u, u.Version, "UpgradeRestartScopeClassified")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := state.CreateTask(ctx, "", "running", "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.CreateRun(ctx, CreateRunRequest{TaskID: task.ID, RuntimeID: "role-runtime", AdapterID: "exec-agent"}); err != nil {
+		t.Fatal(err)
+	}
+	u, err = state.RequestUpgradeInstall(ctx, u.ID, u.Version, u.CandidateSHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.BeginUpgradeInstall(ctx, u.ID, false); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("legacy deployment would interrupt the active run", err)
+	}
+	u, err = state.BeginUpgradeInstall(ctx, u.ID, true)
+	if err != nil || u.State != "INSTALLING" {
+		t.Fatal("split runtime did not permit a control-only restart", u, err)
 	}
 }
 

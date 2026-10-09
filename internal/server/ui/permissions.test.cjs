@@ -21,7 +21,7 @@ test('Task workspace renders its pending permission and can remember the exact s
   const context=vm.createContext({window:{},document,confirm:()=>true,setInterval:()=>1,clearInterval(){},WA:{el,api,link:(text,href)=>{const n=el('a',text);n.href=href;return n;},notice(){}}});context.window=context;
   vm.runInContext(fs.readFileSync(path.join(__dirname,'permissions.js'),'utf8'),context);
   const mounted=context.WAPermissions.mountTask(panel,box,{changed:async()=>{changed++;}});
-  await mounted.update('task-1','WAITING_AUTHORIZATION');
+  await mounted.update('task-1','BLOCKED');
   const text=node=>node.textContent+' '+node.children.map(text).join(' ');
   assert.match(text(box),/Current/);assert.doesNotMatch(text(box),/Other/);assert.equal(panel.hidden,false);
   const buttons=[];(function walk(node){if(node.tag==='button')buttons.push(node);for(const child of node.children)walk(child);})(box);
@@ -34,4 +34,29 @@ test('Task workspace renders its pending permission and can remember the exact s
   const html=fs.readFileSync(path.join(__dirname,'tasks.html'),'utf8');
   assert.ok(html.indexOf('/assets/permissions.js')<html.indexOf('/tasks/tasks.js'));
   assert.match(html,/id="task-permission-panel"/);
+});
+
+test('Blocked approved implementation can receive an explicit manual capability grant',async()=>{
+  class Element{
+    constructor(tag='div',text=''){this.tag=tag;this.textContent=text||'';this.children=[];this.hidden=false;this.value='';}
+    append(...children){this.children.push(...children);}replaceChildren(...children){this.children=children;}
+  }
+  const el=(tag,text,cls)=>{const node=new Element(tag,text);node.className=cls||'';return node;};
+  const panel=new Element('section'),box=new Element('div'),calls=[];
+  const api=async(url,method='GET',body)=>{calls.push({url,method,body});return{requests:[],policies:[],runtimes:[]};};
+  const document={body:{dataset:{page:'tasks'}},hidden:false,getElementById:()=>null,querySelector:()=>null};
+  let changed=0;
+  const context=vm.createContext({window:{},document,confirm:()=>true,setInterval:()=>1,clearInterval(){},WA:{el,api,link:(text,href)=>{const n=el('a',text);n.href=href;return n;},notice(){}}});context.window=context;
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'permissions.js'),'utf8'),context);
+  const mounted=context.WAPermissions.mountTask(panel,box,{changed:async()=>{changed++;}});
+  await mounted.update('task-1','BLOCKED',{available:true,expected_version:7,runtime_id:'dev',repository:'oceanbase/seekdb'});
+  const text=node=>node.textContent+' '+node.children.map(text).join(' ');
+  assert.equal(panel.hidden,false);assert.match(text(box),/主动授权运行能力/);
+  const buttons=[];(function walk(node){if(node.tag==='button')buttons.push(node);for(const child of node.children)walk(child);})(box);
+  const remember=buttons.find(button=>button.textContent==='允许并记住联网');assert.ok(remember);
+  remember.onclick();for(let i=0;i<4;i++)await new Promise(setImmediate);
+  const grant=calls.find(call=>call.method==='POST');
+  assert.equal(grant.url,'/work/tasks/task-1/execution-permissions');
+  assert.equal(JSON.stringify(grant.body),JSON.stringify({expected_version:7,capability:'network_access',remember:true}));
+  assert.equal(changed,1);mounted.dispose();
 });

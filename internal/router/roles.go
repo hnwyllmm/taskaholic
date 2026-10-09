@@ -41,6 +41,7 @@ func (LeastLoaded) SelectAgent(_ context.Context, request AgentRequest, agents [
 		}
 		return left.ID < right.ID
 	})
+	eligible := make([]model.AgentProfile, 0, len(agents))
 	for _, agent := range agents {
 		if agent.State != "ACTIVE" || agent.ActiveRuns >= agent.MaxConcurrent || !Matches(request.Requirements, agent) {
 			continue
@@ -60,7 +61,20 @@ func (LeastLoaded) SelectAgent(_ context.Context, request AgentRequest, agents [
 		if !SupportsFeature(available[agent.RuntimeID], agent.AdapterID, "role_instructions") {
 			continue
 		}
-		return agent, nil
+		eligible = append(eligible, agent)
+	}
+	if request.Requirements.CostPreference == model.CostTierEconomy {
+		for _, agent := range eligible {
+			if model.NormalizeCostTier(agent.CostTier, agent.ModelID) == model.CostTierEconomy {
+				return agent, nil
+			}
+		}
+		// An economy preference is intentionally soft: suitability and forward
+		// progress beat waiting forever for a low-cost member that is offline or
+		// fully occupied.
+	}
+	if len(eligible) > 0 {
+		return eligible[0], nil
 	}
 	return model.AgentProfile{}, fmt.Errorf("%w: no online role agent satisfies requirements and has capacity", model.ErrConflict)
 }

@@ -212,6 +212,25 @@ func (s *Spool) SetRunState(ctx context.Context, runID, state string) error {
 	return err
 }
 
+// LoadRunSpec returns the immutable accepted spec for a local run. VM result
+// retrieval uses it to ensure one task/session cannot read another one's
+// persisted operation output.
+func (s *Spool) LoadRunSpec(ctx context.Context, runID string) (model.RunSpec, bool, error) {
+	var spec model.RunSpec
+	var encoded []byte
+	err := s.db.QueryRowContext(ctx, `SELECT spec_json FROM local_run WHERE run_id = ?`, runID).Scan(&encoded)
+	if err == sql.ErrNoRows {
+		return spec, false, nil
+	}
+	if err != nil {
+		return spec, false, err
+	}
+	if err = json.Unmarshal(encoded, &spec); err != nil {
+		return spec, false, fmt.Errorf("decode local run %s: %w", runID, err)
+	}
+	return spec, true, nil
+}
+
 // EnqueueEvent allocates the runtime-local sequence and writes the complete
 // event in one transaction, so reconnects can safely resume transmission.
 func (s *Spool) EnqueueEvent(ctx context.Context, base model.RuntimeEvent) (int64, error) {

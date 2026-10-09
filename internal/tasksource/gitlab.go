@@ -33,8 +33,15 @@ func (g *GitLab) Poll(ctx context.Context, source model.TaskSource, target model
 	if err = json.Unmarshal(target.Cursor, &previous); err != nil {
 		return PollResult{}, err
 	}
-	result := PollResult{HeadSHA: p.HeadSHA, Closed: model.PipelineFinished(observation.Status), Cursor: target.Cursor}
-	if previous.Status != observation.Status {
+	evidenceChanged := observation.Status == "failed" && digest(p.Jobs) != digest(observation.Jobs)
+	closed := model.PipelineFinished(observation.Status)
+	if observation.Status == "failed" && !model.PipelineFailureEvidenceReady(observation.Jobs) {
+		// Keep collecting in the background when the pipeline is terminal but
+		// its actionable logs are not yet available. This never reruns a test.
+		closed = false
+	}
+	result := PollResult{HeadSHA: p.HeadSHA, Closed: closed, Cursor: target.Cursor}
+	if previous.Status != observation.Status || evidenceChanged {
 		previous.Status = observation.Status
 		previous.Seq++
 		result.Events = []model.SourceEvent{{Key: fmt.Sprintf("pipeline:%d:%d:%s", p.PipelineID, previous.Seq, observation.Status), Kind: "gitlab.pipeline", Entity: p.URL, HeadSHA: p.HeadSHA, URL: p.URL, Message: fmt.Sprintf("GitLab pipeline #%d：%s；被测 PR SHA：%s", p.PipelineID, observation.Status, p.HeadSHA), Pipeline: &observation}}

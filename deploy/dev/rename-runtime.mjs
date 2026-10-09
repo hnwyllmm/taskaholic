@@ -92,7 +92,7 @@ export function renameRuntime(control,spool,from,to){
       const raw=JSON.stringify(profile);
       updateProfile.run(to,typeof row.data_json==='string'?raw:Buffer.from(raw),row.agent_id);
     }
-    for(const table of ['runtime','session','run','run_token_usage'])control.prepare('UPDATE '+quote(table)+' SET runtime_id=? WHERE runtime_id=?').run(to,from);
+    for(const table of ['runtime','session','run','run_token_usage'])if(before[table])control.prepare('UPDATE '+quote(table)+' SET runtime_id=? WHERE runtime_id=?').run(to,from);
     if(before.execution_policy){
       assert.ok(!before.permission_request.some(r=>['PENDING','APPROVED'].includes(r.state)&&parse(r.data_json).runtime_id===from),'resolve execution permission requests before renaming runtime');
       for(const row of before.execution_policy.filter(p=>p.runtime_id===from)){

@@ -21,7 +21,7 @@ GitHub 使用 dev 上 `gh` 的现有身份，只执行 REST GET；只跟踪明�
 
 - 默认 5 秒一次；单控制端串行发起请求，实际周期也受请求耗时、目标数量与退避影响。
 - 保留 ETag、分页缓存，支持 304；遵守 X-Poll-Interval、Retry-After 和主限流恢复时间。限流门槛持久化到同类轮询目标，重启不立即冲击接口。这些行为遵循 [GitHub REST 最佳实践](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)。
-- 读取普通评论、代码评论、提交的 review、check runs 与传统 commit statuses。仅当前 head 的失败检查生成更新；同一检查重复失败状态不重复生成，重跑后的新失败可生成事件。
+- 读取普通评论、代码评论、提交的 review、check runs 与传统 commit statuses。当前 head 的失败检查生成开发任务更新；同一检查重复失败状态不重复生成，重跑后的新失败可生成事件。所有已观测检查连续两轮都处于终态且通过时生成一次 `github.ci_succeeded`，避免下游检查刚创建前的短暂空窗被误判为完成。
 - 首次登记前的旧评论不回放；编辑或新增评论可触发。旧 commit 的 inline 反馈、APPROVED/PENDING/DISMISSED review 和带 `<!-- work-assistant:... -->` 标记的自动回复被过滤。
 - 同账号可能既代表 Agent 又代表用户，因此不笼统屏蔽 PR 作者。若以后接入自动评论发布，发布方必须附带上述标记；未带标记的第三方自动回复不能可靠区分。
 - 对其余评论采取“产生待判断反馈”的策略，由原 Agent 判断是否需要修改或回复，而不是把每一句评论都当作强制改动。
@@ -59,7 +59,13 @@ Agent 的结构化交付可包含：
 
 暂时繁忙或离线不减少本轮评审职责，任务排队等待。没有独立候选成员时保留 PENDING 事件并显示 Router 错误，延迟重试，不把“无人评审”算作通过。默认每批最多 8 个角色；超限明确报错，不静默截断。评审子任务继承原任务冻结的团队资料。
 
-评审输入包含固定 SHA、PR 地址和评审要求，不内嵌 diff；GitHub 轮询器不再读取 PR files 接口。reviewer 自行读取固定版本的完整变更、上下文、讨论及 CI，并核对 PR head，不能把更新后的版本算作旧版本。读取不足时必须明确 blocked。交付后内部评审任务自动完成并生成总结；所有评审完成后把结论和报告摘录送回原 Agent。完整报告保留在各评审任务；摘录不是完整原文。
+评审输入包含固定 SHA、PR 地址和评审要求，不内嵌 diff；GitHub 轮询器不再读取 PR files 接口。reviewer 自行读取固定版本的完整变更、上下文和讨论，并核对 PR head，不能把更新后的版本算作旧版本。读取不足时必须明确 blocked。交付后内部评审任务自动完成并生成总结；所有评审完成后把结论和报告摘录送回原 Agent。完整报告保留在各评审任务；摘录不是完整原文。
+
+reviewer 只负责本角色的评审结论，不负责 CI。QA reviewer 如认为必要，可在返回 `passed` 或 `changes_requested` 时同时发起回归测试申请；评审子任务随即完成。GitHub CI 和 GitLab pipeline 由原开发任务跟踪：等待时原任务显示“等待 CI”，失败或通过后续接原开发 Agent / Session，不重开 reviewer。旧数据库中 `source_review.WAITING_TESTS` 的 reviewer 由后台自动续接原 Session，只补齐独立的 passed / changes_requested 结论；历史 Run 和输出不改写。
+
+Manager 对带 `*.review` 能力的 Codex Reviewer Run 自动选择网络已启用的独立权限配置。具有经 Manager 校验并持久化的 `antmultica.issue` 来源引用时，普通 Codex Agent 的受管只读 Run 也使用同一网络边界，以便读取原工单、评论、附件和状态；任务文本中的任意 URL 不能触发授权。可持久写入范围是该任务独立的 Session 工作目录；源码仓库位于其外，仍为只读。临时目录仍按 Codex 运行时约定作为短期 scratch 使用。该授权不等于允许评论、改状态、合并、发布或其它外部写入，也不扩展实现阶段、系统 Agent 或非 Codex Agent 的权限。Run 会持久化 `network_access=true` 供审计，Agent 不应再次申请该权限。dev 上供 Codex 模型通信的本地代理只允许 OpenAI 域名；读取 GitHub 或 AntMultica 时遵守对应 Skill，仅对读取命令使用直连网络，不得修改主机持久配置。
+
+AntMultica 状态回写不由任务源或工作 Agent 执行。根任务的业务 Agent 首个 Run 实际开始后，Manager 通过持久化外部动作队列把非终态原工单幂等推进到 `in_progress`（页面显示“进行中”）；排队阶段不写。动作使用 `multica issue status ... in_progress --no-start`，执行前后都核对固定工作区、工单、指派成员和状态，已评审或终态不会回退。状态变化的轮询回声只更新游标，不会成为一条新的业务输入。
 
 ## 任务来源链接
 

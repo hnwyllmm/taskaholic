@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -27,9 +28,20 @@ type githubCache struct {
 	Next string          `json:"next,omitempty"`
 }
 type githubCursor struct {
-	Head  string                 `json:"head,omitempty"`
-	Seen  map[string]bool        `json:"seen"`
-	Cache map[string]githubCache `json:"cache"`
+	Head                  string                 `json:"head,omitempty"`
+	Seen                  map[string]bool        `json:"seen"`
+	Cache                 map[string]githubCache `json:"cache"`
+	CIState               string                 `json:"ci_state,omitempty"`
+	CISuccessFingerprint  string                 `json:"ci_success_fingerprint,omitempty"`
+	CISuccessObservations int                    `json:"ci_success_observations,omitempty"`
+}
+
+type githubCIObservation struct {
+	Kind  string `json:"kind"`
+	ID    int64  `json:"id"`
+	Name  string `json:"name"`
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
 }
 
 var nextLink = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
@@ -240,13 +252,16 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 		return result, err
 	}
 	if p.cursor.Head != pr.Head.SHA {
+		p.cursor.CIState = "pending"
+		p.cursor.CISuccessFingerprint = ""
+		p.cursor.CISuccessObservations = 0
 		// Avoid keeping obsolete commit-specific caches forever.
 		for key := range p.cursor.Cache {
 			if strings.Contains(key, "/commits/") {
 				delete(p.cursor.Cache, key)
 			}
 		}
-		emit(model.SourceEvent{Key: "head:" + pr.Head.SHA, Kind: "github.head", HeadSHA: pr.Head.SHA, Title: cutBytes(pr.Title, 400), Message: fmt.Sprintf("PR: %s\n标题: %s\n版本: %s\n请 reviewer 自行读取此版本的完整变更、上下文及 CI。", canonical, cutBytes(pr.Title, 400), pr.Head.SHA)})
+		emit(model.SourceEvent{Key: "head:" + pr.Head.SHA, Kind: "github.head", HeadSHA: pr.Head.SHA, Title: cutBytes(pr.Title, 400), Message: fmt.Sprintf("PR: %s\n标题: %s\n版本: %s\n请 reviewer 自行读取此固定版本的完整变更、上下文及讨论后给出角色评审结论。CI 由原开发任务独立跟踪。", canonical, cutBytes(pr.Title, 400), pr.Head.SHA)})
 	}
 	ignore := map[string]bool{}
 	for _, login := range s.Config.IgnoreLogins {
@@ -303,6 +318,8 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 	}
 	commitPath := p.prefix + "commits/" + pr.Head.SHA
 	checkPath := commitPath + "/check-runs?filter=latest&per_page=100"
+	ciObservations := []githubCIObservation{}
+	ciPending, ciNonPassing := false, false
 	for page := 0; checkPath != ""; page++ {
 		if page >= 20 {
 			return result, fmt.Errorf("GitHub check-runs 分页过多")
@@ -330,12 +347,21 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 			return result, fmt.Errorf("GitHub check-runs 缺少结果列表")
 		}
 		for _, c := range checks.Items {
-			if c.HeadSHA != pr.Head.SHA || c.Status != "completed" {
+			if c.HeadSHA != pr.Head.SHA {
+				continue
+			}
+			ciObservations = append(ciObservations, githubCIObservation{Kind: "check", ID: c.ID, Name: c.Name, State: c.Status + ":" + c.Conclusion, URL: c.HTMLURL})
+			if c.Status != "completed" {
+				ciPending = true
 				continue
 			}
 			switch c.Conclusion {
-			case "failure", "timed_out", "action_required", "startup_failure":
+			case "success", "neutral", "skipped":
+				continue
+			case "failure", "timed_out", "action_required", "startup_failure", "cancelled", "stale":
+				ciNonPassing = true
 			default:
+				ciNonPassing = true
 				continue
 			}
 			key := fmt.Sprintf("check:%s:%d:%s:%s", pr.Head.SHA, c.ID, c.Conclusion, c.CompletedAt)
@@ -360,10 +386,66 @@ func (g *GitHub) Poll(ctx context.Context, s model.TaskSource, t model.SourceTar
 			continue
 		}
 		latest[st.Context] = true
-		if st.State != "failure" && st.State != "error" {
+		ciObservations = append(ciObservations, githubCIObservation{Kind: "status", ID: st.ID, Name: st.Context, State: st.State, URL: st.TargetURL})
+		switch st.State {
+		case "success":
+			continue
+		case "pending":
+			ciPending = true
+			continue
+		case "failure", "error":
+			ciNonPassing = true
+		default:
+			ciNonPassing = true
 			continue
 		}
 		emit(model.SourceEvent{Key: fmt.Sprintf("status:%s:%d", pr.Head.SHA, st.ID), Kind: "github.ci_failed", HeadSHA: pr.Head.SHA, Message: cutBytes(fmt.Sprintf("PR %s\n当前 commit %s 的状态检查失败：%s (%s)\n%s\n%s", canonical, pr.Head.SHA, st.Context, st.State, st.Description, st.TargetURL), 31000)})
+	}
+	// A single endpoint snapshot can briefly look complete before a downstream
+	// check appears. Require the same all-terminal, all-passing fingerprint in
+	// two consecutive polls before the root task may treat CI as successful. The
+	// durable state is a delivery gate; it never controls reviewer lifecycle.
+	if len(ciObservations) > 0 && !ciPending && !ciNonPassing {
+		sort.Slice(ciObservations, func(i, j int) bool {
+			if ciObservations[i].Kind != ciObservations[j].Kind {
+				return ciObservations[i].Kind < ciObservations[j].Kind
+			}
+			if ciObservations[i].Name != ciObservations[j].Name {
+				return ciObservations[i].Name < ciObservations[j].Name
+			}
+			return ciObservations[i].ID < ciObservations[j].ID
+		})
+		fingerprint := digest(ciObservations)
+		if p.cursor.CISuccessFingerprint == fingerprint {
+			if p.cursor.CISuccessObservations < 2 {
+				p.cursor.CISuccessObservations++
+			}
+		} else {
+			p.cursor.CISuccessFingerprint = fingerprint
+			p.cursor.CISuccessObservations = 1
+		}
+		if p.cursor.CISuccessObservations >= 2 {
+			p.cursor.CIState = "success"
+			emit(model.SourceEvent{
+				Key:     "ci-success:" + pr.Head.SHA + ":" + fingerprint,
+				Kind:    "github.ci_succeeded",
+				HeadSHA: pr.Head.SHA,
+				Message: cutBytes(fmt.Sprintf("PR %s\n当前 commit %s 的 %d 项 GitHub CI 检查均已完成并通过。这是原开发任务的交付门禁证据；请原 Agent 沿用原 Session 继续交付。Reviewer 结论不因 CI 成功而重开。", canonical, pr.Head.SHA, len(ciObservations)), 31000),
+			})
+		} else {
+			p.cursor.CIState = "pending"
+		}
+	} else {
+		p.cursor.CISuccessFingerprint = ""
+		p.cursor.CISuccessObservations = 0
+		switch {
+		case len(ciObservations) == 0:
+			p.cursor.CIState = "none"
+		case ciNonPassing:
+			p.cursor.CIState = "failed"
+		default:
+			p.cursor.CIState = "pending"
+		}
 	}
 	// The PR can be pushed while individual endpoints are being fetched.
 	// Never label a mixed snapshot's evidence with the wrong commit.

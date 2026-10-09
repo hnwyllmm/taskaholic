@@ -158,6 +158,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.store.MarkAllRuntimesOffline(ctx); err != nil {
 		return fmt.Errorf("reset stale runtime presence: %w", err)
 	}
+	if err := s.store.EnableAutomaticRecovery(ctx); err != nil {
+		return fmt.Errorf("enable automatic blocked-work recovery: %w", err)
+	}
 	dispatchCtx, cancelDispatch := context.WithCancel(ctx)
 	defer cancelDispatch()
 	if s.config.Backups != nil {

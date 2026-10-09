@@ -108,7 +108,7 @@ func saveUpgradeTx(ctx context.Context, tx *sql.Tx, u *model.Upgrade, event stri
 	if _, err = tx.ExecContext(ctx, `UPDATE upgrade_job SET state=?,data_json=? WHERE upgrade_id=?`, u.State, raw, u.ID); err != nil {
 		return err
 	}
-	_, err = appendEventTx(ctx, tx, "upgrade", u.ID, event, "", u.ID, map[string]any{"state": u.State, "version": u.Version, "candidate_sha256": u.CandidateSHA256, "error": u.Error})
+	_, err = appendEventTx(ctx, tx, "upgrade", u.ID, event, "", u.ID, map[string]any{"state": u.State, "version": u.Version, "candidate_sha256": u.CandidateSHA256, "restart_scope": u.RestartScope, "error": u.Error})
 	return err
 }
 
@@ -189,7 +189,7 @@ func (s *Store) RequestUpgradeInstall(ctx context.Context, upgradeID string, ver
 	}
 	return u, tx.Commit()
 }
-func (s *Store) BeginUpgradeInstall(ctx context.Context, upgradeID string) (model.Upgrade, error) {
+func (s *Store) BeginUpgradeInstall(ctx context.Context, upgradeID string, controlRestartSupported bool) (model.Upgrade, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -204,12 +204,17 @@ func (s *Store) BeginUpgradeInstall(ctx context.Context, upgradeID string) (mode
 	if u.State != "WAITING_IDLE" {
 		return u, fmt.Errorf("%w: upgrade is not draining", model.ErrConflict)
 	}
-	var active int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run WHERE state IN ('QUEUED','RUNNING')`).Scan(&active); err != nil {
-		return u, err
-	}
-	if active > 0 {
-		return u, fmt.Errorf("%w: 等待 %d 个运行结束", model.ErrConflict, active)
+	// A split deployment can restart assistantd while assistant-runtime keeps
+	// executing active Agents and durably spools their events. Runtime-affecting
+	// and legacy candidates still require a complete drain.
+	if u.RestartScope != model.UpgradeRestartControl || !controlRestartSupported {
+		var active int
+		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run WHERE state IN ('QUEUED','RUNNING')`).Scan(&active); err != nil {
+			return u, err
+		}
+		if active > 0 {
+			return u, fmt.Errorf("%w: 等待 %d 个运行结束", model.ErrConflict, active)
+		}
 	}
 	u.State = "INSTALLING"
 	if err = saveUpgradeTx(ctx, tx, &u, "UpgradeInstalling"); err != nil {

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"work-assistant/internal/backup"
 	"work-assistant/internal/id"
 	"work-assistant/internal/localconfig"
 	"work-assistant/internal/model"
@@ -28,10 +29,18 @@ import (
 	"work-assistant/internal/upgrade"
 )
 
+// assistant-local creates and verifies a recovery point before it starts the
+// HTTP server. That work scales with the live databases and retention backlog,
+// so a short process-start timeout eventually turns successful backup work into
+// an endless restart loop. Keep this distinct from the much shorter health
+// checks used while installing an already-drained upgrade candidate.
+const initialWorkspaceHealthTimeout = 90 * time.Second
+
 type options struct {
 	root              string
 	dataDir           string
 	listen            string
+	controlURL        string
 	runtimeID         string
 	modelID           string
 	codexBinary       string
@@ -79,7 +88,7 @@ func run() error {
 	if o.root == string(filepath.Separator) || o.dataDir == string(filepath.Separator) {
 		return errors.New("root and data directory must not be the filesystem root")
 	}
-	if _, err = localconfig.ControlURL(o.listen, o.allowRemote, o.noAPIAuth, os.Getenv("ASSISTANT_API_TOKEN"), os.Getenv("ASSISTANT_RUNTIME_TOKEN")); err != nil {
+	if o.controlURL, err = localconfig.ControlURL(o.listen, o.allowRemote, o.noAPIAuth, os.Getenv("ASSISTANT_API_TOKEN"), os.Getenv("ASSISTANT_RUNTIME_TOKEN")); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(o.dataDir, 0o700); err != nil {
@@ -154,7 +163,7 @@ func run() error {
 	if err := child.Start(); err != nil {
 		return err
 	}
-	if err := waitHealthy(ctx, o.listen, o.instanceID, 12*time.Second); err != nil {
+	if err := waitHealthy(ctx, o.listen, o.instanceID, initialWorkspaceHealthTimeout); err != nil {
 		return fmt.Errorf("start local workspace: %w", err)
 	}
 
@@ -182,7 +191,7 @@ func run() error {
 					}
 					goto nextTick
 				case "WAITING_IDLE":
-					installing, beginErr := state.BeginUpgradeInstall(ctx, item.ID)
+					installing, beginErr := state.BeginUpgradeInstall(ctx, item.ID, child.SupportsControlRestart())
 					if beginErr == nil {
 						if err := install(ctx, state, manager, child, installing, o.listen); err != nil {
 							return err
@@ -257,16 +266,52 @@ func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, 
 			return state.FinishUpgrade(ctx, item.ID, "SUCCEEDED", "", manager.BackupPath(item.ID))
 		}
 	}
+	controlOnly := item.RestartScope == model.UpgradeRestartControl && child.SupportsControlRestart()
+	stopChild := child.Stop
+	startChild := child.Start
+	if controlOnly {
+		stopChild = child.StopControl
+		startChild = child.StartControl
+	}
+	stopped := false
+	stop := func() error {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		err := stopChild(stopCtx)
+		stopped = true // Stop either completed or escalated to SIGKILL before returning.
+		return err
+	}
+	resumeOld := func() error {
+		if !stopped {
+			return nil
+		}
+		if err := startChild(); err != nil {
+			return err
+		}
+		return waitHealthy(ctx, listen, child.options.instanceID, initialWorkspaceHealthTimeout)
+	}
+	// With active Runs, close the control connection before copying either
+	// database. The Runtime keeps Agents alive and spools new events, while no
+	// event can be acknowledged by control between the two SQLite snapshots.
+	if controlOnly {
+		if err := stop(); err != nil {
+			if resumeErr := resumeOld(); resumeErr != nil || recovering {
+				return recordRecoveryFailure(state, item, fmt.Errorf("stop control: %v; resume: %v", err, resumeErr))
+			}
+			return state.FinishUpgrade(ctx, item.ID, "FAILED", "stop control: "+err.Error(), "")
+		}
+	}
 	backup, err := manager.Backup(ctx, state, item)
 	if err != nil {
-		if recovering {
-			return recordRecoveryFailure(state, item, err)
+		resumeErr := resumeOld()
+		if recovering || resumeErr != nil {
+			return recordRecoveryFailure(state, item, fmt.Errorf("backup: %v; resume: %v", err, resumeErr))
 		}
 		return state.FinishUpgrade(ctx, item.ID, "FAILED", "backup: "+err.Error(), "")
 	}
-	stopCtx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
-	err = child.Stop(stopCtx)
-	cancel()
+	if !stopped {
+		err = stop()
+	}
 	if err == nil {
 		err = manager.Apply(item)
 	}
@@ -274,7 +319,7 @@ func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, 
 		err = errors.New("installed release does not match the approved candidate")
 	}
 	if err == nil {
-		err = child.Start()
+		err = startChild()
 	}
 	if err == nil {
 		err = waitHealthy(ctx, listen, child.options.instanceID, 20*time.Second)
@@ -284,13 +329,13 @@ func install(ctx context.Context, state *store.Store, manager *upgrade.Manager, 
 	}
 	installErr := err
 	rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 12*time.Second)
-	rollbackErr := child.Stop(rollbackCtx)
+	rollbackErr := stopChild(rollbackCtx)
 	rollbackCancel()
 	if rollbackErr == nil {
 		rollbackErr = manager.Rollback(item)
 	}
 	if rollbackErr == nil {
-		rollbackErr = child.Start()
+		rollbackErr = startChild()
 	}
 	if rollbackErr == nil {
 		rollbackErr = waitHealthy(ctx, listen, child.options.instanceID, 20*time.Second)
@@ -387,14 +432,29 @@ func releaseSupervisorLock(file *os.File) {
 }
 
 type childController struct {
-	mu       sync.Mutex
-	options  options
-	command  *exec.Cmd
-	done     chan error
-	stopping bool
+	mu              sync.Mutex
+	options         options
+	command         *exec.Cmd // assistantd in split mode; assistant-local in legacy mode
+	done            chan error
+	runtimeCommand  *exec.Cmd
+	runtimeDone     chan error
+	split           bool
+	stopping        bool
+	controlStopping bool
+	runtimeStopping bool
 }
 
-func newChildController(o options) *childController { return &childController{options: o} }
+func newChildController(o options) *childController {
+	c := &childController{options: o}
+	c.split = c.splitAvailable()
+	return c
+}
+
+func (c *childController) SupportsControlRestart() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.split
+}
 
 func (c *childController) childArgs() []string {
 	args := []string{
@@ -421,11 +481,67 @@ func (c *childController) childArgs() []string {
 	return args
 }
 
-func (c *childController) startLocked() error {
-	if c.command != nil {
-		return nil
+func (c *childController) controlArgs() []string {
+	args := []string{
+		"--db", filepath.Join(c.options.dataDir, "control.sqlite"),
+		"--runtime-db", filepath.Join(c.options.dataDir, "runtime.sqlite"),
+		"--runtime-id", c.options.runtimeID,
+		"--listen", c.options.listen,
+		"--adapter", c.options.adapterID,
+		"--model", c.options.modelID,
+		"--supervisor-instance", c.options.instanceID,
+		"--upgrade-validation-sandbox", c.options.validationSandbox,
+		"--upgrade-enabled",
 	}
-	binary := filepath.Join(c.options.root, "bin", "assistant-local")
+	if c.options.allowRemote {
+		args = append(args, "--allow-remote")
+	}
+	if c.options.noAPIAuth {
+		args = append(args, "--no-api-auth")
+	}
+	return args
+}
+
+func (c *childController) runtimeArgs() []string {
+	return []string{
+		"--runtime-id", c.options.runtimeID,
+		"--control-url", c.options.controlURL,
+		"--spool", filepath.Join(c.options.dataDir, "runtime.sqlite"),
+		"--work-root", filepath.Join(c.options.dataDir, "workspaces"),
+		"--codex-binary", c.options.codexBinary,
+		"--codex-sandbox", "read-only",
+		"--cursor-binary", c.options.cursorBinary,
+		"--disable-backups",
+	}
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode()&0o111 != 0
+}
+
+func (c *childController) splitAvailable() bool {
+	return executable(filepath.Join(c.options.root, "bin", "assistantd")) &&
+		executable(filepath.Join(c.options.root, "bin", "assistant-runtime"))
+}
+
+func waitRuntimeSpool(path string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	var last error
+	for {
+		if last = backup.VerifySQLite(ctx, path); last == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("runtime spool did not become ready: %w", last)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func childCommand(binary string, args []string) *exec.Cmd {
 	var command *exec.Cmd
 	if runtime.GOOS == "darwin" {
 		// Recent macOS releases can SIGKILL a locally ad-hoc-signed Mach-O
@@ -436,48 +552,89 @@ func (c *childController) startLocked() error {
 child=$!
 trap 'kill -TERM "$child" 2>/dev/null; wait "$child"; exit 0' TERM INT
 wait "$child"`
-		arguments := append([]string{"-c", script, "assistant-supervisor-child", binary}, c.childArgs()...)
+		arguments := append([]string{"-c", script, "assistant-supervisor-child", binary}, args...)
 		command = exec.Command("/bin/sh", arguments...)
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	} else {
-		command = exec.Command(binary, c.childArgs()...)
+		command = exec.Command(binary, args...)
 		command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
+	return command
+}
+
+func (c *childController) startOneLocked(kind, binary string, args []string) error {
+	if kind == "runtime" {
+		if c.runtimeCommand != nil {
+			return nil
+		}
+	} else if c.command != nil {
+		return nil
+	}
+	command := childCommand(binary, args)
 	command.Dir = c.options.root
 	command.Env = os.Environ()
 	command.Stdout, command.Stderr = os.Stdout, os.Stderr
 	if err := command.Start(); err != nil {
 		return err
 	}
-	slog.Info("local workspace process started", "pid", command.Process.Pid, "instance", c.options.instanceID)
+	slog.Info("local workspace process started", "component", kind, "pid", command.Process.Pid, "instance", c.options.instanceID)
 	done := make(chan error, 1)
-	c.command, c.done, c.stopping = command, done, false
+	if kind == "runtime" {
+		c.runtimeCommand, c.runtimeDone, c.runtimeStopping = command, done, false
+	} else {
+		c.command, c.done, c.controlStopping = command, done, false
+	}
 	go func() {
 		err := command.Wait()
 		c.mu.Lock()
-		if c.command == command {
-			c.command = nil
-		}
 		intentional := c.stopping
+		if kind == "runtime" {
+			if c.runtimeCommand == command {
+				c.runtimeCommand = nil
+			}
+			intentional = intentional || c.runtimeStopping
+		} else {
+			if c.command == command {
+				c.command = nil
+			}
+			intentional = intentional || c.controlStopping
+		}
 		c.mu.Unlock()
 		done <- err
 		if !intentional {
 			if err == nil {
-				slog.Warn("local workspace stopped unexpectedly; supervisor will restart it")
+				slog.Warn("local workspace component stopped unexpectedly; supervisor will restart it", "component", kind)
 			} else {
-				slog.Error("local workspace exited; supervisor will restart it", "error", err)
+				slog.Error("local workspace component exited; supervisor will restart it", "component", kind, "error", err)
 			}
 		} else {
-			slog.Info("local workspace process stopped", "error", err)
+			slog.Info("local workspace process stopped", "component", kind, "error", err)
 		}
 	}()
 	return nil
 }
 
+func (c *childController) startLocked() error {
+	if c.split {
+		// Create/open the spool first so assistantd's mandatory verified recovery
+		// point can include both databases. The runtime reconnects until
+		// the control listener becomes available.
+		if err := c.startOneLocked("runtime", filepath.Join(c.options.root, "bin", "assistant-runtime"), c.runtimeArgs()); err != nil {
+			return err
+		}
+		if err := waitRuntimeSpool(filepath.Join(c.options.dataDir, "runtime.sqlite"), 10*time.Second); err != nil {
+			return err
+		}
+		return c.startOneLocked("control", filepath.Join(c.options.root, "bin", "assistantd"), c.controlArgs())
+	}
+	return c.startOneLocked("combined", filepath.Join(c.options.root, "bin", "assistant-local"), c.childArgs())
+}
+
 func (c *childController) Start() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.stopping = false
+	c.split = c.splitAvailable()
+	c.stopping, c.controlStopping, c.runtimeStopping = false, false, false
 	return c.startLocked()
 }
 
@@ -487,18 +644,24 @@ func (c *childController) Ensure() error {
 	if c.stopping {
 		return nil
 	}
+	// Do not switch a running legacy process merely because new binaries were
+	// installed. Split mode is selected only at an intentional Start boundary.
 	return c.startLocked()
 }
 
-func (c *childController) Stop(ctx context.Context) error {
+func (c *childController) stopOne(ctx context.Context, runtimeChild bool) error {
 	c.mu.Lock()
 	command, done := c.command, c.done
+	if runtimeChild {
+		command, done = c.runtimeCommand, c.runtimeDone
+		c.runtimeStopping = true
+	} else {
+		c.controlStopping = true
+	}
 	if command == nil {
-		c.stopping = true
 		c.mu.Unlock()
 		return nil
 	}
-	c.stopping = true
 	err := signalChild(command, syscall.SIGTERM)
 	c.mu.Unlock()
 	if err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -512,6 +675,54 @@ func (c *childController) Stop(ctx context.Context) error {
 		<-done
 		return ctx.Err()
 	}
+}
+
+// RestartControl leaves assistant-runtime and every active Agent subprocess
+// alive. The runtime reconnect loop buffers events in runtime.sqlite until the
+// new control process is ready.
+func (c *childController) StopControl(ctx context.Context) error {
+	c.mu.Lock()
+	split := c.split
+	c.mu.Unlock()
+	if !split {
+		return c.Stop(ctx)
+	}
+	return c.stopOne(ctx, false)
+}
+
+func (c *childController) StartControl() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.split {
+		c.stopping, c.controlStopping = false, false
+		return c.startLocked()
+	}
+	c.controlStopping = false
+	return c.startOneLocked("control", filepath.Join(c.options.root, "bin", "assistantd"), c.controlArgs())
+}
+
+func (c *childController) RestartControl(ctx context.Context) error {
+	if err := c.StopControl(ctx); err != nil {
+		return err
+	}
+	return c.StartControl()
+}
+
+func (c *childController) Stop(ctx context.Context) error {
+	c.mu.Lock()
+	c.stopping = true
+	split := c.split
+	c.mu.Unlock()
+	var first error
+	if err := c.stopOne(ctx, false); first == nil {
+		first = err
+	}
+	if split {
+		if err := c.stopOne(ctx, true); first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func signalChild(command *exec.Cmd, signal syscall.Signal) error {

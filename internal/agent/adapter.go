@@ -12,6 +12,7 @@ type Event struct {
 	Execution       *model.ExecutionSettings
 	Activity        *model.Action
 	Usage           *model.TokenUsage
+	Attributes      map[string]any
 	Type            string
 	Message         string
 	Stream          string

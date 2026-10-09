@@ -13,11 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"work-assistant/internal/agent"
 	"work-assistant/internal/backup"
-	"work-assistant/internal/model"
+	"work-assistant/internal/localworkspace"
 	"work-assistant/internal/runtimehost"
 	"work-assistant/internal/server"
 	"work-assistant/internal/store"
@@ -100,7 +99,9 @@ func run() error {
 	results := make(chan error, 3)
 	go func() { results <- control.Run(ctx) }()
 	go func() { results <- d.Run(ctx) }()
-	go func() { results <- bootstrap(ctx, state, *runtimeID, *modelID, *listen, adapters[0].Name()) }()
+	go func() {
+		results <- localworkspace.Bootstrap(ctx, state, *runtimeID, *modelID, *listen, adapters[0].Name())
+	}()
 	for i := 0; i < 3; i++ {
 		e := <-results
 		if e != nil {
@@ -146,66 +147,8 @@ func localAdapter(adapterID, codexBinary, cursorBinary string) (agent.Adapter, e
 	}
 }
 
-func bootstrap(ctx context.Context, s *store.Store, runtimeID, modelID, listen, adapterID string) error {
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			runtimes, err := s.ListRuntimes(ctx)
-			if err != nil {
-				return err
-			}
-			ready := false
-			for _, r := range runtimes {
-				if r.ID == runtimeID && r.State == "ONLINE" {
-					ready = true
-				}
-			}
-			if !ready {
-				continue
-			}
-			// Resolve stable setup identity before inspecting display names. A user
-			// renaming the helper must not cause a duplicate Agent on restart.
-			draft, err := s.CreateRoleDraft(ctx, "本机个人工作助手", "", "local-helper-role:"+runtimeID)
-			if err != nil {
-				return err
-			}
-			agents, err := s.ListAgents(ctx)
-			if err != nil {
-				return err
-			}
-			for _, a := range agents {
-				if draft.PublishedRoleID != "" && a.RoleID == draft.PublishedRoleID && a.RuntimeID == runtimeID {
-					slog.Info("local workspace ready", "url", "http://"+listen+"/", "agent", a.Name, "model", a.ModelID)
-					<-ctx.Done()
-					return nil
-				}
-			}
-			// Idempotent draft creation makes interrupted first-time setup resumable.
-			if draft.State != "PUBLISHED" {
-				draft, err = s.UpdateRoleDraft(ctx, draft.ID, draft.Version, model.RoleSpec{Name: "日常工作助手", Description: "根据已有材料撰写文档、整理分析、提出代码建议，提交给人验收。", Capabilities: []string{"document.write", "analysis", "code.suggest"}, Instructions: "理解任务及已有资料，必要时先提问；给出准确、清晰且可验证的交付结果。收到意见后修改原有产物。", OutputContract: "提供简短说明和完整的文档或文本文件；事实与推测分开；未执行的验证明确标注。", Boundaries: []string{"不自行修改、发布或合并仓库", "不对外发送消息", "完成后交由人验收"}})
-				if err != nil {
-					return err
-				}
-			}
-			role, err := s.PublishRoleDraft(ctx, draft.ID, draft.Version)
-			if err != nil {
-				return err
-			}
-			name := "本机工作助手"
-			if adapterID == "cursor-agent" {
-				name = "Cursor 工作助手"
-			}
-			_, err = s.CreateAgent(ctx, model.AgentProfile{Name: name, RoleID: role.ID, RuntimeID: runtimeID, AdapterID: adapterID, ModelID: modelID, MaxConcurrent: 1})
-			if err != nil {
-				return err
-			}
-			slog.Info("local workspace ready", "url", "http://"+listen+"/", "model", modelID, "permissions", "read-only")
-			<-ctx.Done()
-			return nil
-		}
-	}
+// Keep the package-local seam used by the original bootstrap tests while the
+// implementation is shared with the split assistantd process.
+func bootstrap(ctx context.Context, state *store.Store, runtimeID, modelID, listen, adapterID string) error {
+	return localworkspace.Bootstrap(ctx, state, runtimeID, modelID, listen, adapterID)
 }

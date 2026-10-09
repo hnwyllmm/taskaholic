@@ -141,10 +141,10 @@ func TestReviewPublicationStickyAcrossHeadsAndAppendOnlyHistory(t *testing.T) {
 	}
 }
 
-func TestReviewCommentCannotInheritRequiredTestsFromOlderCommit(t *testing.T) {
+func TestReviewerVerdictIsIndependentFromRootTestGateAcrossCommits(t *testing.T) {
 	ctx := context.Background()
 	s, _, parent, _, _, first, target := qaTestFixture(t)
-	testSubmission(t, s, first, 3, initialTestRequest(target))
+	testSubmission(t, s, first, 3, initialTestRequest(target), "passed")
 	source, err := s.GetTaskSource(ctx, target.SourceID)
 	if err != nil {
 		t.Fatal(err)
@@ -174,8 +174,11 @@ func TestReviewCommentCannotInheritRequiredTestsFromOlderCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	all, err := s.ListPublications(ctx, parent.ID)
-	if err != nil || len(all) != 1 || all[0].Verdict == "passed" || !strings.Contains(all[0].Body, "required tests have not succeeded") {
+	if err != nil || len(all) != 1 || all[0].Verdict != "passed" || !strings.Contains(all[0].Body, "separate delivery gates") {
 		t.Fatal(all, err)
+	}
+	if err = s.sourceWrite(ctx, func(tx *sql.Tx) error { return guardTestPipelinesTx(ctx, tx, parent.ID) }); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("independent reviewer pass bypassed the root test gate", err)
 	}
 }
 func TestPublicationAmbiguityKeepsAttemptedBodyAndBlocksPrematureAcceptance(t *testing.T) {
@@ -336,6 +339,54 @@ func TestOriginalIssueStructuredWritebackAndBindingGuards(t *testing.T) {
 	}
 }
 
+func TestAntMulticaStatusProjectionStartsOnlyAfterBusinessRunStarts(t *testing.T) {
+	ctx := context.Background()
+	s, dev, _, _ := developmentFixture(t)
+	source := saveTestSource(t, s, "antmultica")
+	targets, err := s.ListSourceTargets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pollStore(t, s, source, targets[0], "", model.SourceEvent{Key: "issue:status:v1", Kind: "antmultica.issue", Entity: "antmultica:workspace:status-issue", Title: "SEEK-2 request", Message: "Original request", URL: "https://antmultica.alipay.com/seekdb/issues/status-issue"})
+	events, err := s.ListSourceEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := s.GetTask(ctx, events[len(events)-1].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := startWork(t, s, dev, task)
+	if err = s.ReconcilePublications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if publications, _ := s.ListPublications(ctx, task.ID); len(publications) != 0 {
+		t.Fatal("queued run changed source status before the Agent started", publications)
+	}
+	if _, err = s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: run.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 1, RunID: run.ID, TaskID: task.ID, Type: "run.started"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ReconcilePublications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	publications, err := s.ListPublications(ctx, task.ID)
+	if err != nil || len(publications) != 1 {
+		t.Fatal(publications, err)
+	}
+	p := publications[0]
+	if p.Platform != "antmultica" || p.DesiredStatus != "in_progress" || p.Body != "" || p.URL != "https://antmultica.alipay.com/seekdb/issues/status-issue" || p.State != "QUEUED" {
+		t.Fatal("wrong status action", p)
+	}
+	version := p.Version
+	if err = s.ReconcilePublications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	publications, _ = s.ListPublications(ctx, task.ID)
+	if len(publications) != 1 || publications[0].Version != version {
+		t.Fatal("status action was duplicated", publications)
+	}
+}
+
 func TestIssueLegacyDeliveryDoesNotBackfill(t *testing.T) {
 	ctx := context.Background()
 	s, agent, task := workFixture(t)
@@ -469,6 +520,29 @@ func TestIssuePlansPublishOnlyAfterHumanApproval(t *testing.T) {
 		}
 	}
 	checkCount(5)
+}
+
+func TestGitHubReviewIdentityLabelsAndEscaping(t *testing.T) {
+	for _, test := range []struct {
+		capabilities []string
+		want         string
+	}{
+		{[]string{"architecture.review", "design.review"}, "Architecture reviewer"},
+		{[]string{"qa.review", "test.review"}, "QA / test reviewer"},
+		{[]string{"code.review", "performance.review"}, "General code reviewer"},
+		{[]string{"security.review"}, "Security reviewer"},
+		{[]string{"seekdb.review"}, "Independent reviewer"},
+	} {
+		role := model.Role{RoleSpec: model.RoleSpec{Capabilities: test.capabilities}}
+		if got := githubReviewDiscipline(role); got != test.want {
+			t.Fatalf("discipline=%q want=%q", got, test.want)
+		}
+	}
+	got := githubReviewIdentityText("Reviewer\n[click](https://example.com) @team `code`_x")
+	want := "Reviewer \\[click\\](https://example.com) &#64;team \\`code\\`\\_x"
+	if got != want {
+		t.Fatalf("escaped identity=%q want=%q", got, want)
+	}
 }
 
 func TestIssuePlanPublicationLegacyAndFastImplementation(t *testing.T) {

@@ -260,12 +260,28 @@ func requestAgentCapabilityTx(ctx context.Context, tx *sql.Tx, taskID, runID str
 	return savePermissionTx(ctx, tx, &r, "ExecutionPermissionRequested")
 }
 
-// approvedAgentCapabilitiesTx attaches a previously human/policy-approved
-// one-shot grant to the next run. It never broadens a different Agent, runtime,
-// repository or approved plan.
+// approvedAgentCapabilitiesTx attaches remembered policy grants and previously
+// approved one-shot grants to the next run. It never broadens a different Agent,
+// runtime, repository or approved plan.
 func approvedAgentCapabilitiesTx(ctx context.Context, tx *sql.Tx, req *CreateRunRequest) ([]model.PermissionRequest, error) {
 	if req.ExecutionGrant == nil {
 		return nil, nil
+	}
+	// A remembered allow policy is a real pre-authorization, not merely an
+	// automatic answer after an Agent has already failed once. Apply it to every
+	// new matching Run while keeping the repository/runtime/plan grant frozen.
+	preauthorized := []string{}
+	for _, capability := range []string{"network_access", "host_full_access"} {
+		operation, _ := agentCapabilityOperation(capability)
+		effect, err := policyEffectTx(ctx, tx, model.PermissionRequest{
+			Operation: operation, RuntimeID: req.RuntimeID, Repository: req.ExecutionGrant.Repository,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if effect == "allow" {
+			preauthorized = append(preauthorized, capability)
+		}
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT data_json FROM permission_request WHERE task_id=? AND state='APPROVED' ORDER BY rowid`, req.TaskID)
 	if err != nil {
@@ -273,6 +289,15 @@ func approvedAgentCapabilitiesTx(ctx context.Context, tx *sql.Tx, req *CreateRun
 	}
 	defer rows.Close()
 	seen := map[string]bool{}
+	for _, capability := range req.ExecutionGrant.Capabilities {
+		seen[capability] = true
+	}
+	for _, capability := range preauthorized {
+		if !seen[capability] {
+			req.ExecutionGrant.Capabilities = append(req.ExecutionGrant.Capabilities, capability)
+			seen[capability] = true
+		}
+	}
 	var approved []model.PermissionRequest
 	for rows.Next() {
 		var raw []byte
@@ -299,7 +324,18 @@ func approvedAgentCapabilitiesTx(ctx context.Context, tx *sql.Tx, req *CreateRun
 	if err = rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(approved) > 0 {
+	if seen["host_full_access"] {
+		// Host access already includes networking. Keep the effective grant
+		// minimal and unambiguous for adapters and audit output.
+		capabilities := req.ExecutionGrant.Capabilities[:0]
+		for _, capability := range req.ExecutionGrant.Capabilities {
+			if capability != "network_access" {
+				capabilities = append(capabilities, capability)
+			}
+		}
+		req.ExecutionGrant.Capabilities = capabilities
+	}
+	if len(req.ExecutionGrant.Capabilities) > 0 {
 		req.Instructions += "\n本轮已获得人工或预授权批准的 Codex 能力：" + strings.Join(req.ExecutionGrant.Capabilities, ", ") + "。只用于完成当前已批准方案，如实记录外部副作用。\n"
 	}
 	return approved, nil
@@ -484,6 +520,126 @@ func (s *Store) DecidePermission(ctx context.Context, requestID string, version 
 		}
 		return savePermissionTx(ctx, tx, &r, "ExecutionPermissionDecided")
 	})
+}
+
+// GrantTaskCapability lets a user recover an implementation that stopped before
+// the Agent emitted a structured capability_request. It is deliberately narrow:
+// the user chooses one registered capability, and the grant stays bound to the
+// current task, original session, runtime, repository and human-approved plan.
+// It does not infer a capability from an error message or grant shell/sudo
+// privileges.
+func (s *Store) GrantTaskCapability(ctx context.Context, taskID string, expected int64, capability string, remember bool) (model.PermissionRequest, error) {
+	var granted model.PermissionRequest
+	operation, ok := agentCapabilityOperation(capability)
+	if !ok {
+		return granted, fmt.Errorf("%w: unsupported task capability", model.ErrValidation)
+	}
+	if maintenance, err := s.Maintenance(ctx); err != nil {
+		return granted, err
+	} else if maintenance != "" {
+		return granted, fmt.Errorf("%w: maintenance active", model.ErrConflict)
+	}
+	err := s.sourceWrite(ctx, func(tx *sql.Tx) error {
+		task, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if task.Version != expected || task.State != model.TaskStateBlocked {
+			return fmt.Errorf("%w: refresh the task; manual capability approval requires its current blocked version", model.ErrConflict)
+		}
+		if _, err = scanWork(tx.QueryRowContext(ctx, workSelect+` WHERE task_id=?`, taskID)); err != nil {
+			return err
+		}
+		d, err := developmentTx(ctx, tx, taskID)
+		if err != nil {
+			return fmt.Errorf("%w: manual capability approval is only available during approved implementation", model.ErrConflict)
+		}
+		if d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "" || d.PlanHash == "" || d.Repository == "" {
+			return fmt.Errorf("%w: manual capability approval requires an unchanged approved implementation", model.ErrConflict)
+		}
+		review, err := readJSONRow[model.Review](tx.QueryRowContext(ctx, `SELECT data_json FROM review WHERE review_id=? AND task_id=?`, d.ApprovedReviewID, taskID))
+		if err != nil {
+			return err
+		}
+		if review.State != "PLAN_APPROVED" || review.PlanHash != d.PlanHash || review.RunID != d.PlanRunID {
+			return fmt.Errorf("%w: approved plan changed", model.ErrConflict)
+		}
+		session, err := getActiveSessionTx(ctx, tx, taskID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("%w: original Agent session is unavailable", model.ErrConflict)
+			}
+			return err
+		}
+		if session.State != "ACTIVE" {
+			return fmt.Errorf("%w: original Agent session is no longer active", model.ErrConflict)
+		}
+		var busy bool
+		if err = tx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING'
+				UNION ALL SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')
+				UNION ALL SELECT 1 FROM permission_request WHERE task_id=? AND state='PENDING'
+			)`, taskID, taskID, taskID).Scan(&busy); err != nil {
+			return err
+		}
+		if busy {
+			return fmt.Errorf("%w: the task already has pending work or a permission request; refresh and use that request", model.ErrConflict)
+		}
+		granted = model.PermissionRequest{
+			TaskID: taskID, Title: task.Title, AgentID: session.AgentID, RuntimeID: session.RuntimeID,
+			Operation: operation, Repository: d.Repository, PlanHash: d.PlanHash, ReviewID: d.ApprovedReviewID,
+			State: "APPROVED", Reason: "用户在任务页主动授权；Agent 未提交结构化 capability_request。仅用于当前已批准方案和原 Session。",
+			CreatedAtMS: time.Now().UnixMilli(),
+		}
+		raw, _ := json.Marshal([]any{"manual-task-capability-v1", taskID, task.Version, session.ID, session.AgentID, session.RuntimeID, operation, d.Repository, d.PlanHash, d.ApprovedReviewID})
+		hash := sha256.Sum256(raw)
+		granted.Fingerprint = hex.EncodeToString(hash[:])
+		var existing string
+		err = tx.QueryRowContext(ctx, `SELECT request_id FROM permission_request WHERE fingerprint=?`, granted.Fingerprint).Scan(&existing)
+		if err == nil {
+			return fmt.Errorf("%w: this capability approval was already recorded; refresh the task", model.ErrConflict)
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+		effect, err := policyEffectTx(ctx, tx, granted)
+		if err != nil {
+			return err
+		}
+		if effect == "deny" {
+			return fmt.Errorf("%w: the current execution policy denies this capability; change the policy before approving it", model.ErrConflict)
+		}
+		if remember {
+			policy := model.ExecutionPolicy{Operation: operation, RuntimeID: session.RuntimeID, Repository: d.Repository, Effect: "allow"}
+			old, lookup := readJSONRow[model.ExecutionPolicy](tx.QueryRowContext(ctx, `SELECT data_json FROM execution_policy WHERE operation=? AND runtime_id=? AND repository=?`, policy.Operation, policy.RuntimeID, policy.Repository))
+			if lookup == nil {
+				policy.Version = old.Version
+			} else if lookup != sql.ErrNoRows {
+				return lookup
+			}
+			if _, err = savePolicyTx(ctx, tx, policy); err != nil {
+				return err
+			}
+		}
+		message := "用户已在任务页主动授权运行能力：" + capability + "。请沿用原 Session、当前已批准方案和既有工作树继续；这不是需求或方案变更。只将此能力用于必要步骤，并如实记录外部副作用。"
+		if _, err = insertMessageTx(ctx, tx, taskID, "system", message, "", "PENDING"); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=0,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, taskID); err != nil {
+			return err
+		}
+		if err = setWorkStateTx(ctx, tx, taskID, model.TaskStateQueued); err != nil {
+			return err
+		}
+		fresh, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		granted.TaskVersion = fresh.Version
+		return savePermissionTx(ctx, tx, &granted, "ExecutionPermissionManuallyGranted")
+	})
+	return granted, err
 }
 
 // Explicitly re-evaluate a waiting request after policy/runtime configuration changes.

@@ -65,6 +65,18 @@ func TestAntMulticaExactFilterPaginationAndNoReplay(t *testing.T) {
 	if err != nil || len(second.Events) != 0 {
 		t.Fatal("replayed unchanged work", second, err)
 	}
+	matching.Status = "in_progress"
+	matching.StatusCategory = "in_progress"
+	statusOnly, err := provider.Poll(context.Background(), source, target)
+	if err != nil || len(statusOnly.Events) != 0 || string(statusOnly.Cursor) == string(target.Cursor) {
+		t.Fatal("status-only lifecycle writeback became new work", statusOnly, err)
+	}
+	target.Cursor = statusOnly.Cursor
+	matching.Description = "updated scope"
+	changed, err := provider.Poll(context.Background(), source, target)
+	if err != nil || len(changed.Events) != 1 || !strings.Contains(changed.Events[0].Message, "updated scope") {
+		t.Fatal("business content update was suppressed", changed, err)
+	}
 	source.Config.IterationValue = "missing"
 	if _, err = provider.Poll(context.Background(), source, target); err == nil {
 		t.Fatal("unknown iteration broadened scope")
@@ -207,6 +219,70 @@ func TestGitHubConditionalPollingCommentsCIAndNewHead(t *testing.T) {
 	failed, err := provider.Poll(ctx, source, target)
 	if err == nil || failed.Cursor != nil {
 		t.Fatal("partial GitHub snapshot committed")
+	}
+}
+
+func TestGitHubSuccessfulCITerminalSnapshotWakesRootOnceAfterStablePoll(t *testing.T) {
+	head := strings.Repeat("d", 40)
+	checkStatus, conclusion := "queued", ""
+	provider := GitHub{Binary: "gh", Run: func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		path := args[len(args)-1]
+		var value any
+		switch {
+		case path == "/repos/o/r/pulls/9":
+			value = map[string]any{
+				"number": 9, "state": "open", "title": "stable CI",
+				"head": map[string]string{"sha": head},
+				"base": map[string]any{"repo": map[string]any{"id": 99, "full_name": "o/r"}},
+			}
+		case strings.Contains(path, "/issues/9/comments"), strings.Contains(path, "/pulls/9/comments"), strings.Contains(path, "/pulls/9/reviews"), strings.Contains(path, "/statuses"):
+			value = []any{}
+		case strings.Contains(path, "/check-runs"):
+			value = map[string]any{"check_runs": []any{map[string]any{
+				"id": 71, "name": "build", "head_sha": head, "status": checkStatus,
+				"conclusion": conclusion, "completed_at": "2026-09-14T04:00:00Z",
+			}}}
+		default:
+			t.Fatal("unexpected endpoint", path)
+		}
+		return response(200, "", value), nil
+	}}
+	target := model.SourceTarget{Entity: "https://github.com/o/r/pull/9", CreatedAtMS: time.Now().Add(-time.Hour).UnixMilli(), Cursor: json.RawMessage("{}")}
+	poll := func() PollResult {
+		result, err := provider.Poll(context.Background(), model.TaskSource{Kind: "github"}, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		target.Cursor = result.Cursor
+		return result
+	}
+	if first := poll(); len(first.Events) != 1 || first.Events[0].Kind != "github.head" {
+		t.Fatal("queued CI emitted a terminal event", first.Events)
+	} else {
+		var cursor githubCursor
+		if err := json.Unmarshal(first.Cursor, &cursor); err != nil || cursor.CIState != "pending" {
+			t.Fatal("root CI gate did not record pending state", cursor, err)
+		}
+	}
+	checkStatus, conclusion = "completed", "success"
+	if firstPassing := poll(); len(firstPassing.Events) != 0 {
+		t.Fatal("one passing snapshot must not resume the root", firstPassing.Events)
+	} else {
+		var cursor githubCursor
+		if err := json.Unmarshal(firstPassing.Cursor, &cursor); err != nil || cursor.CIState != "pending" {
+			t.Fatal("one passing snapshot prematurely opened the root gate", cursor, err)
+		}
+	}
+	stable := poll()
+	if len(stable.Events) != 1 || stable.Events[0].Kind != "github.ci_succeeded" || stable.Events[0].HeadSHA != head || !strings.Contains(stable.Events[0].Message, "1 项 GitHub CI") {
+		t.Fatal("stable passing snapshot did not emit one success", stable.Events)
+	}
+	var cursor githubCursor
+	if err := json.Unmarshal(stable.Cursor, &cursor); err != nil || cursor.CIState != "success" {
+		t.Fatal("stable passing snapshot did not open the root gate", cursor, err)
+	}
+	if repeated := poll(); len(repeated.Events) != 0 {
+		t.Fatal("passing CI replayed", repeated.Events)
 	}
 }
 

@@ -17,6 +17,10 @@ import sys
 import time
 
 host = runpy.run_path('/data/wangyunlai.wyl/vm/win11/config/winrm-run')
+WinRMOperationTimeoutError = host['winrm'].exceptions.WinRMOperationTimeoutError
+
+MAX_COMMAND_OUTPUT = 8 * 1024 * 1024
+OUTPUT_LIMIT_EXIT = 74
 
 def discover_address():
     # This dev-specific entry point pins the verified win11 NIC identity.
@@ -34,6 +38,35 @@ def discover_address():
     if address not in ipaddress.ip_network('192.168.122.0/24'):
         raise RuntimeError('Windows lease is outside the configured VM network')
     return str(address)
+
+
+def receive_command_output(protocol, shell, command):
+    """Drain WinRM incrementally and stop runaway console output."""
+    total = 0
+    while True:
+        try:
+            out, err, code, done = protocol.get_command_output_raw(shell, command)
+        except WinRMOperationTimeoutError:
+            continue
+        for payload, stream in ((out, sys.stdout.buffer), (err, sys.stderr.buffer)):
+            if not payload:
+                continue
+            remaining = max(0, MAX_COMMAND_OUTPUT - total)
+            if remaining:
+                stream.write(payload[:remaining])
+                stream.flush()
+            total += len(payload)
+            if total > MAX_COMMAND_OUTPUT:
+                sys.stderr.write(
+                    '\n[work-assistant: Windows command output exceeded 8 MiB; '
+                    'the command was stopped. Redirect large output to a file '
+                    'and inspect a focused excerpt.]\n'
+                )
+                sys.stderr.flush()
+                protocol.cleanup_command(shell, command)
+                return OUTPUT_LIMIT_EXIT, True
+        if done:
+            return code, False
 
 def main():
     parser = argparse.ArgumentParser()
@@ -99,7 +132,12 @@ Write-Output ('UPLOAD_SHA256='+$hash)
             for offset in range(0, len(payload), 98304):
                 protocol.send_command_input(shell, command, payload[offset:offset+98304])
         protocol.send_command_input(shell, command, b'', end=True)
-        out, err, code = protocol.get_command_output(shell, command)
+        terminated = False
+        if args.upload:
+            out, err, code = protocol.get_command_output(shell, command)
+        else:
+            code, terminated = receive_command_output(protocol, shell, command)
+            out, err = b'', b''
         if args.upload and code == 0:
             expected = ('UPLOAD_SHA256='+digest.hexdigest()).encode()
             if expected not in out:
@@ -108,6 +146,8 @@ Write-Output ('UPLOAD_SHA256='+$hash)
         # A script can catch an error and emit a failed business result while
         # PowerShell exits zero. Its stderr is still essential diagnostic data.
         sys.stderr.buffer.write(err)
+        if terminated:
+            command = None
         return code
     finally:
         try:

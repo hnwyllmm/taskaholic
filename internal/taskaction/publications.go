@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -68,7 +69,7 @@ func (a *Publications) Tick(ctx context.Context) error {
 	}
 	count := 0
 	for _, p := range all {
-		if p.State == "SYNCED" || p.State == "BLOCKED" || p.NextAttemptMS > time.Now().UnixMilli() {
+		if p.State == "SYNCED" || p.State == "BLOCKED" || p.State == "SKIPPED" || p.NextAttemptMS > time.Now().UnixMilli() {
 			continue
 		}
 		if count >= 10 {
@@ -292,7 +293,86 @@ type antComment struct {
 	AuthorType string `json:"author_type"`
 }
 
+type antIssue struct {
+	ID             string `json:"id"`
+	WorkspaceID    string `json:"workspace_id"`
+	AssigneeID     string `json:"assignee_id"`
+	AssigneeType   string `json:"assignee_type"`
+	Status         string `json:"status"`
+	StatusCategory string `json:"status_category"`
+}
+
+func validAntMulticaURL(raw, issueID string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host != "antmultica.alipay.com" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	return len(parts) == 3 && parts[0] != "" && parts[1] == "issues" && parts[2] == issueID
+}
+
+func (a *AntMulticaComments) publishStatus(ctx context.Context, p model.Publication) (PublicationReceipt, error) {
+	receipt := PublicationReceipt{ID: p.IssueID, URL: p.URL}
+	if p.Sticky || p.DesiredStatus != "in_progress" || p.Body != "" || !uuidID.MatchString(p.WorkspaceID) || !uuidID.MatchString(p.IssueID) || !uuidID.MatchString(p.ActorID) || !validAntMulticaURL(p.URL, p.IssueID) {
+		return PublicationReceipt{}, blocked("工单状态回写绑定无效")
+	}
+	call := func(args ...string) ([]byte, error) {
+		all := append([]string{"--server-url", "https://antmultica.alipay.com", "--workspace-id", p.WorkspaceID}, args...)
+		return a.Run(ctx, a.Binary, nil, all...)
+	}
+	read := func() (antIssue, error) {
+		raw, err := call("issue", "get", p.IssueID, "--output", "json")
+		if err != nil {
+			return antIssue{}, err
+		}
+		var issue antIssue
+		if json.Unmarshal(raw, &issue) != nil || issue.ID != p.IssueID || issue.WorkspaceID != p.WorkspaceID {
+			return antIssue{}, blocked("AntMultica 工单不在绑定工作区")
+		}
+		if issue.AssigneeID != p.ActorID || issue.AssigneeType != "member" {
+			return antIssue{}, blocked("AntMultica 工单已不再指派给绑定成员，未修改状态")
+		}
+		return issue, nil
+	}
+	satisfied := func(issue antIssue) bool {
+		return issue.Status == "in_progress" || issue.Status == "in_review" || issue.StatusCategory == "in_progress" || issue.StatusCategory == "in_review"
+	}
+	terminal := func(issue antIssue) bool {
+		return issue.Status == "done" || issue.Status == "cancelled" || issue.Status == "canceled" || issue.StatusCategory == "done" || issue.StatusCategory == "cancelled" || issue.StatusCategory == "canceled"
+	}
+	issue, err := read()
+	if err != nil {
+		return receipt, err
+	}
+	if satisfied(issue) {
+		return receipt, nil
+	}
+	if terminal(issue) {
+		return receipt, &PublicationError{"SKIPPED", "AntMultica 工单已是终态，未回退为进行中"}
+	}
+	if issue.Status != "backlog" && issue.Status != "todo" && issue.Status != "blocked" {
+		return receipt, blocked("AntMultica 工单状态无法安全推进为进行中")
+	}
+	if _, err = call("issue", "status", p.IssueID, p.DesiredStatus, "--no-start", "--output", "json"); err != nil {
+		return receipt, uncertain("AntMultica 状态写入响应不明，正在核对工单")
+	}
+	issue, err = read()
+	if err != nil {
+		return receipt, uncertain("AntMultica 状态写入后无法复核，正在重试核对")
+	}
+	if satisfied(issue) {
+		return receipt, nil
+	}
+	if terminal(issue) {
+		return receipt, &PublicationError{"SKIPPED", "AntMultica 工单已进入终态，未回退为进行中"}
+	}
+	return receipt, uncertain("AntMultica 返回后状态仍未确认，正在重试核对")
+}
+
 func (a *AntMulticaComments) Publish(ctx context.Context, p model.Publication) (PublicationReceipt, error) {
+	if p.DesiredStatus != "" {
+		return a.publishStatus(ctx, p)
+	}
 	var receipt PublicationReceipt
 	marker := publicationMarker(p.Body)
 	if p.Sticky || !uuidID.MatchString(p.WorkspaceID) || !uuidID.MatchString(p.IssueID) || !uuidID.MatchString(p.ActorID) || marker != "<!-- work-assistant:progress:"+p.Key+" -->" {

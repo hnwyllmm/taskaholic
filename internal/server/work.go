@@ -16,9 +16,13 @@ import (
 )
 
 func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/retry", s.apiAuth(http.HandlerFunc(s.handleWorkRetry)))
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/execution-permissions", s.apiAuth(http.HandlerFunc(s.handleManualTaskCapability)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/environment", s.apiAuth(http.HandlerFunc(s.handleEnvironmentRequest)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/diagnosis", s.apiAuth(http.HandlerFunc(s.handleDevelopmentDiagnosis)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/retry", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRetry)))
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/validation-plan", s.apiAuth(http.HandlerFunc(s.handleAmendApprovedValidationPlan)))
+	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/verification-amendment/continue", s.apiAuth(http.HandlerFunc(s.handleContinueVerificationAmendment)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/development/restart", s.apiAuth(http.HandlerFunc(s.handleDevelopmentRestart)))
 	mux.Handle("POST /api/v1/work/tasks/{task_id}/test-pipelines/{request_id}/resolve", s.apiAuth(http.HandlerFunc(s.handleResolveTestPipeline)))
 	for pattern, handler := range map[string]http.HandlerFunc{
@@ -46,6 +50,36 @@ func (s *Server) registerWorkRoutes(mux *http.ServeMux) {
 	} {
 		mux.Handle(pattern, s.apiAuth(handler))
 	}
+}
+
+func (s *Server) handleWorkRetry(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64 `json:"expected_version"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	message, err := s.store.RetryWork(r.Context(), r.PathValue("task_id"), req.ExpectedVersion)
+	reply(w, http.StatusAccepted, message, err)
+}
+
+// handleManualTaskCapability is the user-initiated fallback for a blocked
+// implementation whose Agent did not emit a structured capability_request.
+// The Store validates the immutable plan/session scope before it queues a
+// continuation; this handler never accepts arbitrary operations.
+func (s *Server) handleManualTaskCapability(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		Capability      string `json:"capability"`
+		Remember        bool   `json:"remember"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	grant, err := s.store.GrantTaskCapability(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, req.Capability, req.Remember)
+	reply(w, http.StatusAccepted, grant, err)
 }
 
 func (s *Server) handleEnvironmentRequest(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +124,49 @@ func (s *Server) handleDevelopmentRetry(w http.ResponseWriter, r *http.Request) 
 	}
 	m, err := s.store.RetryDevelopment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion)
 	reply(w, http.StatusAccepted, m, err)
+}
+
+// handleAmendApprovedValidationPlan is an explicit human action for changing
+// only the evidence gate of an approved implementation. The Store keeps the
+// product plan, review and execution grant immutable and rejects active work.
+func (s *Server) handleAmendApprovedValidationPlan(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64                          `json:"expected_version"`
+		Reason          string                         `json:"reason"`
+		ValidationPlan  model.DevelopmentValidationPlan `json:"validation_plan"`
+		IdempotencyKey  string                         `json:"idempotency_key"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	if req.IdempotencyKey == "" {
+		req.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	}
+	d, err := s.store.AmendApprovedValidationPlan(r.Context(), r.PathValue("task_id"), store.ApprovedValidationPlanAmendment{
+		ExpectedVersion: req.ExpectedVersion,
+		Reason:          req.Reason,
+		ValidationPlan:  req.ValidationPlan,
+		IdempotencyKey:  req.IdempotencyKey,
+	})
+	reply(w, http.StatusAccepted, d, err)
+}
+
+// handleContinueVerificationAmendment is the narrow recovery path for a
+// legacy replan that only added repository regression coverage. It never
+// approves a new product plan: Store restores the prior explicit approval and
+// records the revised validation strategy separately.
+func (s *Server) handleContinueVerificationAmendment(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ExpectedVersion int64  `json:"expected_version"`
+		Reason          string `json:"reason"`
+	}
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, 400, err)
+		return
+	}
+	d, err := s.store.ContinueApprovedDevelopmentAfterVerificationAmendment(r.Context(), r.PathValue("task_id"), req.ExpectedVersion, req.Reason)
+	reply(w, http.StatusAccepted, d, err)
 }
 
 func (s *Server) handleWorkList(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +232,7 @@ func (s *Server) handleWorkMessage(w http.ResponseWriter, r *http.Request) {
 		Message   string `json:"message"`
 		Key       string `json:"idempotency_key"`
 		Interrupt bool   `json:"interrupt"`
+		Mode      string `json:"mode"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, 400, err)
@@ -163,7 +241,7 @@ func (s *Server) handleWorkMessage(w http.ResponseWriter, r *http.Request) {
 	if req.Key == "" {
 		req.Key = r.Header.Get("Idempotency-Key")
 	}
-	m, err := s.store.MessageWork(r.Context(), r.PathValue("task_id"), req.Message, req.Key, req.Interrupt)
+	m, err := s.store.MessageWorkWithMode(r.Context(), r.PathValue("task_id"), req.Message, req.Key, req.Interrupt, req.Mode)
 	reply(w, 202, m, err)
 }
 func (s *Server) handleWorkPause(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +330,16 @@ func (s *Server) workLoop(ctx context.Context) {
 	}
 }
 func (s *Server) scheduleWork(ctx context.Context) {
+	if recovered, err := s.store.RecoverExhaustedNativeSessionWork(ctx); err != nil {
+		s.log.Error("recover exhausted native sessions", "error", err)
+	} else if recovered > 0 {
+		s.log.Info("recovered exhausted native sessions", "tasks", recovered)
+	}
+	if recovered, err := s.store.AutoRecoverBlockedWork(ctx); err != nil {
+		s.log.Error("automatically recover blocked work", "error", err)
+	} else if recovered > 0 {
+		s.log.Info("automatically recovered blocked work", "tasks", recovered)
+	}
 	if err := s.store.RoutePlanReviews(ctx); err != nil {
 		s.log.Error("route plan reviews", "error", err)
 	}
@@ -339,7 +427,10 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 		return e
 	} else {
 		selectedID := config.AgentID
-		if selectedID == "" {
+		// A lightweight delegated child is already a narrowly classified request
+		// from its parent Agent. Route it deterministically through the normal
+		// Router policy instead of spending a separate task_router Agent turn.
+		if selectedID == "" && !task.Requirements.Delegated {
 			d, e := s.store.GetRoutingDecision(ctx, taskID, task.Version)
 			if e != nil && e != sql.ErrNoRows {
 				return e
@@ -395,12 +486,12 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 	if devErr == nil && d.Phase == "IMPLEMENTING" {
 		supported := false
 		for _, rt := range runtimes {
-			if rt.ID == req.RuntimeID && router.SupportsFeature(rt, req.AdapterID, "approved_development") {
+			if rt.ID == req.RuntimeID && router.SupportsFeature(rt, req.AdapterID, "approved_development") && router.SupportsFeature(rt, req.AdapterID, "controlled_publication") {
 				supported = true
 			}
 		}
 		if !supported {
-			return fmt.Errorf("%w: 原 runtime/adapter 尚不支持已审批隔离开发，请先升级；不会更换原 Session", model.ErrConflict)
+			return fmt.Errorf("%w: 原 runtime/adapter 尚不支持已审批隔离开发及受控 PR 发布，请先升级；不会更换原 Session", model.ErrConflict)
 		}
 	}
 	_, err = s.store.StartWorkRun(ctx, req, s.workContract)

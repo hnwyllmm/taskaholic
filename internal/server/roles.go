@@ -263,6 +263,7 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ReasoningEffort string `json:"reasoning_effort"`
+		CostTier        string `json:"cost_tier"`
 		Name            string `json:"name"`
 		RoleID          string `json:"role_id"`
 		RuntimeID       string `json:"runtime_id"`
@@ -281,7 +282,7 @@ func (s *Server) handleCreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	agent, err := s.store.CreateAgent(r.Context(), model.AgentProfile{Name: request.Name, RoleID: request.RoleID, RuntimeID: request.RuntimeID, AdapterID: request.AdapterID, ModelID: request.ModelID, ReasoningEffort: request.ReasoningEffort, MaxConcurrent: request.MaxConcurrent})
+	agent, err := s.store.CreateAgent(r.Context(), model.AgentProfile{Name: request.Name, RoleID: request.RoleID, RuntimeID: request.RuntimeID, AdapterID: request.AdapterID, ModelID: request.ModelID, ReasoningEffort: request.ReasoningEffort, CostTier: request.CostTier, MaxConcurrent: request.MaxConcurrent})
 	reply(w, http.StatusCreated, agent, err)
 }
 

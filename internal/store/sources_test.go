@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"work-assistant/internal/model"
+	"work-assistant/internal/workflow"
 )
 
 func TestSourceInboxAndCursorSurviveDatabaseReopen(t *testing.T) {
@@ -76,7 +77,7 @@ func saveTestSource(t *testing.T, s *Store, kind string) model.TaskSource {
 }
 func pollStore(t *testing.T, s *Store, source model.TaskSource, target model.SourceTarget, head string, events ...model.SourceEvent) {
 	t.Helper()
-	cursor, _ := json.Marshal(map[string]any{"head": head, "stamp": time.Now().UnixNano()})
+	cursor, _ := json.Marshal(map[string]any{"head": head, "stamp": time.Now().UnixNano(), "ci_state": "none"})
 	if err := s.CommitSourcePoll(context.Background(), source, target, cursor, head, events, time.Now().UnixMilli(), false); err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 			}
 		}
 		rr := startWork(t, s, a, task)
-		finishWork(t, s, rr, int64(i+2), "review", fmt.Sprintf("finding %d", i))
+		reviewSubmission(t, s, rr, int64(i+2), "passed")
 		completed, _ := s.GetTask(ctx, task.ID)
 		if completed.State != model.TaskStateCompleted {
 			t.Fatal("internal review waits for human", completed)
@@ -294,7 +295,7 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = s.CollectSourceReviews(ctx); err != nil {
+	if err := s.CollectSourceReviews(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.CollectSourceReviews(ctx); err != nil {
@@ -359,6 +360,116 @@ func TestPRReviewFanoutFaninAndSupersession(t *testing.T) {
 	after, _ := s.GetWorkDetail(ctx, parent.ID)
 	if len(after.Messages) != len(before.Messages) {
 		t.Fatal("stale failure restarted author")
+	}
+}
+
+func TestLegacyWaitingReviewerResumesToConcludeWithoutCI(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _, child, reviewRun, _ := qaTestFixture(t)
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: reviewRun.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3, RunID: reviewRun.ID, SessionID: reviewRun.SessionID, Type: "session.bound", AgentSessionRef: "codex:qa-review-memory"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "Role review complete", Artifacts: []workflow.File{}})
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: reviewRun.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 4, RunID: reviewRun.ID, TaskID: child.ID, Type: "run.completed", Output: string(raw)}); err != nil {
+		t.Fatal(err)
+	}
+	legacy, _ := json.Marshal(workflow.Result{Outcome: "review", ReviewDecision: "waiting_tests", Message: "Waiting for CI", Artifacts: []workflow.File{}})
+	if _, err := s.db.ExecContext(ctx, `UPDATE run SET output=? WHERE run_id=?`, string(legacy), reviewRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE source_review SET state='WAITING_TESTS' WHERE task_id=?`, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE task SET state='WAITING_TESTS' WHERE task_id=?`, child.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CollectSourceReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reviews, err := s.ListSourceReviews(ctx)
+	if err != nil || len(reviews) != 1 || reviews[0].State != "PENDING" {
+		t.Fatal("legacy reviewer was not detached from CI", reviews, err)
+	}
+	queued, err := s.GetTask(ctx, child.ID)
+	if err != nil || queued.State != model.TaskStateQueued {
+		t.Fatal("legacy reviewer was not queued for a conclusion", queued, err)
+	}
+	detail, err := s.GetWorkDetail(ctx, child.ID)
+	if err != nil || detail.Messages[len(detail.Messages)-1].Delivery != "PENDING" || !strings.Contains(detail.Messages[len(detail.Messages)-1].Content, "不要等待测试结果") {
+		t.Fatal("corrected responsibility was not delivered", detail.Messages, err)
+	}
+	var reviewer model.AgentProfile
+	agents, err := s.ListAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range agents {
+		if agent.ID == reviewRun.AgentID {
+			reviewer = agent
+		}
+	}
+	next := startWork(t, s, reviewer, child)
+	session, err := s.GetTaskSession(ctx, child.ID)
+	if err != nil || next.SessionID != reviewRun.SessionID || session.AgentSessionRef != "codex:qa-review-memory" {
+		t.Fatal("legacy reviewer continuation lost its native session", next, session, err)
+	}
+}
+
+func TestReviewerWaitingTestsOutputIsCorrectedImmediately(t *testing.T) {
+	ctx := context.Background()
+	s, _, _, _, child, reviewRun, _ := qaTestFixture(t)
+	raw, _ := json.Marshal(workflow.Result{Outcome: "review", ReviewDecision: "waiting_tests", Message: "Waiting for CI", Artifacts: []workflow.File{}})
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: reviewRun.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3, RunID: reviewRun.ID, TaskID: child.ID, Type: "run.completed", Output: string(raw)}); err != nil {
+		t.Fatal(err)
+	}
+	reviews, err := s.ListSourceReviews(ctx)
+	if err != nil || len(reviews) != 1 || reviews[0].State != "PENDING" {
+		t.Fatal("legacy output became a CI-owned reviewer state", reviews, err)
+	}
+	queued, err := s.GetTask(ctx, child.ID)
+	if err != nil || queued.State != model.TaskStateQueued {
+		t.Fatal("reviewer was not immediately asked for a real verdict", queued, err)
+	}
+}
+
+func TestGitHubCISuccessResumesRootAndNeverReviewer(t *testing.T) {
+	ctx := context.Background()
+	s, author, parent, first, child, reviewRun, target := qaTestFixture(t)
+	reviewSubmission(t, s, reviewRun, 3, "passed")
+	if err := s.CollectSourceReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rootRun := startWork(t, s, author, parent)
+	source, err := s.GetTaskSource(ctx, target.SourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target = targetByID(t, s, target.ID)
+	if err = s.CommitSourcePoll(ctx, source, target, json.RawMessage(`{"head":"`+target.HeadSHA+`","ci_state":"pending"}`), target.HeadSHA, nil, time.Now().UnixMilli(), false); err != nil {
+		t.Fatal(err)
+	}
+	finishWork(t, s, rootRun, 4, "review", "role reviews complete")
+	waiting, err := s.GetTask(ctx, parent.ID)
+	if err != nil || waiting.State != model.TaskStateWaitingTests {
+		t.Fatal("root task did not own the pending CI gate", waiting, err)
+	}
+	childBefore, _ := s.GetWorkDetail(ctx, child.ID)
+	target = targetByID(t, s, target.ID)
+	event := model.SourceEvent{Key: "ci-success:" + target.HeadSHA, Kind: "github.ci_succeeded", HeadSHA: target.HeadSHA, Message: "All GitHub checks passed for the pinned commit"}
+	if err = s.CommitSourcePoll(ctx, source, target, json.RawMessage(`{"head":"`+target.HeadSHA+`","ci_state":"success"}`), target.HeadSHA, []model.SourceEvent{event}, time.Now().UnixMilli(), false); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ProcessSourceEvents(ctx); err != nil {
+		t.Fatal(err)
+	}
+	childAfter, _ := s.GetWorkDetail(ctx, child.ID)
+	childTask, _ := s.GetTask(ctx, child.ID)
+	if childTask.State != model.TaskStateCompleted || len(childAfter.Messages) != len(childBefore.Messages) {
+		t.Fatal("CI success reopened or messaged reviewer", childTask.State, len(childBefore.Messages), len(childAfter.Messages))
+	}
+	continued := startWork(t, s, author, parent)
+	if continued.SessionID != first.SessionID || continued.AgentID != first.AgentID {
+		t.Fatal("CI success did not resume the original development Session", continued)
 	}
 }
 

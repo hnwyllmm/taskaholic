@@ -2,23 +2,29 @@
 (()=>{
   const attentionStates=['WAITING_REVIEW','WAITING_INPUT','BLOCKED','WAITING_AUTHORIZATION','WAITING_ENVIRONMENT'];
   const needsAttention=t=>attentionStates.includes(t.state)||(t.subtasks?.needs_attention||0)>0;
+  function displayState(t){
+    return t.state;
+  }
   function matchesFilter(t,filter){
     if(filter==='ATTENTION')return needsAttention(t);
+    if(filter&&displayState(t)===filter)return true;
     if(WAAssignment.matchesFilter(t,filter))return true;
-    const field={BLOCKED:'blocked',WAITING_REVIEW:'waiting_review',WAITING_INPUT:'waiting_input'}[filter];
+    const field={BLOCKED:'blocked',WAITING_REVIEW:'waiting_review',WAITING_INPUT:'waiting_input',WAITING_TESTS:'waiting_tests'}[filter];
     return !!field&&(t.subtasks?.[field]||0)>0;
   }
   function bucket(t){
     if(needsAttention(t))return 'attention';
-    if(['NEW','QUEUED'].includes(t.state))return 'queued';
-    if(t.state==='COMPLETED')return 'completed';
-    if(['ASSIGNED','IN_PROGRESS','WAITING_SUBTASKS'].includes(t.state))return 'active';
+    const state=displayState(t);
+    if(['NEW','QUEUED'].includes(state))return 'queued';
+    if(state==='COMPLETED')return 'completed';
+    if(['ASSIGNED','IN_PROGRESS','WAITING_SUBTASKS','WAITING_TESTS'].includes(state))return 'active';
     return '';
   }
   function progressText(t){
     const p=t.subtasks;if(!p)return '';
     const parts=[];
     if(p.total)parts.push('子任务 '+p.completed+'/'+p.total+' 已完成');
+    if(p.waiting_tests)parts.push(p.waiting_tests+' 个子任务等待自身 CI');
     if(p.needs_attention)parts.push(p.needs_attention+' 项需要你');
     if(p.superseded)parts.push(p.superseded+' 项历史评审');
     return parts.join(' · ');
@@ -52,7 +58,7 @@
         const owner=agents.find(a=>a.agent_id===(t.assigned_agent_id||t.preferred_agent_id));
         title.append(el('strong',name),el('small',(owner?.name||'待分派')+(progressText(t)?' · '+progressText(t):'')));
         const status=el('div',null,'subtask-status');
-        status.append(t.source_review_state==='SUPERSEDED'?el('span','已被新版本替代','muted'):WA.badge(t.state));
+        status.append(t.source_review_state==='SUPERSEDED'?el('span','已被新版本替代','muted'):WA.badge(displayState(t)));
         if(t.source_review_state!=='SUPERSEDED'&&t.subtasks?.needs_attention)status.append(el('small','下级任务需要你','hierarchy-attention'));
         button.append(title,status,el('span','查看 →','subtask-open'));
         return button;
@@ -69,5 +75,5 @@
     }
     return {update};
   }
-  window.WATaskHierarchy={needsAttention,matchesFilter,bucket,progressText,mount};
+  window.WATaskHierarchy={needsAttention,displayState,matchesFilter,bucket,progressText,mount};
 })();

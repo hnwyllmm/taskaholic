@@ -413,8 +413,10 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 		Scan(&currentRevision, &taskTitle, &taskGoal); err != nil {
 		return model.Run{}, err
 	}
+	var references []model.TaskReference
 	if request.Managed {
-		_, brief, err := taskReferences(ctx, tx, request.TaskID)
+		var brief *model.ReviewBrief
+		references, brief, err = taskReferences(ctx, tx, request.TaskID)
 		if err != nil {
 			return model.Run{}, err
 		}
@@ -452,16 +454,6 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 	if err != nil {
 		return model.Run{}, err
 	}
-	execution, err := resolveExecutionTx(ctx, tx, session, request.ReasoningEffort)
-	if err != nil {
-		return model.Run{}, err
-	}
-	if created {
-		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding, "execution_defaults": execution})
-		if _, err := tx.ExecContext(ctx, `UPDATE session SET metadata_json = ? WHERE session_id = ?`, session.Metadata, session.ID); err != nil {
-			return model.Run{}, err
-		}
-	}
 	if !created {
 		var metadata struct {
 			Role *model.Role `json:"role_snapshot"`
@@ -470,6 +462,35 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 			return model.Run{}, err
 		}
 		role = metadata.Role
+	}
+	execution, err := resolveExecutionTx(ctx, tx, session, request.ReasoningEffort)
+	if err != nil {
+		return model.Run{}, err
+	}
+	// Runtime permissions are selected per Run and must never be inherited as a
+	// Session/model default.
+	execution.NetworkAccess = false
+	// Managed read network access is derived only from trusted control-plane
+	// facts: the frozen reviewer role or a validated, durable source reference.
+	// Task prose and Agent output cannot enable it. The adapter additionally
+	// rejects writable Runs and Runs carrying an execution grant.
+	isReviewer := roleUsesReviewCapability(role)
+	hasAntMulticaSource := referencesContainKind(references, "antmultica.issue")
+	if request.Managed && request.ReadOnly && session.AdapterID == "codex-agent" && (isReviewer || hasAntMulticaSource) {
+		execution.NetworkAccess = true
+		if isReviewer {
+			request.Instructions += "\n本轮是 Reviewer 工作，Manager 已自动开启 Codex 网络访问，用于读取 PR、CI 和来源工单。不要再申请 network_access；不得把联网视为合并、发布或其它外部写入授权。目标源码仓库仍为只读，仅隔离 Session 工作目录可持久写入。访问 GitHub 等来源平台时使用本轮的直连网络；如果 gh/curl 继承到仅供 Codex 模型通信的本地代理，可只对该读取命令临时清除 HTTP_PROXY、HTTPS_PROXY、ALL_PROXY 及对应小写变量，不得修改主机持久配置。\n"
+		} else {
+			request.Instructions += "\n本轮任务具有经 Manager 校验并持久化的 AntMultica 来源引用，Manager 已自动开启 Codex 网络访问，仅用于只读查询该工单及其评论、附件和状态。不要再申请 network_access。访问 AntMultica 时遵守 antmultica Skill，并使用其 multica_direct.sh 直连脚本。不得执行创建、更新、评论、分配、状态变更或 workflow 控制；来源平台回写仍只能由 Manager 按任务生命周期执行。目标源码仓库仍为只读，仅隔离 Session 工作目录可持久写入。\n"
+		}
+	}
+	if created {
+		defaults := execution
+		defaults.NetworkAccess = false
+		session.Metadata, _ = json.Marshal(map[string]any{"role_snapshot": role, "system_binding": request.SystemBinding, "execution_defaults": defaults})
+		if _, err := tx.ExecContext(ctx, `UPDATE session SET metadata_json = ? WHERE session_id = ?`, session.Metadata, session.ID); err != nil {
+			return model.Run{}, err
+		}
 	}
 	roleJSON, _ := json.Marshal(role)
 	if created {
@@ -555,6 +576,27 @@ func createRunTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest) (mod
 		}
 	}
 	return run, nil
+}
+
+func roleUsesReviewCapability(role *model.Role) bool {
+	if role == nil {
+		return false
+	}
+	for _, capability := range role.Capabilities {
+		if capability == "review" || strings.HasSuffix(capability, ".review") {
+			return true
+		}
+	}
+	return false
+}
+
+func referencesContainKind(references []model.TaskReference, kind string) bool {
+	for _, reference := range references {
+		if reference.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureTaskSessionTx(ctx context.Context, tx *sql.Tx, request CreateRunRequest, now int64) (model.Session, bool, bool, error) {
@@ -923,6 +965,10 @@ func (s *Store) ApplyRuntimeEventFrom(ctx context.Context, connectionEpoch strin
 		}
 	case "run.progress":
 		// Progress is event-only; it does not change the Run state.
+	case "vm.operation.queued", "vm.operation.started":
+		// VM operation lifecycle is event-only while the owning Run is active.
+	case "vm.operation.completed":
+		err = resumeLateVMOperationTx(ctx, tx, event, taskID, state, managed)
 	case "run.configured":
 		err = applyExecutionTx(ctx, tx, event)
 	case "run.completed":

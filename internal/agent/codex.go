@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -17,16 +18,21 @@ import (
 	"work-assistant/internal/model"
 )
 
-const codexSessionPrefix = "codex:"
+const (
+	codexSessionPrefix                      = "codex:"
+	managedReadNetworkPermissionProfileName = "work-assistant-managed-read-network"
+)
 
 // CodexAdapter runs the stable, non-interactive Codex CLI and maps a control
 // Session to a persisted Codex thread. A message Directive received while a
 // turn is running is applied as a follow-up turn after that turn finishes.
 type CodexAdapter struct {
-	binary              string
-	sandbox             string
-	approvedDevelopment bool
-	networkAccess       bool
+	binary            string
+	sandbox           string
+	managedWorkspace  bool
+	networkAccess     bool
+	writableRoots     []string
+	permissionProfile string
 }
 
 func NewCodexAdapter(binary, sandbox string) (*CodexAdapter, error) {
@@ -76,13 +82,34 @@ func (a *CodexAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir s
 		readOnly.sandbox = "read-only"
 		a = &readOnly
 	}
+	// Codex exposes outbound networking only through its workspace-write
+	// sandbox. For a managed read-only Run, that workspace is the task's isolated
+	// Session directory; repositories remain outside its writable roots.
+	if spec.NetworkAccess {
+		if !spec.ReadOnly || spec.ExecutionGrant != nil {
+			return Result{ExitCode: -1, Err: errors.New("managed network access requires a read-only run without an execution grant")}
+		}
+		networked := *a
+		networked.sandbox = "workspace-write"
+		networked.managedWorkspace = true
+		networked.networkAccess = true
+		networked.writableRoots = nil
+		networked.permissionProfile = managedReadNetworkPermissionProfileName
+		a = &networked
+	}
 	if spec.ExecutionGrant != nil {
 		if spec.ReadOnly {
 			return Result{ExitCode: -1, Err: errors.New("execution grant cannot be combined with read-only")}
 		}
 		writable := *a
 		writable.sandbox = "workspace-write"
-		writable.approvedDevelopment = true
+		writable.managedWorkspace = true
+		writable.writableRoots = append([]string(nil), spec.AdditionalWritableRoots...)
+		for _, root := range writable.writableRoots {
+			if !filepath.IsAbs(root) {
+				return Result{ExitCode: -1, Err: fmt.Errorf("approved Codex writable root must be absolute: %q", root)}
+			}
+		}
 		for _, capability := range spec.ExecutionGrant.Capabilities {
 			switch capability {
 			case "network_access":
@@ -174,7 +201,21 @@ type codexTurnResult struct {
 
 func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort, sessionID, prompt string, emit func(Event), started func(), schemas ...json.RawMessage) codexTurnResult {
 	args := []string{"exec", "-c", "approval_policy=\"never\""}
-	if a.approvedDevelopment && a.sandbox == "workspace-write" {
+	if a.permissionProfile != "" {
+		// Current Codex releases persist a resolved permission profile with each
+		// thread. Selecting an explicit profile here updates both new and resumed
+		// managed read-only turns; the legacy network_access flag
+		// alone does not update an existing thread's network policy.
+		args = append(args,
+			"-c", "default_permissions=\""+a.permissionProfile+"\"",
+			"-c", "permissions."+a.permissionProfile+".extends=\":workspace\"",
+			"-c", "permissions."+a.permissionProfile+".network.enabled=true",
+		)
+	}
+	if a.managedWorkspace && a.sandbox == "workspace-write" {
+		for _, root := range a.writableRoots {
+			args = append(args, "--add-dir", root)
+		}
 		network := "false"
 		if a.networkAccess {
 			network = "true"
@@ -201,29 +242,39 @@ func (a *CodexAdapter) runTurn(ctx context.Context, workingDir, modelID, effort,
 		}
 	}
 	if sessionID == "" {
-		args = append(args, "--json", "--color", "never", "--sandbox", a.sandbox,
-			"--skip-git-repo-check")
+		args = append(args, "--json", "--color", "never")
+		if a.permissionProfile == "" {
+			args = append(args, "--sandbox", a.sandbox)
+		}
+		args = append(args, "--skip-git-repo-check")
 		if modelID != "" {
 			args = append(args, "--model", modelID)
 		}
 		if schemaPath != "" {
 			args = append(args, "--output-schema", schemaPath)
 		}
-		args = append(args, "--cd", workingDir, prompt)
+		args = append(args, "--cd", workingDir, "-")
 	} else {
-		args = append(args, "resume", "--json", "--skip-git-repo-check", "-c", "sandbox_mode=\""+a.sandbox+"\"")
+		args = append(args, "resume", "--json", "--skip-git-repo-check")
+		if a.permissionProfile == "" {
+			args = append(args, "-c", "sandbox_mode=\""+a.sandbox+"\"")
+		}
 		if modelID != "" {
 			args = append(args, "--model", modelID)
 		}
 		if schemaPath != "" {
 			args = append(args, "--output-schema", schemaPath)
 		}
-		args = append(args, sessionID, prompt)
+		args = append(args, sessionID, "-")
 	}
 
 	command := exec.CommandContext(ctx, a.binary, args...)
 	command.Dir = workingDir
-	command.Stdin = nil
+	// Prompts can contain task history, review evidence, and CI logs. Passing
+	// them as one argv entry eventually exceeds the platform's per-argument
+	// limit. Codex supports the explicit "-" sentinel for both new and resumed
+	// exec turns, so stream the complete prompt over stdin instead.
+	command.Stdin = strings.NewReader(prompt)
 	configureCodexProcess(command)
 	stdout, err := command.StdoutPipe()
 	if err != nil {

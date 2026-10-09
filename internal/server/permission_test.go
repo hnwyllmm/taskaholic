@@ -22,6 +22,8 @@ func TestExecutionPermissionsAPIAndAssets(t *testing.T) {
 	}{
 		{"GET", "/permissions", "", "", 200}, {"GET", "/assets/permissions.js", "", "", 200},
 		{"GET", "/api/v1/execution-permissions", "", "", 401}, {"GET", "/api/v1/execution-permissions", "test", "", 200},
+		{"POST", "/api/v1/work/tasks/missing/execution-permissions", "test", `{"expected_version":1,"capability":"sudo"}`, 400},
+		{"POST", "/api/v1/work/tasks/missing/execution-permissions", "test", `{"expected_version":1,"capability":"network_access"}`, 404},
 		{"PUT", "/api/v1/execution-permissions/policies", "test", `{"operation":"sudo","runtime_id":"dev","repository":"oceanbase/seekdb","effect":"allow"}`, 400},
 		{"PUT", "/api/v1/execution-permissions/policies", "test", `{"operation":"windows_seekdb_phase0","runtime_id":"dev","repository":"oceanbase/seekdb","effect":"ask"}`, 200},
 		{"PUT", "/api/v1/execution-permissions/policies", "test", `{"operation":"windows_seekdb_phase0","runtime_id":"dev","repository":"oceanbase/seekdb","effect":"allow"}`, 409},

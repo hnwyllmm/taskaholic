@@ -9,6 +9,7 @@ import (
 
 	"work-assistant/internal/model"
 	"work-assistant/internal/router"
+	"work-assistant/internal/workflow"
 )
 
 func TestSourceBoundaryMigrationAuditsConfigAndPreservesTaskSession(t *testing.T) {
@@ -126,7 +127,8 @@ func TestManagerUsesReplaceableRouterPlanAndRetriesMissingReviewers(t *testing.T
 		t.Fatal("partial review fan-out", reviews, err)
 	}
 	role := publishTestRole(t, s, "code.review")
-	if _, err = s.CreateAgent(ctx, model.AgentProfile{Name: "independent reviewer", RoleID: role.ID, RuntimeID: author.RuntimeID, AdapterID: author.AdapterID}); err != nil {
+	reviewer, err := s.CreateAgent(ctx, model.AgentProfile{Name: "independent reviewer", RoleID: role.ID, RuntimeID: author.RuntimeID, AdapterID: author.AdapterID})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Retry with an injected Router policy; a successful plan is committed once.
@@ -150,5 +152,17 @@ func TestManagerUsesReplaceableRouterPlanAndRetriesMissingReviewers(t *testing.T
 	var decisions int
 	if err = s.db.QueryRow(`SELECT COUNT(*) FROM event_log WHERE event_type='PRReviewRouted'`).Scan(&decisions); err != nil || decisions != 1 {
 		t.Fatal("missing routing audit", decisions, err)
+	}
+	child, err := s.GetTask(ctx, reviews[0].TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.StartWorkRun(ctx, CreateRunRequest{TaskID: child.ID, AgentID: reviewer.ID, RuntimeID: reviewer.RuntimeID, AdapterID: reviewer.AdapterID}, workflow.JSONContract{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := outboxSpec(t, s, run.ID)
+	if !spec.ReadOnly || !spec.NetworkAccess || spec.ExecutionGrant != nil || !strings.Contains(spec.Instructions, "已自动开启 Codex 网络访问") || !strings.Contains(spec.Instructions, "可只对该读取命令临时清除") || !strings.Contains(spec.Instructions, "不要再申请 network_access") {
+		t.Fatalf("review network boundary missing: %#v", spec)
 	}
 }

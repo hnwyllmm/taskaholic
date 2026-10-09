@@ -8,6 +8,7 @@ type SubtaskProgress struct {
 	Blocked        int   `json:"blocked"`
 	WaitingReview  int   `json:"waiting_review"`
 	WaitingInput   int   `json:"waiting_input"`
+	WaitingTests   int   `json:"waiting_tests"`
 	Superseded     int   `json:"superseded"`
 	UpdatedAtMS    int64 `json:"updated_at_ms"`
 }
@@ -17,6 +18,8 @@ type WorkTaskItem struct {
 	Subtasks          SubtaskProgress `json:"subtasks"`
 	SourceReviewState string          `json:"source_review_state,omitempty"`
 	ReviewHeadSHA     string          `json:"review_head_sha,omitempty"`
+	FirstRunAtMS      int64           `json:"first_run_at_ms,omitempty"`
+	CompletedAtMS     int64           `json:"completed_at_ms,omitempty"`
 }
 
 type WorkTaskLink struct {

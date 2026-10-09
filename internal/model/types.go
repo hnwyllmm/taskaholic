@@ -3,12 +3,13 @@ package model
 import "encoding/json"
 
 const (
-	TaskStateNew        = "NEW"
-	TaskStateInProgress = "IN_PROGRESS"
-	TaskStateCompleted  = "COMPLETED"
-	TaskStateBlocked    = "BLOCKED"
-	TaskStateAssigned   = "ASSIGNED"
-	TaskStateWaiting    = "WAITING_SUBTASKS"
+	TaskStateNew          = "NEW"
+	TaskStateInProgress   = "IN_PROGRESS"
+	TaskStateCompleted    = "COMPLETED"
+	TaskStateBlocked      = "BLOCKED"
+	TaskStateAssigned     = "ASSIGNED"
+	TaskStateWaiting      = "WAITING_SUBTASKS"
+	TaskStateWaitingTests = "WAITING_TESTS"
 
 	RunStateQueued      = "QUEUED"
 	RunStateRunning     = "RUNNING"
@@ -94,6 +95,10 @@ type SubtaskResult struct {
 
 const (
 	TaskEdgeDecomposedInto = "DECOMPOSED_INTO"
+	// TaskEdgeDelegatedTo is a bounded, Manager-owned light-work fan-out. It
+	// participates in the work hierarchy but is distinct from user/API task
+	// decomposition so it can be resumed into the originating Agent session.
+	TaskEdgeDelegatedTo   = "DELEGATED_TO"
 
 	DirectiveKindMessage   = "message"
 	DirectiveKindInterrupt = "interrupt"
@@ -145,6 +150,10 @@ type Runtime struct {
 type RunSpec struct {
 	Environment    *EnvironmentExecution `json:"environment,omitempty"`
 	ExecutionGrant *ExecutionGrant       `json:"execution_grant,omitempty"`
+	// AdditionalWritableRoots is populated only by the runtime after it has
+	// created a narrowly scoped local capability such as the VM mailbox. It is
+	// never accepted from the control plane.
+	AdditionalWritableRoots []string `json:"-"`
 	ExecutionSettings
 	RequireNativeSession bool            `json:"require_native_session,omitempty"`
 	ReadOnly             bool            `json:"read_only,omitempty"`

@@ -23,6 +23,13 @@ Windows 子任务在创建 Run/outbox 前检查 runtime 声明的执行器能力
 批准后同一个任务继续调度，同一 Session 沿用原上下文，方案审批独立保留。
 策略变化不抢占运行；待授权记录可显式“按最新规则重新检查”。
 
+若已批准实施的任务处于 `BLOCKED`，但 Agent 没有按协议提交结构化
+`capability_request`，任务页会提供“主动授权运行能力”：用户可明确选择
+`network_access` 或 `host_full_access`，一次放行或记住当前 runtime/仓库范围。
+这是恢复路径，不从报错或 Agent 自然语言猜测权限。每次主动授权仍绑定当前
+任务版本、原 Agent/Session、仓库、plan hash 和批准 review；它只会续跑原任务，
+不能授权任意命令、sudo 或修改方案。已有待授权单时必须处理该单，不能创建第二张。
+
 一次性授权绑定 task、执行成员、runtime、操作、仓库、方案 hash、review ID、
 待处理消息序号和任务 revision。批准使用版本 CAS，放行与 Run/outbox 同事务消费。
 暂停或用户修改要求使未消费授权失效；新的输入/方案/执行范围不能复用旧授权。

@@ -16,6 +16,8 @@ execute.add_argument("--file")
 upload = commands.add_parser("upload", help="Upload a local workspace file")
 upload.add_argument("source")
 upload.add_argument("destination")
+result = commands.add_parser("result", help="Read a persisted operation result without running it again")
+result.add_argument("operation_id")
 args = parser.parse_args()
 request = {"operation": args.operation}
 if args.operation == "exec":
@@ -27,15 +29,20 @@ if args.operation == "exec":
         request["script"] = script.read_text()
     else:
         request["script"] = args.script
-else:
+elif args.operation == "upload":
     request["source"] = str(Path(args.source).resolve().relative_to(Path(CONFIG["workspace"])))
     request["destination"] = args.destination
+else:
+    request["operation_id"] = args.operation_id
 mailbox = Path(CONFIG["mailbox"])
 identity = uuid.uuid4().hex
 temporary = mailbox / (identity + ".tmp")
 temporary.write_text(json.dumps(request), encoding="utf-8")
 temporary.rename(mailbox / (identity + ".request"))
-print("VM operation " + identity, file=sys.stderr, flush=True)
+if args.operation == "result":
+    print("VM result lookup " + args.operation_id, file=sys.stderr, flush=True)
+else:
+    print("VM operation " + identity, file=sys.stderr, flush=True)
 while not (mailbox / (identity + ".response")).exists():
     if not (mailbox / "active").exists():
         sys.exit("VM operation interrupted: run is no longer active; inspect logs before retrying")

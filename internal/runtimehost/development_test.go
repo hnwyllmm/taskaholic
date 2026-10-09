@@ -21,6 +21,7 @@ func TestDevelopmentPublisherReconcilesUncertainCreation(t *testing.T) {
 	w := developmentWorkspace{Directory: directory, GitDir: filepath.Join(directory, "metadata"), Repository: "oceanbase/seekdb", BaseBranch: "master", Branch: "work-assistant/task_test", BaseSHA: strings.Repeat("a", 40)}
 	posts, pushes := 0, 0
 	remoteVisible := false
+	remoteSHA := strings.Repeat("c", 40)
 	w.command = func(_ context.Context, _ string, binary string, args ...string) (string, error) {
 		cmd := strings.Join(args, " ")
 		if binary == "git" {
@@ -29,8 +30,12 @@ func TestDevelopmentPublisherReconcilesUncertainCreation(t *testing.T) {
 				return strings.Repeat("b", 40), nil
 			case strings.Contains(cmd, " push "):
 				pushes++
-				if strings.Contains(cmd, "--force") {
-					t.Fatal("force push")
+				lease := "--force-with-lease=refs/heads/work-assistant/task_test:" + remoteSHA
+				if pushes == 1 && strings.Contains(cmd, "--force") {
+					t.Fatal("new branch was force-pushed")
+				}
+				if pushes == 2 && !strings.Contains(cmd, lease) {
+					t.Fatal("existing task PR was not updated with the exact lease", cmd)
 				}
 				return "", nil
 			default:
@@ -46,7 +51,7 @@ func TestDevelopmentPublisherReconcilesUncertainCreation(t *testing.T) {
 			if !remoteVisible {
 				return `[]`, nil
 			}
-			return `[{"html_url":"https://github.com/oceanbase/seekdb/pull/42","body":"<!-- work-assistant:development:task_test -->","state":"open"}]`, nil
+			return `[{"html_url":"https://github.com/oceanbase/seekdb/pull/42","body":"<!-- work-assistant:development:task_test -->","state":"open","head":{"sha":"` + remoteSHA + `","ref":"work-assistant/task_test","repo":{"full_name":"test-user/seekdb"}},"base":{"ref":"master"}}]`, nil
 		case strings.HasPrefix(cmd, "pr create"):
 			posts++
 			raw, err := os.ReadFile(receipt)
@@ -79,8 +84,41 @@ func TestDevelopmentPublisherReconcilesUncertainCreation(t *testing.T) {
 	if err := publishDevelopment(ctx, &w, receipt, spec, &third); err != nil {
 		t.Fatal(err)
 	}
-	if posts != 1 || len(third.PullRequests) != 1 || third.PublishRequest != nil || third.PullRequests[0].URL != "https://github.com/oceanbase/seekdb/pull/42" {
+	if posts != 1 || pushes != 2 || len(third.PullRequests) != 1 || third.PublishRequest != nil || third.PullRequests[0].URL != "https://github.com/oceanbase/seekdb/pull/42" {
 		t.Fatal("reconciliation lost PR")
+	}
+}
+
+func TestDevelopmentPublisherRejectsUnverifiedExistingPRHead(t *testing.T) {
+	w := developmentWorkspace{Directory: t.TempDir(), GitDir: t.TempDir(), Repository: "oceanbase/seekdb", BaseBranch: "master", Branch: "work-assistant/task_test", BaseSHA: strings.Repeat("a", 40)}
+	pushes := 0
+	w.command = func(_ context.Context, _ string, binary string, args ...string) (string, error) {
+		cmd := strings.Join(args, " ")
+		if binary == "git" {
+			if strings.Contains(cmd, "rev-parse HEAD") {
+				return strings.Repeat("b", 40), nil
+			}
+			if strings.Contains(cmd, " push ") {
+				pushes++
+			}
+			return "", nil
+		}
+		switch {
+		case strings.Contains(cmd, "user --jq .login"):
+			return "test-user", nil
+		case strings.Contains(cmd, "repos/test-user/seekdb"):
+			return `{"full_name":"test-user/seekdb","parent":{"full_name":"oceanbase/seekdb"}}`, nil
+		case strings.Contains(cmd, "/pulls"):
+			return `[{"html_url":"https://github.com/oceanbase/seekdb/pull/42","body":"<!-- work-assistant:development:task_test -->","state":"open","head":{"sha":"` + strings.Repeat("c", 40) + `","ref":"work-assistant/task_test","repo":{"full_name":"someone-else/seekdb"}},"base":{"ref":"master"}}]`, nil
+		}
+		t.Fatalf("unexpected command %s %s", binary, cmd)
+		return "", nil
+	}
+	spec := model.RunSpec{TaskID: "task_test", ExecutionGrant: &model.ExecutionGrant{PlanHash: strings.Repeat("a", 64)}}
+	result := workflow.Result{PublishRequest: &workflow.PublishRequest{Title: "Implement", Body: "Tested"}}
+	err := publishDevelopment(context.Background(), &w, "", spec, &result)
+	if err == nil || !strings.Contains(err.Error(), "does not match the verified publisher branch") || pushes != 0 {
+		t.Fatal("unverified PR head reached push", err, pushes)
 	}
 }
 

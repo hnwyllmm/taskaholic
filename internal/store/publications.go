@@ -39,6 +39,55 @@ func migrateV16(db *sql.DB) error {
 func publicationKey(parts ...string) string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join(parts, "\x00"))))
 }
+
+func githubReviewDiscipline(role model.Role) string {
+	has := func(want ...string) bool {
+		for _, capability := range role.Capabilities {
+			for _, candidate := range want {
+				if capability == candidate {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	switch {
+	case has("architecture.review"):
+		return "Architecture reviewer"
+	case has("qa.review", "test.review"):
+		return "QA / test reviewer"
+	case has("security.review"):
+		return "Security reviewer"
+	case has("code.review"):
+		return "General code reviewer"
+	case has("product.review"):
+		return "Product reviewer"
+	case has("performance.review"):
+		return "Performance reviewer"
+	case has("design.review"):
+		return "Design reviewer"
+	case has("delivery.review"):
+		return "Delivery reviewer"
+	default:
+		return "Independent reviewer"
+	}
+}
+
+// Reviewer and member names are administrator-configured display values. Keep
+// them readable in GitHub while preventing a name from injecting new Markdown
+// structure, links or mentions into an externally written review comment.
+func githubReviewIdentityText(value string) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if value == "" {
+		return "Not assigned yet"
+	}
+	return strings.NewReplacer(
+		`\`, `\\`, "`", `\`+"`", "*", `\*`, "_", `\_`,
+		"[", `\[`, "]", `\]`, "<", "&lt;", ">", "&gt;",
+		"#", `\#`, "|", `\|`, "@", "&#64;",
+	).Replace(value)
+}
+
 func savePublicationTx(ctx context.Context, tx *sql.Tx, p model.Publication) error {
 	p.UpdatedAtMS = time.Now().UnixMilli()
 	raw, err := json.Marshal(p)
@@ -63,7 +112,7 @@ func queuePublicationTx(ctx context.Context, tx *sql.Tx, p model.Publication) er
 	if old.State == "SUBMITTING" || old.State == "UNCERTAIN" || old.State == "BLOCKED" {
 		return nil
 	}
-	if old.Body == p.Body && old.HeadSHA == p.HeadSHA && old.ReportHash == p.ReportHash && old.Verdict == p.Verdict {
+	if old.Body == p.Body && old.HeadSHA == p.HeadSHA && old.ReportHash == p.ReportHash && old.Verdict == p.Verdict && old.DesiredStatus == p.DesiredStatus {
 		return nil
 	}
 	p.Version = old.Version + 1
@@ -79,33 +128,31 @@ func queuePublicationTx(ctx context.Context, tx *sql.Tx, p model.Publication) er
 // Pollers remain read-only. History is append-only and included in SQLite backups.
 func (s *Store) ReconcilePublications(ctx context.Context) error {
 	return s.sourceWrite(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.QueryContext(ctx, `SELECT r.task_id,r.role_id,r.head_sha,r.state,t.data_json,role.data_json,COALESCE((SELECT output FROM run WHERE task_id=r.task_id AND state='COMPLETED' ORDER BY created_at_ms DESC LIMIT 1),'') FROM source_review r JOIN source_target t USING(target_id) JOIN role USING(role_id) WHERE r.state!='SUPERSEDED' AND r.head_sha=json_extract(t.data_json,'$.head_sha') ORDER BY r.rowid`)
+		rows, err := tx.QueryContext(ctx, `SELECT r.task_id,r.role_id,r.head_sha,r.state,t.data_json,role.data_json,COALESCE((SELECT output FROM run WHERE task_id=r.task_id AND state='COMPLETED' ORDER BY created_at_ms DESC LIMIT 1),''),COALESCE(review_task.assigned_agent_id,''),COALESCE(json_extract(agent.data_json,'$.name'),'') FROM source_review r JOIN source_target t USING(target_id) JOIN role USING(role_id) JOIN task review_task ON review_task.task_id=r.task_id LEFT JOIN agent_profile agent ON agent.agent_id=review_task.assigned_agent_id WHERE r.state!='SUPERSEDED' AND r.head_sha=json_extract(t.data_json,'$.head_sha') ORDER BY r.rowid`)
 		if err != nil {
 			return err
 		}
 		type review struct {
-			task, role, head, state, output string
-			target                          model.SourceTarget
-			name                            string
+			task, role, head, state, output, agent, agentName string
+			target                                            model.SourceTarget
+			roleSnapshot                                      model.Role
 		}
 		var reviews []review
 		for rows.Next() {
 			var r review
 			var targetRaw, roleRaw []byte
-			if err = rows.Scan(&r.task, &r.role, &r.head, &r.state, &targetRaw, &roleRaw, &r.output); err != nil {
+			if err = rows.Scan(&r.task, &r.role, &r.head, &r.state, &targetRaw, &roleRaw, &r.output, &r.agent, &r.agentName); err != nil {
 				rows.Close()
 				return err
 			}
-			var role model.Role
 			if err = json.Unmarshal(targetRaw, &r.target); err != nil {
 				rows.Close()
 				return err
 			}
-			if err = json.Unmarshal(roleRaw, &role); err != nil {
+			if err = json.Unmarshal(roleRaw, &r.roleSnapshot); err != nil {
 				rows.Close()
 				return err
 			}
-			r.name = role.Name
 			reviews = append(reviews, r)
 		}
 		err = rows.Err()
@@ -129,8 +176,6 @@ func (s *Store) ReconcilePublications(ctx context.Context) error {
 					verdict = "Passed"
 				case "changes_requested":
 					verdict = "Changes requested"
-				case "waiting_tests":
-					verdict = "Waiting for tests"
 				default:
 					verdict = "Not passed: the review is incomplete or the previous report has no explicit verdict"
 				}
@@ -152,22 +197,12 @@ func (s *Store) ReconcilePublications(ctx context.Context) error {
 			if w.Paused {
 				verdict = "Paused; this is not a current passing verdict"
 			}
-			pipelines, err := listJSONRows[model.TestPipeline](ctx, tx, `SELECT data_json FROM test_pipeline WHERE pr_target_id=? AND head_sha=? ORDER BY attempt`, r.target.ID, r.head)
-			if err != nil {
-				return err
+			discipline := githubReviewDiscipline(r.roleSnapshot)
+			member := fmt.Sprintf("**%s**", githubReviewIdentityText(r.agentName))
+			if r.agent != "" {
+				member += fmt.Sprintf(" (`%s`)", r.agent)
 			}
-			var tests strings.Builder
-			for _, p := range pipelines {
-				fmt.Fprintf(&tests, "\n- Test #%d: %s · %s", p.PipelineID, p.State, p.URL)
-			}
-			var testsRequired bool
-			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM test_pipeline WHERE pr_target_id=?)`, r.target.ID).Scan(&testsRequired); err != nil {
-				return err
-			}
-			if testsRequired && (len(pipelines) == 0 || pipelines[len(pipelines)-1].State != "success") && result.ReviewDecision == "passed" {
-				verdict = "Not passed: required tests have not succeeded"
-			}
-			body := fmt.Sprintf("<!-- work-assistant:review:%s -->\n## Agent code review\n\nReviewed commit: `%s`\n\nVerdict: **%s**\n\n%s\n\n### Test history\n%s\n\n---\nThis is the Agent review record for the commit above. It is not a GitHub approval, human acceptance, or merge authorization. Every new commit requires another review. This comment is updated in place; previous versions remain in the Work Assistant history.", key, r.head, verdict, message, tests.String())
+			body := fmt.Sprintf("<!-- work-assistant:review:%s -->\n## Agent code review · %s\n\nReviewer role: **%s** (`%s`)\nReviewer member: %s\nReview task: `%s`\n\nReviewed commit: `%s`\n\nVerdict: **%s**\n\n%s\n\n---\nThis verdict records the role-specific code review only. CI and requested test pipelines are tracked as separate delivery gates by the original task. This is not a GitHub approval, human acceptance, or merge authorization. Every new commit requires another review. This comment is updated in place; previous versions remain in the Work Assistant history.", key, discipline, githubReviewIdentityText(r.roleSnapshot.Name), r.role, member, r.task, r.head, verdict, message)
 			decision := "pending"
 			if verdict == "Passed" {
 				decision = "passed"
@@ -252,6 +287,24 @@ func reconcileIssuePublicationsTx(ctx context.Context, tx *sql.Tx) error {
 		task, err := getTaskTx(ctx, tx, b.task)
 		if err != nil {
 			return err
+		}
+		if p.Platform == "antmultica" && task.State != model.TaskStateCompleted {
+			// A source only observes and binds work. Once the assigned business
+			// Agent has actually started a Run, Manager owns the lifecycle
+			// writeback. Deriving this from durable started_at_ms also reconciles
+			// tasks that were already running when the service was upgraded.
+			var started bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM run WHERE task_id=? AND started_at_ms IS NOT NULL)`, b.task).Scan(&started); err != nil {
+				return err
+			}
+			if started {
+				status := p
+				status.Key = publicationKey("issue-status", b.entity, b.task, "in_progress")
+				status.DesiredStatus = "in_progress"
+				if err = queuePublicationTx(ctx, tx, status); err != nil {
+					return err
+				}
+			}
 		}
 		d, developmentErr := developmentTx(ctx, tx, b.task)
 		if developmentErr != nil && developmentErr != sql.ErrNoRows {
@@ -395,7 +448,7 @@ func (s *Store) ClaimPublication(ctx context.Context, key string) (model.Publica
 		if err != nil {
 			return err
 		}
-		if p.State == "SYNCED" || p.State == "BLOCKED" || p.NextAttemptMS > time.Now().UnixMilli() {
+		if p.State == "SYNCED" || p.State == "BLOCKED" || p.State == "SKIPPED" || p.NextAttemptMS > time.Now().UnixMilli() {
 			return model.ErrConflict
 		}
 		// SUBMITTING surviving a process crash is ambiguous; never POST again.

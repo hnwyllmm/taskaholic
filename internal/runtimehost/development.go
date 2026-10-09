@@ -39,7 +39,10 @@ func (w developmentWorkspace) run(ctx context.Context, binary string, args ...st
 	return developmentCommand(ctx, w.Directory, binary, args...)
 }
 
-var managedID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,160}$`)
+var (
+	managedID   = regexp.MustCompile(`^[A-Za-z0-9_-]{1,160}$`)
+	gitObjectID = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+)
 
 func durableWorkspaceJSON(path string, v any) error {
 	raw, err := json.Marshal(v)
@@ -89,7 +92,7 @@ func developmentCommand(ctx context.Context, directory, binary string, args ...s
 		if ctx.Err() != nil {
 			reason = ctx.Err().Error()
 		} else if e, ok := err.(*exec.ExitError); ok {
-			for _, known := range []string{"Permission denied (publickey)", "Could not resolve hostname", "Could not resolve host", "Connection timed out", "Connection refused", "Host key verification failed", "Repository not found", "No space left on device", "already exists", "already checked out", "Connection reset", "early EOF", "index-pack failed"} {
+			for _, known := range []string{"Permission denied (publickey)", "Could not resolve hostname", "Could not resolve host", "Connection timed out", "Connection refused", "Host key verification failed", "Repository not found", "No space left on device", "already exists", "already checked out", "Connection reset", "early EOF", "index-pack failed", "non-fast-forward", "stale info"} {
 				if strings.Contains(string(e.Stderr), known) {
 					reason = known
 					break
@@ -161,9 +164,11 @@ func (d *Daemon) prepareDevelopment(ctx context.Context, spec model.RunSpec, ses
 	return w, receipt, durableWorkspaceJSON(receipt, w)
 }
 
-// Publishing uses an existing authenticated fork, a task-unique branch and
-// fast-forward-only push. Never merges, rewrites another branch or creates a
-// fork implicitly. An uncertain PR POST is reconciled, never blindly retried.
+// Publishing uses an existing authenticated fork and a task-unique branch.
+// An existing, marker-owned PR may be updated after a rebase only with an
+// exact force-with-lease bound to the head SHA returned by GitHub. New or
+// unowned branches are never force-pushed. An uncertain PR POST is reconciled,
+// never blindly retried.
 func publishDevelopment(ctx context.Context, w *developmentWorkspace, receipt string, spec model.RunSpec, result *workflow.Result) error {
 	p := result.PublishRequest
 	if p == nil {
@@ -238,11 +243,22 @@ func publishDevelopment(ctx context.Context, w *developmentWorkspace, receipt st
 		URL   string `json:"html_url"`
 		Body  string `json:"body"`
 		State string `json:"state"`
+		Head  struct {
+			SHA  string `json:"sha"`
+			Ref  string `json:"ref"`
+			Repo *struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
 	}
 	if err = json.Unmarshal([]byte(query), &prs); err != nil {
 		return err
 	}
 	found := ""
+	expectedRemoteSHA := ""
 	for _, pr := range prs {
 		if !strings.Contains(pr.Body, marker) {
 			return errors.New("task branch is already associated with an unowned PR")
@@ -253,7 +269,11 @@ func publishDevelopment(ctx context.Context, w *developmentWorkspace, receipt st
 		if found != "" {
 			return errors.New("multiple PRs found for task branch")
 		}
+		if pr.Head.Repo == nil || !strings.EqualFold(pr.Head.Repo.FullName, fork) || pr.Head.Ref != w.Branch || pr.Base.Ref != w.BaseBranch || !gitObjectID.MatchString(pr.Head.SHA) {
+			return errors.New("task PR head does not match the verified publisher branch")
+		}
 		found = pr.URL
+		expectedRemoteSHA = strings.ToLower(pr.Head.SHA)
 	}
 	if found == "" && w.CreateAttempted {
 		return errors.New("previous PR creation outcome is uncertain; no duplicate PR created, inspect GitHub before retrying")
@@ -268,7 +288,12 @@ func publishDevelopment(ctx context.Context, w *developmentWorkspace, receipt st
 		}
 		pushURL = w.OriginURL
 	}
-	if _, err = w.git(ctx, "push", pushURL, "HEAD:refs/heads/"+w.Branch); err != nil {
+	pushArgs := []string{"push", pushURL, "HEAD:refs/heads/" + w.Branch}
+	if found != "" {
+		lease := "refs/heads/" + w.Branch + ":" + expectedRemoteSHA
+		pushArgs = []string{"push", "--force-with-lease=" + lease, pushURL, "HEAD:refs/heads/" + w.Branch}
+	}
+	if _, err = w.git(ctx, pushArgs...); err != nil {
 		return err
 	}
 	if found == "" {

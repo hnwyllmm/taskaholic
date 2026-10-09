@@ -371,6 +371,9 @@ func scanAgent(row rowScanner) (model.AgentProfile, error) {
 	if err := json.Unmarshal(roleData, &agent.Role); err != nil {
 		return agent, err
 	}
+	// Cost tier was added after the first team members. Keep historical records
+	// readable and make the existing Luna low-cost members immediately usable.
+	agent.CostTier = model.NormalizeCostTier(agent.CostTier, agent.ModelID)
 	agent.ActiveRuns = active
 	return agent, nil
 }
@@ -389,6 +392,11 @@ func (s *Store) CreateAgent(ctx context.Context, agent model.AgentProfile) (mode
 	if len(agent.ModelID) > 200 {
 		return agent, fmt.Errorf("%w: model_id too long", model.ErrValidation)
 	}
+	requestedTier := strings.ToLower(strings.TrimSpace(agent.CostTier))
+	if requestedTier != "" && requestedTier != model.CostTierEconomy && requestedTier != model.CostTierStandard && requestedTier != model.CostTierPremium {
+		return agent, fmt.Errorf("%w: invalid cost_tier", model.ErrValidation)
+	}
+	agent.CostTier = model.NormalizeCostTier(requestedTier, agent.ModelID)
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)

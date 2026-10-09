@@ -5,7 +5,7 @@ window.WAReviewChat=(()=>{
     container.classList.add('review-chat');container.hidden=true;
     const heading=el('h3','本次验收沟通'),identity=el('p',null,'review-chat-identity small muted'),scope=el('p','延续交付时的原生 Session。这里只沟通当前成果，不自动修改文件、通过或打回。','small muted'),thread=el('div',null,'review-chat-thread');thread.setAttribute('role','log');thread.setAttribute('aria-label','验收沟通记录');
     const form=el('form'),label=el('label','给交付 Agent 的问题'),input=el('textarea');input.rows=3;input.maxLength=5000;input.setAttribute('aria-label','验收沟通问题');input.placeholder='例如：为什么采用这个方案？这个结果是怎样验证的？';label.append(input);
-    const actions=el('div',null,'review-chat-actions'),send=el('button','发送给交付 Agent','primary'),stop=el('button','停止本轮沟通');stop.type='button';send.type='submit';actions.append(send,stop);
+    const actions=el('div',null,'review-chat-actions'),send=el('button','发送给交付 Agent','primary'),stop=el('button','停止本轮沟通');stop.type='button';send.type='submit';actions.append(send,el('span','Enter 发送 · Ctrl+Enter 换行','key-hint'),stop);
     const status=el('p',null,'small review-chat-status');status.setAttribute('role','status');const error=el('p',null,'dialog-error');error.setAttribute('role','alert');error.hidden=true;form.append(label,actions);container.append(heading,identity,scope,thread,form,status,error);
     let context=null,networkBusy=false,externalBusy=false,requestKey='',threadStamp='',pending=null;
     const isWaiting=()=>!!context?.turns.some(t=>['QUEUED','RUNNING'].includes(t.state));
@@ -30,6 +30,7 @@ window.WAReviewChat=(()=>{
     }
     async function perform(fn){if(networkBusy||externalBusy)return;networkBusy=true;error.hidden=true;controls();busyChanged();try{await fn();}catch(e){error.textContent=e.message;error.hidden=false;try{await changed();}catch{}}finally{networkBusy=false;controls();busyChanged();}}
     form.onsubmit=e=>{e.preventDefault();if(send.disabled)return;perform(async()=>{const question=input.value.trim();if(!question)throw Error('请先写下要和交付者沟通的问题。');if(!requestKey)requestKey=key();const c=context;await api('/work/tasks/'+c.taskID+'/reviews/'+c.review.review_id+'/messages','POST',{message:question,idempotency_key:requestKey,expected_discussion_version:c.review.discussion_version||0});input.value='';requestKey='';await changed();});};
+    WA.bindChatInput?.(input,()=>send.click());
     stop.onclick=()=>perform(async()=>{const turn=context.turns.find(t=>['QUEUED','RUNNING'].includes(t.state));if(!turn)return;await api('/work/tasks/'+context.taskID+'/reviews/'+context.review.review_id+'/messages/'+turn.turn_id+'/stop','POST',{});await changed();});
     input.oninput=()=>{requestKey='';if(!input.value.trim()&&pending){const next=pending;context=null;update(next.data,next.reviewID);}controls();busyChanged();};
     return{update,controls,isWaiting,isBusy:()=>networkBusy,hasDraft:()=>!!input.value.trim(),clearDraft:()=>{input.value='';requestKey='';if(pending){const next=pending;context=null;update(next.data,next.reviewID);}},reset:()=>{input.value='';requestKey='';context=null;pending=null;threadStamp='';container.hidden=true;}};

@@ -45,6 +45,28 @@ func TestRecoveryKeepsSessionApprovalAndHasNoAttemptCap(t *testing.T) {
 	}
 }
 
+func TestRecoveryRegistersPRBeforeContinuing(t *testing.T) {
+	ctx := context.Background()
+	s, _, task, run := approvedEnvironmentFixture(t)
+	source := saveTestSource(t, s, "github")
+	prURL := "https://github.com/oceanbase/seekdb/pull/123"
+	developmentFinish(t, s, run, 3, workflow.Result{
+		Outcome:         "blocked",
+		Message:         "implementation continues",
+		Artifacts:       []workflow.File{},
+		RecoveryRequest: &workflow.RecoveryRequest{Evidence: "review feedback is being fixed", NextStep: "finish the approved implementation"},
+		PullRequests:    []workflow.PullRequest{{URL: prURL, SourceID: source.ID}},
+	})
+	current, _ := s.GetTask(ctx, task.ID)
+	if current.State != model.TaskStateQueued {
+		t.Fatal("continuation was blocked by its PR reference", current.State)
+	}
+	targets, err := s.ListSourceTargets(ctx)
+	if err != nil || len(targets) != 1 || targets[0].TaskID != task.ID || targets[0].Entity != prURL {
+		t.Fatalf("PR was not registered before continuation: targets=%+v err=%v", targets, err)
+	}
+}
+
 func TestRecoveryHonorsPauseAndUnapprovedPlan(t *testing.T) {
 	for _, paused := range []bool{true, false} {
 		t.Run(map[bool]string{true: "paused", false: "unapproved"}[paused], func(t *testing.T) {

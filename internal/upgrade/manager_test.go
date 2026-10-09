@@ -76,7 +76,7 @@ func TestPrepareApplyAndRollbackCandidate(t *testing.T) {
 		t.Fatal(err)
 	}
 	u := manager.Prepare(context.Background(), model.Upgrade{ID: "upgrade-safe", Title: "Update docs", Instructions: "update readme", State: "BUILDING"})
-	if u.State != "READY" || len(u.Changes) != 1 || u.Changes[0].Path != "README.md" || u.CandidateSHA256 == "" || u.BaseSourceSHA256 == "" || u.BaseBinaries["assistant-local"] == "" || u.SessionRef == "" {
+	if u.State != "READY" || u.RestartScope != model.UpgradeRestartControl || len(u.Changes) != 1 || u.Changes[0].Path != "README.md" || u.CandidateSHA256 == "" || u.BaseSourceSHA256 == "" || u.BaseBinaries["assistant-local"] == "" || u.SessionRef == "" {
 		t.Fatalf("candidate = %+v", u)
 	}
 	if !strings.Contains(u.Patch, "--- a/README.md") || !strings.Contains(u.Patch, "-old readme") || !strings.Contains(u.Patch, "+new readme") {
@@ -111,6 +111,26 @@ func TestPrepareApplyAndRollbackCandidate(t *testing.T) {
 	}
 	if body, _ := os.ReadFile(filepath.Join(root, "bin", "assistant-local")); string(body) != "old binary\n" {
 		t.Fatal("binary was not rolled back")
+	}
+}
+
+func TestRestartScopeIsConservativeForRuntimeAndSharedChanges(t *testing.T) {
+	for path, want := range map[string]string{
+		"internal/server/ui/tasks.js":    model.UpgradeRestartControl,
+		"internal/server/hub.go":         model.UpgradeRestartRuntime,
+		"internal/tasksource/github.go":  model.UpgradeRestartControl,
+		"README.md":                      model.UpgradeRestartControl,
+		"internal/agent/codex.go":        model.UpgradeRestartRuntime,
+		"internal/runtimehost/daemon.go": model.UpgradeRestartRuntime,
+		"internal/model/models.go":       model.UpgradeRestartRuntime,
+		"internal/unknown/new.go":        model.UpgradeRestartRuntime,
+	} {
+		if got := RestartScopeForChanges([]model.UpgradeChange{{Path: path}}); got != want {
+			t.Fatalf("%s: got %s want %s", path, got, want)
+		}
+	}
+	if got := RestartScopeForChanges([]model.UpgradeChange{{Path: "internal/server/ui/tasks.js"}, {Path: "internal/agent/codex.go"}}); got != model.UpgradeRestartRuntime {
+		t.Fatal("mixed candidate must use runtime restart")
 	}
 }
 

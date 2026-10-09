@@ -28,9 +28,11 @@ SQLite schema 15 新增 `test_pipeline`，保存原任务/申请任务/Run、PR�
 
 状态：`QUEUED → SUBMITTING → created/running/... → success/failed/canceled/skipped`。提交响应不明进入 `UNCERTAIN`，重启后仅通过 `WORK_ASSISTANT_REQUEST_ID` pipeline 变量对账，不重发 POST。未找到时保留申请并定期检查，不假定“超时=未创建”。HTTP 明确拒绝为 `ERROR`。这种策略优先避免重复测试，不声称跨 SQLite/HTTP 已实现分布式 exactly-once。长期无法对账需要人工核实 GitLab 和记录，不能盲目重新提交。
 
-轮询默认 15 秒，任务源页可改；实际周期受网络耗时和目标数量影响，失败退避。采集失败不当作测试失败或通过。状态变化产生去重的 `gitlab.pipeline` 事件，终态停止该目标轮询。`manual` 请求人工关注但继续观察；不能算通过。失败会附父/子流水线的作业 ID、名称、原因和链接；最多 30 个失败作业、10 个同项目流水线、两层子流水线，不取任意跨项目结果。明细不可用时报告缺口，不延迟失败状态通知；不自动持久化原始 CI trace，避免复制日志中的敏感信息。
+轮询默认 15 秒，任务源页可改；实际周期受网络耗时和目标数量影响，失败退避。采集失败不当作测试失败或通过。状态或失败证据变化会产生去重的 `gitlab.pipeline` 事件。`manual` 请求人工关注但继续观察；不能算通过。失败会附父/子流水线的作业 ID、名称、原因和链接；最多 30 个失败作业、10 个同项目流水线、两层子流水线，不取任意跨项目结果。Manager 使用隔离凭据读取前 12 个失败作业的 trace，只保留每个日志脱敏后的末尾 8 Ki 字符；工作 Agent 不接触 Token。日志暂不可读时由持久化动作队列后台重试，不唤醒 Agent 要求用户转贴日志，也不重跑 pipeline。日志证据到齐后，才在原 Agent / Session 中续接失败处理。
 
-失败反馈回到原任务 PENDING 消息，原 Agent 下一轮分析代码缺陷、环境或偶发问题；当前 Run 不被轮询器中断，人工暂停不被解除。旧 SHA 的迟到结果只记录为历史，不驱动当前任务。Agent 分析后显式申请重试：同 SHA 的 `retry_of` 填最近失败记录的 request_id；重试创建新的 pipeline，完整保留之前编号，最多三次尝试。修改为新 SHA 时重新申请，`retry_of` 留空；旧测试不会作为新版本通过的证据。不自动取消已经运行的旧版本测试。
+失败日志到齐后，Manager 先做确定性分流：只有 1～3 个带真实 Job ID 的 `failed/canceled` 作业时，才进入 `RETRY_QUEUED → RETRY_SUBMITTING → created`，调用 GitLab 原 Pipeline 的 retry API，只重试失败/取消作业；不新建 `JOBS=all` Pipeline，也不唤醒开发 Agent。自动快重试最多两次，每轮记录作业 ID、名称、脱敏指纹和每个作业末尾最多 1200 字符的脱敏日志，供最终分析横向对比。GitLab 接受重试后短暂返回旧失败快照时按 Job ID 去重并继续轮询，不重复消耗次数。提交响应不明进入 `RETRY_UNCERTAIN`，只读对账两分钟且绝不重复 POST。
+
+失败作业超过 3 个、作业身份不完整、两次快重试仍失败，或重试动作本身无法确认时，Manager 停止自动重试，只向原开发 Agent / 原 Session 发送一次带 `failure_history` 的深入分析要求；任务后续再次返回 blocked 时不会被五分钟自动恢复循环反复唤醒。Agent 需要对比各轮日志，判断代码、稳定复现、基础设施或偶发问题。修改代码后以新 SHA 重新申请，`retry_of` 留空。只有分析证明无需改代码时，才可用最近记录的 request_id 显式申请同 SHA 完整复测；同一 SHA 的自动快重试和完整复测合计最多 3 次，达到硬上限后申请只留审计记录，不产生外部写入。旧 SHA 的迟到结果只记录为历史，不驱动当前任务，也不自动取消已经运行的旧版本测试。
 
 一旦 QA 要求回归，人工批准前检查当前 PR head 最新一次尝试为 success，仍需通过既有评审/子任务/消息门槛。停用任务源不能绕过验收。已完成任务不因迟到事件重新打开。
 
@@ -48,6 +50,6 @@ go run ./deploy/dev/pipeline-probe
 
 probe 只验证认证、项目与分支，不发起流水线，不修改生产任务。新增表随既有在线 SQLite 校验备份保存；凭据和原生 CLI Session 仍需主机级保护。上线前应备份并在备份副本演练迁移，不能用旧库覆盖新记录。
 
-插件边界：`gitlabci.Executor` / `Reader` 分别注入 `server.Config.TestPipelineExecutor` / `TestPipelineReader`；`taskaction.PipelineActions.Executors` 注册不同受控测试动作；`tasksource.Provider` 只负责事件采集。新增测试套件需同步增加严格参数验证、授权、UI 和测试，不能仅靠网页放开任意带凭据 HTTP 请求。
+插件边界：`gitlabci.Executor` / `Reader` 分别注入 `server.Config.TestPipelineExecutor` / `TestPipelineReader`；支持原 Pipeline 快重试的插件还必须显式实现独立的 `gitlabci.Retrier`，不能从“可创建流水线”隐式获得重试权限。`taskaction.PipelineActions` 执行持久化动作；`tasksource.Provider` 只负责事件采集。新增测试套件需同步增加严格参数验证、授权、UI 和测试，不能仅靠网页放开任意带凭据 HTTP 请求。
 
 接口依据：[GitLab Pipelines API](https://docs.gitlab.com/api/pipelines/)、[Jobs / 子流水线 API](https://docs.gitlab.com/api/jobs/)。本部署使用经现有实例支持的 `bridges` 路由。

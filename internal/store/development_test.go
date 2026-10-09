@@ -43,7 +43,15 @@ func developmentFinish(t *testing.T, s *Store, r model.Run, seq int64, result wo
 	}
 }
 func submittedPlan(body string) workflow.Result {
-	return workflow.Result{Outcome: "review", Message: body, Artifacts: []workflow.File{{Name: "plan.md", Content: body}}, PlanScope: &workflow.PlanScope{Repository: "oceanbase/seekdb", BaseBranch: "master"}}
+	return workflow.Result{Outcome: "review", Message: body, Artifacts: []workflow.File{{Name: "plan.md", Content: body}}, PlanScope: &workflow.PlanScope{Repository: "oceanbase/seekdb", BaseBranch: "master"}, ValidationPlan: testValidationPlan()}
+}
+
+func testValidationPlan() *workflow.ValidationPlan {
+	return &workflow.ValidationPlan{
+		Reuse: []workflow.ValidationItem{{Scenario: "unchanged parser tests", Reason: "parser is outside the patch", Evidence: "baseline run at approved commit"}},
+		Rerun: []workflow.ValidationItem{{Scenario: "changed persistence path", Reason: "implementation changes this path", Evidence: "existing regression must run on candidate"}},
+		Add:   []workflow.ValidationItem{}, Exclude: []workflow.ValidationItem{}, FinalGate: []string{"build candidate", "run persistence regression"},
+	}
 }
 
 func TestDevelopmentRetryPreservesApprovalAndSession(t *testing.T) {
@@ -51,6 +59,10 @@ func TestDevelopmentRetryPreservesApprovalAndSession(t *testing.T) {
 	s, dev, reviewer, task := developmentFixture(t)
 	first := startWork(t, s, dev, task)
 	developmentFinish(t, s, first, 1, submittedPlan("plan"))
+	planned := developmentState(t, s, task.ID)
+	if planned.ValidationPlan == nil || len(planned.ValidationPlan.Rerun) != 1 || len(planned.ValidationPlan.FinalGate) != 2 {
+		t.Fatal("structured validation plan was not persisted", planned.ValidationPlan)
+	}
 	if err := s.RoutePlanReviews(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +97,212 @@ func TestDevelopmentRetryPreservesApprovalAndSession(t *testing.T) {
 	if next.SessionID != first.SessionID || outboxSpec(t, s, next.ID).ExecutionGrant == nil {
 		t.Fatal("retry lost session/grant")
 	}
+	if spec := outboxSpec(t, s, next.ID); !strings.Contains(spec.Instructions, "结构化验证策略") || !strings.Contains(spec.Instructions, "persistence regression") {
+		t.Fatal("approved validation strategy missing from implementation instructions")
+	}
+	if spec := outboxSpec(t, s, next.ID); !strings.Contains(spec.Instructions, "SeekDB 仓库构建策略") || !strings.Contains(spec.Instructions, "ob-make --inc -s") || !strings.Contains(spec.Instructions, "ob-make -C <构建目录>") {
+		t.Fatal("SeekDB build guidance missing from implementation instructions")
+	}
+}
+
+func TestVerificationAmendmentRetainsApprovedProductPlan(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, task := developmentFixture(t)
+	first := startWork(t, s, dev, task)
+	developmentFinish(t, s, first, 1, submittedPlan("approved product plan"))
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := developmentState(t, s, task.ID)
+	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+	planReview := startWork(t, s, reviewer, child)
+	developmentFinish(t, s, planReview, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "product plan is sound", Artifacts: []workflow.File{}})
+	w, _ := s.GetWorkDetail(ctx, task.ID)
+	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "approved"); err != nil {
+		t.Fatal(err)
+	}
+	implementation := startWork(t, s, dev, task)
+	before := *developmentState(t, s, task.ID)
+	amended := testValidationPlan()
+	amended.Add = []workflow.ValidationItem{{Scenario: "lease contention regression", Reason: "reviewer requires a durable focused test", Evidence: "review finding"}}
+	developmentFinish(t, s, implementation, 3, workflow.Result{
+		Outcome:               "amend_validation",
+		Message:               "Add the requested focused regression without changing product behavior.",
+		Artifacts:             []workflow.File{},
+		ValidationPlan:        amended,
+		VerificationAmendment: &workflow.VerificationAmendment{Reason: "Only repository test coverage is added", Paths: []string{"unittest/logservice/replay_status_test.cpp", "tools/obtest/t/logservice/replay_status.test"}},
+		TaskUpdate:            &workflow.TaskUpdate{Kind: "feature", Reason: "Close coverage gap", Approach: "Add focused tests"},
+	})
+	after := developmentState(t, s, task.ID)
+	if after.Phase != "IMPLEMENTING" || after.Version != before.Version || after.PlanRunID != before.PlanRunID || after.PlanHash != before.PlanHash || after.ApprovedReviewID != before.ApprovedReviewID {
+		t.Fatalf("verification amendment invalidated product approval: before=%+v after=%+v", before, after)
+	}
+	if after.ValidationPlan == nil || len(after.ValidationPlan.Add) != 1 || after.ValidationPlan.Add[0].Scenario != "lease contention regression" {
+		t.Fatal("amended validation strategy was not retained", after.ValidationPlan)
+	}
+	current, _ := s.GetTask(ctx, task.ID)
+	if current.State != model.TaskStateQueued {
+		t.Fatal("verification amendment did not continue implementation", current.State)
+	}
+	var events int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_log WHERE aggregate_id=? AND event_type='VerificationAmendmentAccepted'`, task.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatal("verification amendment audit missing", events, err)
+	}
+	next := startWork(t, s, dev, task)
+	spec := outboxSpec(t, s, next.ID)
+	if next.SessionID != implementation.SessionID || spec.ExecutionGrant == nil || spec.ExecutionGrant.ReviewID != before.ApprovedReviewID || !strings.Contains(spec.Instructions, "lease contention regression") {
+		t.Fatal("verification amendment lost approval, session, or updated test strategy", next, spec.ExecutionGrant, spec.Instructions)
+	}
+}
+
+func TestUserValidationScopeAmendmentPreservesApprovalAndSession(t *testing.T) {
+	ctx := context.Background()
+	s, developer, task, implementation := approvedImplementation(t)
+	before := *developmentState(t, s, task.ID)
+	if err := s.PauseWork(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: implementation.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3, RunID: implementation.ID, TaskID: task.ID, Type: "run.interrupted", Error: "context canceled"}); err != nil {
+		t.Fatal(err)
+	}
+	paused, err := s.GetTask(ctx, task.ID)
+	if err != nil || paused.State != model.TaskStatePaused {
+		t.Fatalf("fixture did not become idle and paused: %+v %v", paused, err)
+	}
+	amendedPlan := model.DevelopmentValidationPlan{
+		Reuse: []model.DevelopmentValidationItem{{Scenario: "exact four-profile mirror replacement", Reason: "the patch was already applied in the approved worktree", Evidence: "record the candidate diff against BASE_SHA"}},
+		Rerun: []model.DevelopmentValidationItem{{Scenario: "download every dependency URL from the affected profiles", Reason: "the accepted risk is availability of the replacement mirror", Evidence: "use an Android development environment when available; record commands and results"}},
+		Exclude: []model.DevelopmentValidationItem{{Scenario: "macOS ARM init and release build", Reason: "the user explicitly accepted the unavailable ARM environment as a validation limitation", Evidence: "must remain visible in the delivery evidence"}},
+		FinalGate: []string{"the exact diff only changes the approved mirror hostnames", "all affected mirrors.oceanbase.com dependency archives are downloadable", "the PR body records the accepted macOS ARM validation limitation"},
+	}
+	amended, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{
+		ExpectedVersion: paused.Version,
+		Reason:          "No macOS ARM environment is available; validate mirror downloads only and do not reopen plan review.",
+		ValidationPlan:  amendedPlan,
+		IdempotencyKey:  "scope-amendment",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amended.Phase != "IMPLEMENTING" || amended.Version != before.Version || amended.PlanRunID != before.PlanRunID || amended.PlanHash != before.PlanHash || amended.ApprovedReviewID != before.ApprovedReviewID {
+		t.Fatalf("scope amendment invalidated product approval: before=%+v after=%+v", before, amended)
+	}
+	if amended.ValidationPlan == nil || len(amended.ValidationPlan.Exclude) != 1 || amended.ValidationPlan.Exclude[0].Scenario != "macOS ARM init and release build" {
+		t.Fatalf("updated validation plan missing: %+v", amended.ValidationPlan)
+	}
+	queued, _ := s.GetTask(ctx, task.ID)
+	if queued.State != model.TaskStateQueued {
+		t.Fatal("scope amendment did not queue implementation", queued.State)
+	}
+	if _, err = s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: paused.Version, Reason: "idempotent replay", ValidationPlan: amendedPlan, IdempotencyKey: "scope-amendment"}); err != nil {
+		t.Fatal("idempotent replay should return the accepted amendment", err)
+	}
+	var events int
+	if err = s.db.QueryRow(`SELECT COUNT(*) FROM event_log WHERE aggregate_id=? AND event_type='UserValidationScopeAmendmentAccepted'`, task.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatal("user validation amendment audit missing", events, err)
+	}
+	next := startWork(t, s, developer, task)
+	spec := outboxSpec(t, s, next.ID)
+	if next.SessionID != implementation.SessionID || spec.ExecutionGrant == nil || spec.ExecutionGrant.ReviewID != before.ApprovedReviewID || !strings.Contains(spec.Instructions, "macOS ARM init and release build") || !strings.Contains(spec.Instructions, "用户已受控确认调整验证范围") {
+		t.Fatal("scope amendment lost session, grant, or instructions", next, spec.ExecutionGrant, spec.Instructions)
+	}
+}
+
+func TestUserValidationScopeAmendmentRejectsActiveOrInvalidPlans(t *testing.T) {
+	ctx := context.Background()
+	s, _, task, implementation := approvedImplementation(t)
+	current, _ := s.GetTask(ctx, task.ID)
+	valid := model.DevelopmentValidationPlan{Reuse: []model.DevelopmentValidationItem{{Scenario: "existing proof", Reason: "unaffected", Evidence: "baseline"}}, FinalGate: []string{"record evidence"}}
+	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version, Reason: "change", ValidationPlan: valid}); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("active implementation accepted scope amendment", err)
+	}
+	if err := s.PauseWork(ctx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{RuntimeID: implementation.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3, RunID: implementation.ID, TaskID: task.ID, Type: "run.interrupted", Error: "context canceled"}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = s.GetTask(ctx, task.ID)
+	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version, Reason: "change", ValidationPlan: model.DevelopmentValidationPlan{}}); !errors.Is(err, model.ErrValidation) {
+		t.Fatal("invalid validation plan accepted", err)
+	}
+}
+
+func TestVerificationAmendmentCanRestoreLegacyBroadReplan(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, task := developmentFixture(t)
+	first := startWork(t, s, dev, task)
+	developmentFinish(t, s, first, 1, submittedPlan("approved product plan"))
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := developmentState(t, s, task.ID)
+	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+	planReview := startWork(t, s, reviewer, child)
+	developmentFinish(t, s, planReview, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "approved", Artifacts: []workflow.File{}})
+	w, _ := s.GetWorkDetail(ctx, task.ID)
+	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "approved"); err != nil {
+		t.Fatal(err)
+	}
+	implementation := startWork(t, s, dev, task)
+	approved := *developmentState(t, s, task.ID)
+	legacy := submittedPlan("legacy replan only adds test coverage")
+	legacy.Outcome = "replan"
+	developmentFinish(t, s, implementation, 3, legacy)
+	if developmentState(t, s, task.ID).Phase != "PLANNING" {
+		t.Fatal("fixture did not create legacy broad replan")
+	}
+	revised := startWork(t, s, dev, task)
+	developmentFinish(t, s, revised, 4, submittedPlan("revised validation plan"))
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reviewerTask, _ := s.GetTask(ctx, developmentState(t, s, task.ID).ReviewerTaskID)
+	reviewerRun := startWork(t, s, reviewer, reviewerTask)
+	developmentFinish(t, s, reviewerRun, 5, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "tests are sufficient", Artifacts: []workflow.File{}})
+	current, _ := s.GetTask(ctx, task.ID)
+	if developmentState(t, s, task.ID).Phase != "HUMAN_REVIEW" || current.State != model.TaskStateReview {
+		t.Fatal("fixture did not reach pending revised plan review")
+	}
+	restored, err := s.ContinueApprovedDevelopmentAfterVerificationAmendment(ctx, task.ID, current.Version, "The revised scope only adds durable test coverage requested by review.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Phase != "IMPLEMENTING" || restored.PlanRunID != approved.PlanRunID || restored.PlanHash != approved.PlanHash || restored.ApprovedReviewID != approved.ApprovedReviewID {
+		t.Fatalf("previous approval was not restored: approved=%+v restored=%+v", approved, restored)
+	}
+	w, _ = s.GetWorkDetail(ctx, task.ID)
+	for _, review := range w.Reviews {
+		if review.State == "PENDING" {
+			t.Fatal("superseded revised plan still awaits human approval", review)
+		}
+	}
+	current, _ = s.GetTask(ctx, task.ID)
+	if current.State != model.TaskStateQueued {
+		t.Fatal("restored implementation was not queued", current.State)
+	}
+	next := startWork(t, s, dev, task)
+	if next.SessionID != implementation.SessionID || outboxSpec(t, s, next.ID).ExecutionGrant == nil || outboxSpec(t, s, next.ID).ExecutionGrant.ReviewID != approved.ApprovedReviewID {
+		t.Fatal("legacy restoration lost the original session or approval", next, outboxSpec(t, s, next.ID).ExecutionGrant)
+	}
+}
+
+func TestRepositoryBuildGuidanceMatchesOnlySeekDB(t *testing.T) {
+	for _, repository := range []string{
+		"oceanbase/seekdb",
+		"https://github.com/oceanbase/seekdb.git",
+		"git@github.com:oceanbase/seekdb.git",
+		"ssh://git@github.com/oceanbase/seekdb/",
+	} {
+		if guidance := repositoryBuildGuidance(repository); !strings.Contains(guidance, "ob-make --inc") {
+			t.Fatalf("missing guidance for %q", repository)
+		}
+	}
+	for _, repository := range []string{"", "oceanbase/seekdb-bindings", "other/seekdb"} {
+		if guidance := repositoryBuildGuidance(repository); guidance != "" {
+			t.Fatalf("unexpected guidance for %q: %s", repository, guidance)
+		}
+	}
 }
 func developmentState(t *testing.T, s *Store, task string) *model.Development {
 	t.Helper()
@@ -105,6 +323,41 @@ func outboxSpec(t *testing.T, s *Store, runID string) model.RunSpec {
 		t.Fatal(e)
 	}
 	return spec
+}
+
+func TestPlanningAcceptsCompleteReplanWithKnownPRReference(t *testing.T) {
+	ctx := context.Background()
+	s, developer, _, task := developmentFixture(t)
+	run := startWork(t, s, developer, task)
+	source := saveTestSource(t, s, "github")
+	const prURL = "https://github.com/oceanbase/seekdb/pull/1405"
+	if _, err := s.RegisterPR(ctx, task.ID, source.ID, prURL); err != nil {
+		t.Fatal(err)
+	}
+	revised := submittedPlan("complete revised plan")
+	revised.Outcome = "replan"
+	revised.PullRequests = []workflow.PullRequest{{URL: prURL}}
+	developmentFinish(t, s, run, 1, revised)
+	d := developmentState(t, s, task.ID)
+	current, _ := s.GetTask(ctx, task.ID)
+	config, _ := s.GetWorkConfig(ctx, task.ID)
+	if d.Phase != "AGENT_REVIEW" || d.PlanRunID != run.ID || current.State == model.TaskStateBlocked || config.Paused || config.SchedulerError != "" {
+		t.Fatalf("complete revised plan was not routed to review: development=%+v task=%+v config=%+v", d, current, config)
+	}
+}
+
+func TestPlanningRejectsNewPRRegistration(t *testing.T) {
+	ctx := context.Background()
+	s, developer, _, task := developmentFixture(t)
+	run := startWork(t, s, developer, task)
+	plan := submittedPlan("plan with an unregistered PR")
+	plan.PullRequests = []workflow.PullRequest{{URL: "https://github.com/oceanbase/seekdb/pull/9876"}}
+	developmentFinish(t, s, run, 1, plan)
+	current, _ := s.GetTask(ctx, task.ID)
+	config, _ := s.GetWorkConfig(ctx, task.ID)
+	if current.State != model.TaskStateBlocked || !config.Paused || !strings.Contains(config.SchedulerError, "方案阶段不允许") {
+		t.Fatalf("new PR side effect was accepted during planning: task=%+v config=%+v", current, config)
+	}
 }
 
 func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
@@ -129,6 +382,9 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	if developmentState(t, s, task.ID).Phase != "PLANNING" {
 		t.Fatal("feedback not delivered")
 	}
+	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateCompleted {
+		t.Fatal("completed reviewer was left waiting for nonexistent subtasks", got.State)
+	}
 	second := startWork(t, s, dev, task)
 	if second.SessionID != first.SessionID {
 		t.Fatal("developer lost session")
@@ -143,6 +399,9 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	if developmentState(t, s, task.ID).ReviewerTaskID != child.ID {
 		t.Fatal("reviewer task replaced")
 	}
+	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateQueued {
+		t.Fatal("next plan revision did not queue the reused reviewer", got.State)
+	}
 	reviewTwo := startWork(t, s, reviewer, child)
 	if reviewTwo.SessionID != reviewOne.SessionID {
 		t.Fatal("reviewer lost session")
@@ -151,6 +410,9 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	w, _ = s.GetWorkDetail(ctx, task.ID)
 	if w.Development.Phase != "HUMAN_REVIEW" || len(w.Reviews) != 1 || w.Reviews[0].Kind != "plan" || w.Reviews[0].RunID != second.ID {
 		t.Fatal("invalid plan approval", w.Development, w.Reviews)
+	}
+	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateCompleted {
+		t.Fatal("reviewer verdict should complete its own task", got.State)
 	}
 	if _, e := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "APPROVED", ""); !errors.Is(e, model.ErrValidation) {
 		t.Fatal("generic approval bypass", e)
@@ -169,11 +431,19 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	if spec.ReadOnly || spec.ExecutionGrant == nil || spec.ExecutionGrant.PlanHash != w.Development.PlanHash || implementation.SessionID != first.SessionID {
 		t.Fatal("wrong execution grant or session")
 	}
-	// Merely returning a document cannot satisfy implementation acceptance.
+	// A premature implementation review is corrected in the original Session;
+	// it neither creates human acceptance nor invents a pre-PR review gate.
 	developmentFinish(t, s, implementation, 5, workflow.Result{Outcome: "review", Message: "Only wrote a document", Artifacts: []workflow.File{{Name: "report.md", Content: "Not implemented"}}})
 	state, _ := s.GetTask(ctx, task.ID)
-	if state.State != model.TaskStateBlocked {
-		t.Fatal("document accepted as implementation", state.State)
+	if state.State != model.TaskStateQueued {
+		t.Fatal("premature delivery was not continued", state.State)
+	}
+	continued := startWork(t, s, dev, task)
+	if continued.SessionID != implementation.SessionID || outboxSpec(t, s, continued.ID).ExecutionGrant == nil {
+		t.Fatal("premature delivery lost session or approval")
+	}
+	if instructions := outboxSpec(t, s, continued.ID).Instructions; !strings.Contains(instructions, "不要安排 PR 前的独立 Agent 复审") || !strings.Contains(instructions, "publish_request") {
+		t.Fatal("missing corrective continuation", instructions)
 	}
 	snapshot := filepath.Join(t.TempDir(), "copy.sqlite")
 	if e := s.Backup(ctx, snapshot); e != nil {
@@ -187,6 +457,35 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	copy := developmentState(t, restored, task.ID)
 	if copy.ApprovedReviewID == "" || copy.PlanHash != w.Development.PlanHash {
 		t.Fatal("approval lost in backup")
+	}
+}
+
+func TestRoutePlanReviewsReconcilesLegacyIdleReviewerState(t *testing.T) {
+	ctx := context.Background()
+	s, dev, reviewer, task := developmentFixture(t)
+	plan := startWork(t, s, dev, task)
+	developmentFinish(t, s, plan, 1, submittedPlan("approved product plan"))
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	d := developmentState(t, s, task.ID)
+	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
+	review := startWork(t, s, reviewer, child)
+	developmentFinish(t, s, review, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "ready", Artifacts: []workflow.File{}})
+	if err := s.sourceWrite(ctx, func(tx *sql.Tx) error {
+		return setWorkStateTx(ctx, tx, child.ID, model.TaskStateWaiting)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateCompleted {
+		t.Fatal("legacy idle reviewer state was not reconciled", got.State)
+	}
+	var events int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_log WHERE aggregate_id=? AND event_type='PlanReviewerIdleStateReconciled'`, child.ID).Scan(&events); err != nil || events != 1 {
+		t.Fatal("missing legacy reviewer reconciliation audit event", events, err)
 	}
 }
 
@@ -244,7 +543,7 @@ func TestDevelopmentNoReviewerDoesNotSkipGate(t *testing.T) {
 	}
 }
 
-func TestDevelopmentContinuesIntoPRReviewAndFinalAcceptance(t *testing.T) {
+func TestDevelopmentContinuesIntoPRReviewAndMergedCompletion(t *testing.T) {
 	ctx := context.Background()
 	s, dev, reviewer, task := developmentFixture(t)
 	source := saveTestSource(t, s, "github")
@@ -295,6 +594,16 @@ func TestDevelopmentContinuesIntoPRReviewAndFinalAcceptance(t *testing.T) {
 	if e != nil || len(ps) != 1 {
 		t.Fatal("missing sticky review comment", e, len(ps))
 	}
+	for _, marker := range []string{
+		"## Agent code review · Design reviewer",
+		"Reviewer role: **" + reviewer.Role.Name + "** (`" + reviewer.RoleID + "`)",
+		"Reviewer member: **" + reviewer.Name + "** (`" + reviewer.ID + "`)",
+		"Review task: `" + prChild.ID + "`",
+	} {
+		if !strings.Contains(ps[0].Body, marker) {
+			t.Fatalf("sticky review comment missing identity %q: %s", marker, ps[0].Body)
+		}
+	}
 	claim, e := s.ClaimPublication(ctx, ps[0].Key)
 	if e != nil {
 		t.Fatal(e)
@@ -308,12 +617,18 @@ func TestDevelopmentContinuesIntoPRReviewAndFinalAcceptance(t *testing.T) {
 		t.Fatal("accepted before merge", e)
 	}
 	pollStore(t, s, source, targetByID(t, s, target.ID), head, model.SourceEvent{Key: "merged:" + head, Kind: "github.merged", HeadSHA: head, Message: "merged externally"})
-	if _, e = s.DecideReview(ctx, task.ID, final.ID, "APPROVED", "accepted after merge"); e != nil {
-		t.Fatal(e)
-	}
 	done, _ := s.GetTask(ctx, task.ID)
 	if done.State != model.TaskStateCompleted {
 		t.Fatal("not completed")
+	}
+	w, _ = s.GetWorkDetail(ctx, task.ID)
+	for _, review := range w.Reviews {
+		if review.ID == final.ID && review.State != "SUPERSEDED" {
+			t.Fatal("obsolete final acceptance survived merge", review.State)
+		}
+	}
+	if _, e = s.DecideReview(ctx, task.ID, final.ID, "APPROVED", "accepted after merge"); !errors.Is(e, model.ErrConflict) {
+		t.Fatal("merged task accepted an obsolete review", e)
 	}
 	if _, e = s.GetLatestTaskSummary(ctx, task.ID); e != nil {
 		t.Fatal("missing final summary", e)

@@ -53,6 +53,10 @@ type RoleDraft struct {
 // AgentProfile is a stable employee identity. Multiple employees can share a role.
 type AgentProfile struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// CostTier is a routing hint, not a permission grant or a billing record.
+	// Economy members are preferred only for bounded delegated work and always
+	// remain subject to the role/capacity/runtime constraints below.
+	CostTier        string `json:"cost_tier,omitempty"`
 	Version         int64  `json:"version"`
 	ID              string `json:"agent_id"`
 	Name            string `json:"name"`
@@ -71,10 +75,36 @@ type TaskRequirements struct {
 	RoleID           string   `json:"role_id,omitempty"`
 	Capabilities     []string `json:"capabilities,omitempty"`
 	ExcludedAgentIDs []string `json:"excluded_agent_ids,omitempty"`
+	// CostPreference is deliberately narrow. A task may prefer an economy
+	// member, but it never requires a particular model or bypasses suitability.
+	CostPreference string `json:"cost_preference,omitempty"`
+	// Delegated marks a Manager-created, read-only child of a working Agent.
+	// It is not accepted from normal task creation UI/API paths.
+	Delegated bool `json:"delegated,omitempty"`
 }
 
 func (r TaskRequirements) IsEmpty() bool {
-	return r.RoleID == "" && len(r.Capabilities) == 0 && len(r.ExcludedAgentIDs) == 0
+	return r.RoleID == "" && len(r.Capabilities) == 0 && len(r.ExcludedAgentIDs) == 0 && r.CostPreference == "" && !r.Delegated
+}
+
+const (
+	CostTierEconomy  = "economy"
+	CostTierStandard = "standard"
+	CostTierPremium  = "premium"
+)
+
+func NormalizeCostTier(tier, modelID string) string {
+	tier = strings.ToLower(strings.TrimSpace(tier))
+	if tier == CostTierEconomy || tier == CostTierStandard || tier == CostTierPremium {
+		return tier
+	}
+	// Existing members predate this field. Luna is the team's explicitly
+	// selected low-cost model family; preserve that useful intent without
+	// changing the default for every other historical member.
+	if strings.Contains(strings.ToLower(modelID), "luna") {
+		return CostTierEconomy
+	}
+	return CostTierStandard
 }
 
 var capabilityName = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,63}$`)
@@ -111,6 +141,12 @@ func (r RoleSpec) Validate(publish bool) error {
 func (r TaskRequirements) Validate() error {
 	if len(r.RoleID) > 200 || len(r.ExcludedAgentIDs) > 100 {
 		return fmt.Errorf("%w: task requirements exceed limits", ErrValidation)
+	}
+	if r.CostPreference != "" && r.CostPreference != CostTierEconomy {
+		return fmt.Errorf("%w: unsupported task cost preference", ErrValidation)
+	}
+	if r.Delegated && r.CostPreference != CostTierEconomy {
+		return fmt.Errorf("%w: delegated work must prefer an economy member", ErrValidation)
 	}
 	for _, agentID := range r.ExcludedAgentIDs {
 		if agentID == "" || len(agentID) > 200 {

@@ -19,9 +19,23 @@ type Development struct {
 	ReviewerRunID    string `json:"reviewer_run_id"`
 	ApprovedReviewID string `json:"approved_review_id"`
 	// Opt in on new approvals only; upgrading must not backfill old issue comments.
-	PublishApprovedPlan bool   `json:"publish_approved_plan,omitempty"`
-	Repository          string `json:"repository"`
-	BaseBranch          string `json:"base_branch"`
+	PublishApprovedPlan bool                       `json:"publish_approved_plan,omitempty"`
+	Repository          string                     `json:"repository"`
+	BaseBranch          string                     `json:"base_branch"`
+	ValidationPlan      *DevelopmentValidationPlan `json:"validation_plan,omitempty"`
+}
+
+type DevelopmentValidationPlan struct {
+	Reuse     []DevelopmentValidationItem `json:"reuse"`
+	Rerun     []DevelopmentValidationItem `json:"rerun"`
+	Add       []DevelopmentValidationItem `json:"add"`
+	Exclude   []DevelopmentValidationItem `json:"exclude"`
+	FinalGate []string                    `json:"final_gate"`
+}
+type DevelopmentValidationItem struct {
+	Scenario string `json:"scenario"`
+	Reason   string `json:"reason"`
+	Evidence string `json:"evidence"`
 }
 
 // ExecutionGrant is issued only by the Manager after a version-bound human

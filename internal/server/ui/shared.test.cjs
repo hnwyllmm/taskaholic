@@ -10,6 +10,7 @@ test('HTTP intranet initialization and request keys do not require randomUUID',(
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'shared.js'),'utf8'),context);
   assert.equal(context.window.WA.key(),'01'.repeat(16));
   assert.equal(context.window.WA.key(),'02'.repeat(16));
+  assert.equal(context.window.WA.labels.WAITING_TESTS,'等待 CI');
   assert.equal(calls,2);
 });
 
@@ -61,4 +62,30 @@ test('Markdown renders common work records without accepting HTML',()=>{
 test('Task workspace follows the human reading order',()=>{
   const html=fs.readFileSync(path.join(__dirname,'tasks.html'),'utf8');
   for(const [before,after] of [['id="activity-panel"','id="composer"'],['id="composer"','id="messages"'],['id="messages"','id="artifact"'],['id="artifact"','id="review-chat-slot"'],['id="review-chat-slot"','id="development-phase"'],['id="development-phase"','id="summary"'],['id="summary"','id="publications"']])assert.ok(html.indexOf(before)<html.indexOf(after),`${before} should precede ${after}`);
+});
+
+test('chat input sends on Enter while modifiers and IME keep newline behavior',()=>{
+  const context={window:{},document:{querySelector:()=>null},crypto:{getRandomValues:bytes=>bytes.fill(1)}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'shared.js'),'utf8'),context);
+  let sent=0;
+  const input={};
+  context.window.WA.bindChatInput(input,()=>sent++);
+  const keyEvent=(extra={})=>({key:'Enter',prevented:false,preventDefault(){this.prevented=true;},...extra});
+
+  let event=keyEvent();
+  input.onkeydown(event);
+  assert.equal(sent,1);
+  assert.equal(event.prevented,true);
+
+  for(const extra of [{ctrlKey:true},{metaKey:true},{isComposing:true},{keyCode:229}]){
+    event=keyEvent(extra);
+    input.onkeydown(event);
+    assert.equal(event.prevented,false);
+  }
+  assert.equal(sent,1);
+
+  event=keyEvent({key:'a'});
+  input.onkeydown(event);
+  assert.equal(sent,1);
+  assert.equal(event.prevented,false);
 });

@@ -83,13 +83,13 @@ dev 的五个开发/评审角色定义在 `deploy/dev/seekdb-roles.mjs`，可通
 
 1. 第一次确认只创建升级记录。独立的 `assistant-supervisor` 把当前源码复制到 `data/.../upgrades/<upgrade-id>/candidate`。Codex 使用 `workspace-write` 修改该副本；Cursor 保持只读 Ask 模式，阅读副本并返回结构化编辑提案，由可信构建器检查路径、唯一文本匹配和保护规则后写入候选。Cursor 不获准执行 Shell、Write 或 MCP。随后，全量 Go 测试、`go vet`、前端语法/单元测试及所有程序构建进入 `ValidationSandbox`，只允许写当前升级工作目录，使用离线依赖缓存和不继承认证变量的最小环境。
 2. 测试通过后，首页“需要你”与“系统进化”会展示变更文件、具体代码改动、构建日志和候选摘要。第二次确认绑定记录版本及源码/二进制 SHA-256，候选或线上版本变化后不能继续安装。
-3. 确认安装后设置维护锁：不再创建新 Run，已排队或执行中的 Run 结束后才备份控制数据库、Runtime spool、源码和可执行文件。监督进程停止旧子进程、以原子替换和 fsync 切换候选版本并自动启动；健康检查失败会恢复旧源码和二进制后再次启动。代码回滚不覆盖数据库，避免丢失备份后的记录。重启遇到 `INSTALLING` 时先恢复安装再开放服务；无法验证或回滚时保留维护锁并停止服务，不把混合版本当作健康版本启动。
+3. 候选构建完成后由可信代码根据变更路径计算影响范围，构建 Agent 不能自行选择。仅影响控制端或页面的 `CONTROL` 候选设置短暂维护锁，生成同时包含控制数据库与 Runtime spool 的一致性备份，只重启 `assistantd`；`assistant-runtime`、Agent 子进程和当前 Session 保持运行，断线期间的事件先写入 spool，重连后按序补传。影响 Adapter、Runtime、共享模型或未知边界的 `RUNTIME` 候选仍须等待已排队及执行中的 Run 自然结束，再重启两个进程。健康检查失败会按相同范围恢复旧源码和二进制；代码回滚不覆盖数据库。重启遇到 `INSTALLING` 时先恢复安装再开放服务；无法验证或回滚时保留维护锁并停止服务，不把混合版本当作健康版本启动。
 
 升级记录、确认状态和结果保存在 `control.sqlite`；候选、测试构建和每次安装备份保存在 `data/.../upgrades/`。普通任务依然只有只读分析权限，不能借 `upgrade_system` 绕过两次确认。取消“构建中”的升级会中断候选 Agent；安装开始后不能取消。
 
 第一版有意缩小可自动升级范围：不允许删除文件、修改依赖、控制端/Runtime 数据库结构、升级协议与 API、升级构建器、监督进程、`assistant-local` / `internal/localconfig` 启动策略或健康握手；最多改 200 个文件，供人工检查的完整变更不超过 120 KB。候选目录以外的文件、符号链接、硬链接和非常规文件也会被拒绝；验证前后源码必须完全一致。`ValidationSandbox` 内置 macOS Seatbelt 和 Linux bubblewrap，也可替换；不可用时拒绝构建，不降级为裸执行。Seatbelt 禁止网络；bubblewrap 使用独立网络/PID/挂载命名空间，允许隔离的 loopback 测试服务但不能访问宿主网络，仅只读挂载系统工具、固定编译器和依赖缓存，不挂载宿主凭据、线上数据及用户主目录。沙箱不是虚拟机，也不代表 Agent CLI 本身获得完整秘密读取隔离。若确实需要升级上述信任基础，应人工评审并手工发布新基线。
 
-本机已有构建产物时，双击 `启动工作助手.command`。它沿用 `data/role-studio` 的现有数据和 `local-role-studio` Runtime 身份，先启动唯一的 `assistant-supervisor`，再由监督进程维护控制端和本机 Runtime。子进程异常退出会自动重启；升级时也由这个不会被候选替换的父进程完成切换、健康检查和回滚。终端保持运行，Ctrl+C 停止整个系统；未安装登录自启或后台系统服务。锁文件阻止同一数据目录启动两个监督进程，也不要另外直接启动使用同一数据库的控制端。
+本机已有构建产物时，双击 `启动工作助手.command`。它沿用 `data/role-studio` 的现有数据和 `local-role-studio` Runtime 身份，先启动唯一的 `assistant-supervisor`，再由监督进程分别维护 `assistantd` 与 `assistant-runtime`。旧安装第一次切换到该结构时仍可启动 `assistant-local`，但必须通过一次人工基线发布替换受保护的 supervisor 后才启用进程拆分；不能让自动升级替换自己的监督与安全边界。子进程异常退出会分别重启；升级切换、健康检查和回滚仍由不被候选替换的父进程完成。终端保持运行，Ctrl+C 停止整个系统；未安装登录自启或后台系统服务。锁文件阻止同一数据目录启动两个监督进程，也不要另外直接启动使用同一数据库的控制端。
 
 其它环境从源码构建并启动：
 
@@ -114,7 +114,7 @@ go build -o bin/ ./cmd/...
 - Task Summary 属于可查询的团队工作记录，不等同于具体 Agent 的 Session Memory。本版不会把所有历史总结无选择地塞回提示词，也不会自动修改角色或路由；后续的效率分析器可通过总结 API 按角色、模型、任务类型和效率信号筛选，再由人确认哪些经验进入团队资料或角色规范。
 - 产物为 UTF-8 完整文件，最多 8 个，总结果不超过 120 KiB。SQLite 保存内容、SHA-256 和版本，不覆盖历史。页面纯文本安全预览，可在验收前下载；不执行产物内 HTML/脚本。
 - 系统状态页可创建经过校验的恢复点。启动时和每 5 分钟自动备份，默认保存在应用目录之外；组合部署覆盖控制端数据库和 Runtime spool。单独下载的数据库仍只有控制端记录。工作目录、原生 Agent Session、源码/升级候选、认证和外部仓库不在本版自动备份范围，不能把数据库恢复等同于完整环境迁移。
-- Runtime 异常退出后的未完成运行会标记失败；用户从页面发送下一步要求后继续，避免自动重复外部动作。`assistant-supervisor` 会维护本机组合进程，但没有无限业务重试。dev 由启用 linger 的 systemd 用户服务在后台托管；Mac 双击启动方式仍是终端前台运行。
+- Runtime 异常退出、Agent 普通阻塞和结果协议错误会留下终态事件；首次启用边界之后的新阻塞由 Manager 持久化退避并交回原 Agent/Session 自动处理，不消耗通用固定重试额度。任务页对每个裸 `BLOCKED` 都提供通用的“重新评估 / 继续”入口，保留已有消息和产物，沿用原 Agent、Session、阶段和审批，不重放外部操作。代码、构建和测试 Bug 仍由工作的 Agent 修复，Manager 不代写业务代码。自动恢复不会越过用户暂停、人工评审、产品决策、缺失凭据、未预授权敏感权限或不确定外部写入，也不会在部署时批量唤醒历史任务。活动中的 Pipeline 只会阻止“Agent 明确表示正在等待它”的重复空转，不再阻塞结果协议纠正、Manager 状态修复或 Runtime 失败恢复。Pipeline 少量失败作业最多自动快重试两次，随后只唤醒一次原 Agent 做深入分析，并抑制同一失败证据上的周期性空转。`assistant-supervisor` 继续维护本机组合进程；dev 由启用 linger 的 systemd 用户服务在后台托管，Mac 双击启动方式仍是终端前台运行。
 - 只读沙箱是文件写入限制，不是容器或完全隔离的操作系统；角色里的工具/外部操作限制不应视为强权限边界。不要让不可信的 Runtime 连接个人控制端。
 
 ### 和交付 Agent 验收沟通
@@ -236,8 +236,10 @@ flowchart LR
     R --> S[(runtime.sqlite\nInbox Outbox Run checkpoint)]
     R --> A[Agent Adapter]
     A --> W[隔离工作目录]
-    SUP[assistant-supervisor] -->|启动 监控 切换 回滚| L[assistant-local]
-    L --> C
+	SUP[assistant-supervisor] -->|独立启动 监控 控制面切换| C
+	SUP -->|持续运行或空闲后切换| R
+	L[assistant-local\n兼容的单进程入口] -.-> C
+	L -.-> R
     SUP --> U[隔离候选与安装备份]
 ```
 
@@ -247,7 +249,7 @@ flowchart LR
 - `assistant-runtime`：部署到工作机器，维护连接、本地 spool、工作目录和运行中进程。
 - `assistantctl`：创建/拆分任务，启动/引导/中断 Run，查看 Session、观察事件和下载备份。
 - `assistant-local`：个人本机入口，在一个进程内维护控制面、本机 Runtime 和首次基础配置。
-- `assistant-supervisor`：个人部署的稳定父进程，准备候选升级，排空运行，备份、切换、健康检查、回滚并自动重启 `assistant-local`；候选升级不会替换它自身。
+- `assistant-supervisor`：个人部署的稳定父进程，分别维护控制端和 Runtime，准备候选升级，按影响范围备份、切换、健康检查和回滚；控制面升级不停止 Runtime，候选升级不会替换 supervisor 自身。
 
 ## 构建与测试
 

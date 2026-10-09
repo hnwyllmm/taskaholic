@@ -126,7 +126,7 @@ func fixtureInstalling(t *testing.T, m *upgrade.Manager, state *store.Store) mod
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err = state.BeginUpgradeInstall(ctx, u.ID)
+	u, err = state.BeginUpgradeInstall(ctx, u.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +205,69 @@ func TestSupervisorRestartsExitedChildAndRecoversAppliedInstall(t *testing.T) {
 	}
 }
 
+func TestSplitControlRestartKeepsRuntimeProcessAlive(t *testing.T) {
+	legacy, _, state := supervisorFixture(t, "upgraded")
+	if err := legacy.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	root := legacy.options.root
+	localBinary, err := os.ReadFile(filepath.Join(root, "bin", "assistant-local"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "bin", "assistantd"), localBinary, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runtimeScript := []byte("#!/bin/sh\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n")
+	if err = os.WriteFile(filepath.Join(root, "bin", "assistant-runtime"), runtimeScript, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Backup(context.Background(), filepath.Join(legacy.options.dataDir, "runtime.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+	split := newChildController(legacy.options)
+	if !split.SupportsControlRestart() {
+		t.Fatal("split binaries were not detected")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := split.Stop(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	if err = split.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err = waitHealthy(context.Background(), split.options.listen, split.options.instanceID, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	split.mu.Lock()
+	runtimeCommand, oldControlPID := split.runtimeCommand, split.command.Process.Pid
+	split.mu.Unlock()
+	if runtimeCommand == nil {
+		t.Fatal("runtime process was not started")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err = split.RestartControl(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err = waitHealthy(context.Background(), split.options.listen, split.options.instanceID, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	split.mu.Lock()
+	sameRuntime := split.runtimeCommand == runtimeCommand
+	newControlPID := split.command.Process.Pid
+	split.mu.Unlock()
+	if !sameRuntime || newControlPID == oldControlPID {
+		t.Fatalf("control restart changed wrong process: same_runtime=%v control_pid=%d->%d", sameRuntime, oldControlPID, newControlPID)
+	}
+	if err = runtimeCommand.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatal("runtime process did not survive control restart", err)
+	}
+}
+
 func TestSupervisorPassesCursorAndExplicitExposureFlags(t *testing.T) {
 	c := newChildController(options{adapterID: "cursor-agent", extraAdapters: "codex-agent", codexBinary: "/custom path/codex", cursorBinary: "/custom path/agent", allowRemote: true, noAPIAuth: true, listen: "0.0.0.0:17343"})
 	args := c.childArgs()
@@ -218,6 +281,18 @@ func TestSupervisorPassesCursorAndExplicitExposureFlags(t *testing.T) {
 	joined = strings.Join(defaults.childArgs(), " ")
 	if strings.Contains(joined, "--allow-remote") || strings.Contains(joined, "--no-api-auth") || strings.Contains(joined, "--extra-adapters") {
 		t.Fatal("insecure default")
+	}
+	control := strings.Join(c.controlArgs(), "\x00")
+	for _, want := range []string{"--runtime-db\x00", "runtime.sqlite", "--runtime-id", "--upgrade-enabled", "--allow-remote", "--no-api-auth"} {
+		if !strings.Contains(control, want) {
+			t.Fatal("split control args missing", want)
+		}
+	}
+	runtimeArgs := strings.Join(c.runtimeArgs(), "\x00")
+	for _, want := range []string{"--spool\x00", "runtime.sqlite", "--codex-sandbox\x00read-only", "--disable-backups"} {
+		if !strings.Contains(runtimeArgs, want) {
+			t.Fatal("split runtime args missing", want)
+		}
 	}
 }
 

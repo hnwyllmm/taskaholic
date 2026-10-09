@@ -38,6 +38,8 @@ test('role pack covers requested responsibilities and does not grant permissions
   assert.ok(developer.capabilities.includes('seekdb.develop'));
   assert.ok(developer.capabilities.includes('seekdb-bindings.develop'));
   assert.ok(developer.capabilities.includes('package.validate'));
+  assert.ok(developer.instructions.includes('## SeekDB 编译效率'));
+  assert.ok(developer.instructions.includes('ob-make'));
   assert.equal(rolePack.filter(r=>r.key==='seekdb-bindings-developer').length,0);
   for(const {spec} of rolePack){
     assert.ok(Buffer.byteLength(spec.name)<=200);

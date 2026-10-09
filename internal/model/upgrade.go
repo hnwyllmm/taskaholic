@@ -4,13 +4,17 @@ package model
 // business task. The installation approval is bound to an immutable candidate.
 type Upgrade struct {
 	ExecutionSettings
-	Builder          *AgentProfile     `json:"builder,omitempty"`
-	BuilderBinding   *SystemBinding    `json:"builder_binding,omitempty"`
-	ID               string            `json:"upgrade_id"`
-	ChatID           string            `json:"chat_id,omitempty"`
-	Title            string            `json:"title"`
-	Instructions     string            `json:"instructions"`
-	State            string            `json:"state"`
+	Builder        *AgentProfile  `json:"builder,omitempty"`
+	BuilderBinding *SystemBinding `json:"builder_binding,omitempty"`
+	ID             string         `json:"upgrade_id"`
+	ChatID         string         `json:"chat_id,omitempty"`
+	Title          string         `json:"title"`
+	Instructions   string         `json:"instructions"`
+	State          string         `json:"state"`
+	// RestartScope is derived from the immutable candidate. CONTROL upgrades
+	// restart only assistantd; RUNTIME upgrades drain work and restart both
+	// assistantd and assistant-runtime. It is never chosen by the build Agent.
+	RestartScope     string            `json:"restart_scope,omitempty"`
 	Version          int64             `json:"version"`
 	BaseRelease      string            `json:"base_release,omitempty"`
 	BaseSourceSHA256 string            `json:"base_source_sha256,omitempty"`
@@ -27,6 +31,11 @@ type Upgrade struct {
 	CreatedAtMS      int64             `json:"created_at_ms"`
 	UpdatedAtMS      int64             `json:"updated_at_ms"`
 }
+
+const (
+	UpgradeRestartControl = "CONTROL"
+	UpgradeRestartRuntime = "RUNTIME"
+)
 
 type UpgradeChange struct {
 	Path   string `json:"path"`

@@ -69,7 +69,9 @@
     older.className='activity-older';container.classList.add('panel','activity-panel');container.append(head,now,tools,empty,older,list,note);
     let taskID='',detail=null,work=null,agents=[],runtimes=[],generation=0,cursor=0,before=0,hasMore=false,loadingOlder=false,lastRoundID='';
     let stream=null,retry=null,watchdog=null,frame=null,connected=false,disposed=false,lastByte=0,attempt=0,filterKey='',lastLegacy=null;
-    const stateNames={RUNNING:'执行中',PENDING:'等待中',COMPLETED:'已完成',FAILED:'失败',INTERRUPTED:'已中断',UNKNOWN:'结果未知'};
+    // A Run ending successfully only means this invocation returned a valid
+    // business result. The root task may still be waiting for input or review.
+    const stateNames={RUNNING:'本轮执行中',PENDING:'本轮等待中',COMPLETED:'本轮已结束',FAILED:'本轮执行失败',INTERRUPTED:'本轮已中断',UNKNOWN:'本轮结果未知'};
     const kindNames={command:'命令',tool:'工具',file_change:'文件',search:'检索',plan:'计划',message:'消息'};
     const headers=()=>WA.token()?{Authorization:'Bearer '+WA.token()}:{};
     function connectionState(text,isConnected=false){connected=isConnected;connection.textContent=text;connection.dataset.connected=String(isConnected);}

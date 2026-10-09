@@ -364,7 +364,7 @@ func taskSummaryMetricsTx(ctx context.Context, tx *sql.Tx, task model.Task, comp
 		       COALESCE(SUM(CASE WHEN child.state='COMPLETED' THEN 1 ELSE 0 END),0),
 		       COALESCE(SUM(CASE WHEN child.state='BLOCKED' THEN 1 ELSE 0 END),0)
 		FROM task_edge edge JOIN task child ON child.task_id=edge.to_task_id
-		WHERE edge.from_task_id=? AND edge.edge_type=?`, task.ID, model.TaskEdgeDecomposedInto).
+		WHERE edge.from_task_id=? AND edge.edge_type IN (?,?)`, task.ID, model.TaskEdgeDecomposedInto, model.TaskEdgeDelegatedTo).
 		Scan(&metrics.SubtaskCount, &metrics.CompletedSubtaskCount, &metrics.BlockedSubtaskCount); err != nil {
 		return metrics, err
 	}

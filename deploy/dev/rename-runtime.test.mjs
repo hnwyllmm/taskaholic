@@ -7,12 +7,13 @@ function fixture(t){
   const control=new DatabaseSync(':memory:'),spool=new DatabaseSync(':memory:');
   t.after(()=>{control.close();spool.close();});
   control.exec(`PRAGMA foreign_keys=ON;
-    CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(11);
+    CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(21);
     CREATE TABLE runtime(runtime_id TEXT PRIMARY KEY,state TEXT); INSERT INTO runtime VALUES('dev-cursor','OFFLINE');
     CREATE TABLE agent_profile(agent_id TEXT PRIMARY KEY,runtime_id TEXT REFERENCES runtime(runtime_id),data_json TEXT);
     CREATE TABLE session(session_id TEXT PRIMARY KEY,runtime_id TEXT,agent_session_ref TEXT);
     INSERT INTO session VALUES('same-session','dev-cursor','original-native-context');
     CREATE TABLE run(run_id TEXT PRIMARY KEY,runtime_id TEXT,state TEXT); INSERT INTO run VALUES('old-run','dev-cursor','COMPLETED');
+    CREATE TABLE run_token_usage(runtime_id TEXT); INSERT INTO run_token_usage VALUES('dev-cursor');
     CREATE TABLE outbox_message(destination_id TEXT,status TEXT); INSERT INTO outbox_message VALUES('dev-cursor','DELIVERED');
     CREATE TABLE runtime_event_dedupe(runtime_id TEXT); INSERT INTO runtime_event_dedupe VALUES('dev-cursor');
     CREATE TABLE idempotency_key(scope TEXT,key TEXT,resource_id TEXT,created_at_ms INTEGER,PRIMARY KEY(scope,key));
@@ -51,7 +52,7 @@ test('Online, active, pending, conflicting and unknown-schema renames fail witho
     ['control',"INSERT INTO idempotency_key VALUES('role.draft','local-helper-role:dev','other-draft',2)",/bootstrap identity/],
     ['control',"INSERT INTO upgrade_job VALUES('READY')",/unfinished upgrade/],
     ['control',"INSERT INTO maintenance VALUES('upgrade')",/maintenance/],
-    ['control','UPDATE schema_version SET version=18',/schema version/],
+    ['control','UPDATE schema_version SET version=22',/schema version/],
     ['control','CREATE TABLE unknown_binding(runtime_id TEXT)',/unreviewed runtime reference/],
   ])await t.test(sql,t=>{
     const f=fixture(t);f[target].exec(sql);const before=snapshot(f.control),spoolBefore=snapshot(f.spool);

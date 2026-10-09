@@ -10,11 +10,14 @@ window.WA=(()=>{
   const notice=(message,error=false)=>{const n=document.getElementById('notice');if(n){n.textContent=message;n.hidden=!message;n.className=error?'error':'';}};
   const api=async(path,method='GET',body)=>{const r=await fetch('/api/v1'+path,{method,headers:{'Content-Type':'application/json',...(token()?{Authorization:'Bearer '+token()}:{})},body:body===undefined?undefined:JSON.stringify(body)});const value=await r.json();if(!r.ok)throw Error(r.status===401?'请在右上角连接设置中填写 API Token。':value.error||`请求失败 (${r.status})`);return value;};
   const download=async(path,name)=>{const r=await fetch('/api/v1'+path,{headers:token()?{Authorization:'Bearer '+token()}:{}});if(!r.ok)throw Error('下载失败：'+r.status);const url=URL.createObjectURL(await r.blob()),a=el('a');a.href=url;a.download=name;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);};
-  const labels={NEW:'待分派',QUEUED:'排队中',IN_PROGRESS:'进行中',WAITING_REVIEW:'待你验收',WAITING_INPUT:'待你回复',BLOCKED:'需要处理',PAUSED:'已暂停',COMPLETED:'已完成',WAITING_SUBTASKS:'等待子任务'};
+  const labels={NEW:'待分派',QUEUED:'排队中',IN_PROGRESS:'进行中',WAITING_REVIEW:'待你验收',WAITING_INPUT:'待你回复',BLOCKED:'需要处理',PAUSED:'已暂停',COMPLETED:'已完成',WAITING_SUBTASKS:'等待子任务',WAITING_TESTS:'等待 CI'};
   const link=(text,href,cls)=>{const a=el('a',text,cls);a.href=href;return a;};
 	Object.assign(labels,{WAITING_AUTHORIZATION:'等待授权',WAITING_ENVIRONMENT:'等待环境'});
   const badge=state=>{const n=el('span',labels[state]||state,'status-pill');n.dataset.state=state;return n;};
   const date=ms=>new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  // Enter submits conversational input. IME confirmation remains untouched;
+  // Ctrl/Command+Enter keeps the textarea's native newline behavior.
+  const bindChatInput=(input,submit)=>{if(!input)return;input.onkeydown=event=>{if(event.key!=='Enter'||event.isComposing||event.keyCode===229||event.ctrlKey||event.metaKey)return;event.preventDefault();submit();};};
   // Small safe Markdown renderer for work records. It builds DOM nodes rather
   // than accepting HTML, so Agent/user content cannot inject page markup.
   const markdown=(source,cls='markdown-body')=>{
@@ -57,5 +60,5 @@ window.WA=(()=>{
     if(page==='tasks'){const b=el('button','备份');b.id='backup';connection.append(b);}header.append(connection);
   }
   if(header){const a=link('执行权限','/permissions',document.body.dataset.page==='permissions'?'selected':'');if(document.body.dataset.page==='permissions')a.setAttribute('aria-current','page');header.querySelector('.app-nav')?.append(a);}
-  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,markdown,syncAccess};
+  return{el,token,saveToken,key,notice,api,download,labels,link,badge,date,markdown,syncAccess,bindChatInput};
 })();

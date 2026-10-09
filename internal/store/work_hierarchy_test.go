@@ -114,3 +114,33 @@ func TestRootLimitIsAppliedAfterFilteringChildren(t *testing.T) {
 		t.Fatal("children silently truncated", len(h.Children), err)
 	}
 }
+
+func TestWorkHierarchyProjectsTaskElapsedBoundaries(t *testing.T) {
+	ctx := context.Background()
+	s, agent, task := workFixture(t)
+	run := startWork(t, s, agent, task)
+	if _, err := s.db.Exec(`UPDATE run SET started_at_ms=100 WHERE run_id=?`, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err := s.ListRootWork(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatal(items, err)
+	}
+	if items[0].FirstRunAtMS != 100 || items[0].CompletedAtMS != 0 {
+		t.Fatalf("active task timing = (%d, %d)", items[0].FirstRunAtMS, items[0].CompletedAtMS)
+	}
+	if _, err = s.db.Exec(`UPDATE task SET state='COMPLETED',updated_at_ms=900 WHERE task_id=?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.db.Exec(`INSERT INTO task_summary(summary_id,task_id,version,source_type,source_id,completed_at_ms,data_json)
+		VALUES('summary-timing',?,1,'task',?,750,'{}')`, task.ID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, err = s.ListRootWork(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatal(items, err)
+	}
+	if items[0].FirstRunAtMS != 100 || items[0].CompletedAtMS != 750 {
+		t.Fatalf("completed task timing = (%d, %d)", items[0].FirstRunAtMS, items[0].CompletedAtMS)
+	}
+}

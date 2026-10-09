@@ -122,6 +122,13 @@ func (a *AntMultica) Poll(ctx context.Context, s model.TaskSource, t model.Sourc
 			if cursor.Issues[issue.ID] == revision {
 				continue
 			}
+			// Manager lifecycle writeback changes only status/status_category.
+			// Advance the source cursor without turning that echo into new work;
+			// title, description, assignment and properties still create events.
+			if antMulticaStatusOnlyRevision(cursor.Issues[issue.ID], issue) {
+				cursor.Issues[issue.ID] = revision
+				continue
+			}
 			title := cutBytes(issue.Identifier+" "+issue.Title, 400)
 			url, err := model.AntMulticaIssueURL(s.Config.WorkspaceSlug, issue.ID)
 			if err != nil {
@@ -144,6 +151,24 @@ func (a *AntMultica) Poll(ctx context.Context, s model.TaskSource, t model.Sourc
 	}
 	result.Cursor, err = json.Marshal(cursor)
 	return result, err
+}
+
+func antMulticaStatusOnlyRevision(previous string, current multicaIssue) bool {
+	if previous == "" {
+		return false
+	}
+	statuses := []string{"", "backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled", "canceled"}
+	for _, status := range statuses {
+		for _, category := range statuses {
+			candidate := current
+			candidate.Status = status
+			candidate.StatusCategory = category
+			if digest(candidate) == previous {
+				return status != current.Status || category != current.StatusCategory
+			}
+		}
+	}
+	return false
 }
 
 func hash(raw []byte) string { return fmt.Sprintf("%x", sha256.Sum256(raw)) }

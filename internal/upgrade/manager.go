@@ -400,6 +400,32 @@ func changedFiles(before, after map[string]fileRecord) ([]model.UpgradeChange, e
 	return changes, nil
 }
 
+// RestartScopeForChanges is intentionally conservative. A candidate is
+// control-only only when every changed path is known not to be linked into the
+// long-lived execution runtime. Unknown or shared protocol paths drain and
+// restart the runtime rather than risking a mixed protocol release.
+func RestartScopeForChanges(changes []model.UpgradeChange) string {
+	for _, change := range changes {
+		path := change.Path
+		controlOnly := (strings.HasPrefix(path, "internal/server/") && path != "internal/server/hub.go") ||
+			strings.HasPrefix(path, "internal/tasksource/") ||
+			strings.HasPrefix(path, "internal/taskaction/") ||
+			strings.HasPrefix(path, "internal/router/") ||
+			strings.HasPrefix(path, "internal/workflow/") ||
+			strings.HasPrefix(path, "internal/rolebuilder/") ||
+			strings.HasPrefix(path, "internal/concierge/") ||
+			strings.HasPrefix(path, "cmd/assistantd/") ||
+			strings.HasPrefix(path, "cmd/assistantctl/") ||
+			strings.HasPrefix(path, "docs/") ||
+			strings.HasPrefix(path, "deploy/") ||
+			path == "README.md" || strings.HasSuffix(path, "-VERIFICATION.md")
+		if !controlOnly {
+			return model.UpgradeRestartRuntime
+		}
+	}
+	return model.UpgradeRestartControl
+}
+
 func protected(path string) bool {
 	for _, prefix := range []string{
 		"cmd/assistant-supervisor/",
@@ -596,6 +622,7 @@ func (m *Manager) Prepare(ctx context.Context, upgrade model.Upgrade) model.Upgr
 		return failed(upgrade, err)
 	}
 	upgrade.Changes = changes
+	upgrade.RestartScope = RestartScopeForChanges(changes)
 	upgrade.Patch, err = reviewPatch(m.config.Root, candidate, changes)
 	if err != nil {
 		return failed(upgrade, err)
@@ -829,6 +856,9 @@ func reviewPatch(beforeRoot, afterRoot string, changes []model.UpgradeChange) (s
 // VerifyCandidate binds installation to the exact source and binaries a human
 // reviewed. It also refuses installation over an independently changed release.
 func (m *Manager) VerifyCandidate(upgrade model.Upgrade) error {
+	if upgrade.RestartScope != "" && upgrade.RestartScope != RestartScopeForChanges(upgrade.Changes) {
+		return fmt.Errorf("candidate restart scope does not match its reviewed changes")
+	}
 	files, err := sourceManifest(m.candidateDir(upgrade.ID))
 	if err != nil {
 		return err

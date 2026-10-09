@@ -28,6 +28,10 @@ type ExecutionSettings struct {
 	ReasoningEffortSource string `json:"reasoning_effort_source,omitempty"`
 	ExecutionModelID      string `json:"execution_model_id,omitempty"`
 	ExecutionConfigured   bool   `json:"execution_configured,omitempty"`
+	// NetworkAccess is a Manager-selected runtime boundary for managed, read-only
+	// Codex work such as review and verified source inspection. Agents cannot
+	// request or set it through task input.
+	NetworkAccess bool `json:"network_access,omitempty"`
 }
 
 var effortID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)

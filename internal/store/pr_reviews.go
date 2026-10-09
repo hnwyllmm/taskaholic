@@ -142,11 +142,12 @@ func applySourceReviewResultTx(ctx context.Context, tx *sql.Tx, taskID string, e
 	if state == "SUPERSEDED" {
 		return true, setWorkStateTx(ctx, tx, taskID, model.TaskStatePaused)
 	}
-	if result.ReviewDecision == "waiting_tests" {
-		if _, err = tx.ExecContext(ctx, `UPDATE source_review SET state='WAITING_TESTS' WHERE task_id=?`, taskID); err != nil {
-			return true, err
-		}
-		return true, setWorkStateTx(ctx, tx, taskID, model.TaskStateWaiting)
+	// waiting_tests existed briefly as a reviewer verdict. Keep historical
+	// results parseable, but never let either that legacy value or a missing
+	// verdict make a reviewer own the CI lifecycle. The same reviewer Session is
+	// resumed immediately and must finish the role review independently.
+	if result.ReviewDecision == "waiting_tests" || (result.Outcome == "review" && result.ReviewDecision == "") {
+		return true, requeueSourceReviewerConclusionTx(ctx, tx, taskID, targetID, head, "review-conclusion-required:"+e.RunID)
 	}
 	if result.ReviewDecision == "blocked" || result.ReviewDecision == "changes_requested" {
 		target, err := sourceTargetTx(ctx, tx, targetID)
@@ -172,6 +173,29 @@ func applySourceReviewResultTx(ctx context.Context, tx *sql.Tx, taskID string, e
 	return true, nil
 }
 
+func requeueSourceReviewerConclusionTx(ctx context.Context, tx *sql.Tx, taskID, targetID, head, key string) error {
+	target, err := sourceTargetTx(ctx, tx, targetID)
+	if err != nil {
+		return err
+	}
+	if target.HeadSHA != head {
+		if _, err = tx.ExecContext(ctx, `UPDATE source_review SET state='SUPERSEDED' WHERE task_id=?`, taskID); err != nil {
+			return err
+		}
+		return setWorkStateTx(ctx, tx, taskID, model.TaskStatePaused)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE source_review SET state='PENDING',feedback_sent=0 WHERE task_id=?`, taskID); err != nil {
+		return err
+	}
+	message := "评审与 CI 的职责已分离：CI/GitLab pipeline 由原开发任务跟踪，不是 reviewer 的等待状态。\n" +
+		"请沿用当前 Agent 和原 Session，现在完成本角色对固定 commit 的代码评审，并返回 passed 或 changes_requested。QA 可以同时提交 test_requests，但不要等待测试结果，也不要返回 waiting_tests。\nPR：" + target.Entity + "\n固定版本：" + head
+	if _, err = taskEventMessageTx(ctx, tx, taskID, message, key, "system"); err != nil {
+		return err
+	}
+	_, err = appendEventTx(ctx, tx, "task", taskID, "SourceReviewResponsibilityCorrected", key, taskID, map[string]any{"target_id": targetID, "head_sha": head})
+	return err
+}
+
 // Fan-in is retried separately from run completion, so a large/paused author's
 // inbox cannot prevent acknowledging a reviewer's completed runtime event.
 func (s *Store) CollectSourceReviews(ctx context.Context) error {
@@ -180,6 +204,33 @@ func (s *Store) CollectSourceReviews(ctx context.Context) error {
 		return err
 	}
 	return s.sourceWrite(ctx, func(tx *sql.Tx) error {
+		// Upgrade the short-lived legacy workflow in place: a reviewer that was
+		// parked on CI resumes with its original Session and produces an independent
+		// role verdict. No schema migration or historical output rewrite is needed.
+		legacy, err := tx.QueryContext(ctx, `SELECT r.task_id,r.target_id,r.head_sha FROM source_review r JOIN source_target target USING(target_id) JOIN task_workflow w ON w.task_id=r.task_id JOIN task parent ON parent.task_id=target.task_id WHERE r.state='WAITING_TESTS' AND w.paused=0 AND parent.state!='COMPLETED' AND r.head_sha=json_extract(target.data_json,'$.head_sha') LIMIT 100`)
+		if err != nil {
+			return err
+		}
+		type legacyReview struct{ taskID, targetID, head string }
+		var legacyTasks []legacyReview
+		for legacy.Next() {
+			var review legacyReview
+			if err = legacy.Scan(&review.taskID, &review.targetID, &review.head); err != nil {
+				legacy.Close()
+				return err
+			}
+			legacyTasks = append(legacyTasks, review)
+		}
+		err = legacy.Err()
+		legacy.Close()
+		if err != nil {
+			return err
+		}
+		for _, review := range legacyTasks {
+			if err = requeueSourceReviewerConclusionTx(ctx, tx, review.taskID, review.targetID, review.head, "review-ci-ownership-v1:"+review.taskID+":"+review.head); err != nil {
+				return err
+			}
+		}
 		rows, err := tx.QueryContext(ctx, `SELECT target_id,head_sha FROM source_review GROUP BY target_id,head_sha HAVING MIN(state='COMPLETED')=1 AND MIN(feedback_sent)=0 LIMIT 50`)
 		if err != nil {
 			return err

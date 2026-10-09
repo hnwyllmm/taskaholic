@@ -77,3 +77,43 @@ func TestTaskConsultationAPIUsesIndependentRun(t *testing.T) {
 		t.Fatal("consultation UI asset missing")
 	}
 }
+
+func TestTaskConsultationSnapshotBoundsLargePipelineEvidence(t *testing.T) {
+	largeLog := strings.Repeat("compiler output line\n", 20000) + "TAIL_MUST_NOT_REACH_SNAPSHOT"
+	input := consultationSnapshotInput{
+		At:     "2026-09-14T00:00:00Z",
+		Cursor: 99,
+		Detail: model.TaskDetail{
+			Task:    model.Task{ID: "subject", Title: "Large task", Goal: strings.Repeat("goal ", 5000), State: model.TaskStateWaitingTests},
+			Session: &model.Session{ID: "session", AgentID: "developer", AdapterID: "codex-agent", RuntimeID: "dev", State: "ACTIVE", Metadata: json.RawMessage(`{"role_snapshot":"` + strings.Repeat("role", 12000) + `"}`)},
+		},
+	}
+	for i := 0; i < 30; i++ {
+		input.Work.Messages = append(input.Work.Messages, model.TaskMessage{ID: "message", Speaker: "assistant", Content: strings.Repeat("message ", 2000)})
+		input.Activities = append(input.Activities, model.Activity{Action: model.Action{ID: "action", Kind: "command", State: "COMPLETED", Title: "Build", Command: strings.Repeat("command ", 1000), Output: strings.Repeat("output ", 5000)}, RunID: "run", UpdatedAtMS: int64(i + 1)})
+	}
+	for i := 0; i < 8; i++ {
+		input.Work.Artifacts = append(input.Work.Artifacts, model.Artifact{ID: "artifact", Name: "report.md", Content: strings.Repeat("artifact ", 10000)})
+	}
+	for i := 0; i < 10; i++ {
+		pipeline := model.TestPipeline{ID: "pipeline-large-" + string(rune('a'+i)), State: "failed", PipelineID: int64(100 + i), URL: "https://gitlab.example/pipelines/100", HeadSHA: strings.Repeat("a", 40), Current: true, Reason: strings.Repeat("reason ", 1000)}
+		for j := 0; j < 8; j++ {
+			pipeline.Jobs = append(pipeline.Jobs, model.PipelineJob{ID: int64(j + 1), Name: "large-job", Status: "failed", FailureReason: "script_failure", URL: "https://gitlab.example/jobs/1", LogExcerpt: largeLog, LogCollected: true})
+		}
+		input.Work.TestPipelines = append(input.Work.TestPipelines, pipeline)
+	}
+
+	raw, err := marshalTaskConsultationSnapshot(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > taskConsultationSnapshotMaxBytes {
+		t.Fatalf("bounded snapshot is %d bytes", len(raw))
+	}
+	if !bytes.Contains(raw, []byte(`"snapshot_truncated":true`)) || !bytes.Contains(raw, []byte("pipeline-large-a")) || !bytes.Contains(raw, []byte("Large task")) {
+		t.Fatalf("essential task evidence missing from compact snapshot: %s", raw)
+	}
+	if bytes.Contains(raw, []byte("TAIL_MUST_NOT_REACH_SNAPSHOT")) {
+		t.Fatal("unbounded pipeline log reached consultation snapshot")
+	}
+}

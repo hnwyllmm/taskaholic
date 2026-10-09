@@ -239,3 +239,61 @@ func TestAntProgressStdinIdentityAndReconciliation(t *testing.T) {
 		t.Fatal("ambiguous state reposted", receipt, err)
 	}
 }
+
+func TestAntStatusIsReadBeforeWriteVerifiedAndIdempotent(t *testing.T) {
+	p := model.Publication{Key: "status", WorkspaceID: "workspace", IssueID: "issue", ActorID: "person", URL: "https://antmultica.alipay.com/seekdb/issues/issue", DesiredStatus: "in_progress"}
+	issue := antIssue{ID: p.IssueID, WorkspaceID: p.WorkspaceID, AssigneeID: p.ActorID, AssigneeType: "member", Status: "todo", StatusCategory: "todo"}
+	writes := 0
+	loseResponse := false
+	run := func(_ context.Context, binary string, input []byte, args ...string) ([]byte, error) {
+		joined := strings.Join(args, " ")
+		if binary != "multica" || input != nil || !strings.HasPrefix(joined, "--server-url https://antmultica.alipay.com --workspace-id workspace issue ") {
+			t.Fatal("unsafe status command", binary, args)
+		}
+		if strings.Contains(joined, "issue get issue --output json") {
+			return json.Marshal(issue)
+		}
+		if strings.Contains(joined, "issue status issue in_progress --no-start --output json") {
+			writes++
+			issue.Status, issue.StatusCategory = "in_progress", "in_progress"
+			if loseResponse {
+				return nil, errors.New("lost response")
+			}
+			return []byte(`{}`), nil
+		}
+		t.Fatal("unexpected status command", args)
+		return nil, nil
+	}
+	a := AntMulticaComments{Run: run, Binary: "multica"}
+	receipt, err := a.Publish(context.Background(), p)
+	if err != nil || receipt.ID != p.IssueID || writes != 1 {
+		t.Fatal(receipt, err, writes)
+	}
+	if _, err = a.Publish(context.Background(), p); err != nil || writes != 1 {
+		t.Fatal("already-current status was written again", err, writes)
+	}
+
+	issue.Status, issue.StatusCategory = "todo", "todo"
+	loseResponse = true
+	_, err = a.Publish(context.Background(), p)
+	var actionErr *PublicationError
+	if !errors.As(err, &actionErr) || actionErr.State != "UNCERTAIN" || writes != 2 {
+		t.Fatal("lost response was not made uncertain", err, writes)
+	}
+	p.State = "UNCERTAIN"
+	loseResponse = false
+	if _, err = a.Publish(context.Background(), p); err != nil || writes != 2 {
+		t.Fatal("uncertain status was not reconciled before rewriting", err, writes)
+	}
+
+	issue.Status, issue.StatusCategory = "done", "done"
+	_, err = a.Publish(context.Background(), p)
+	if !errors.As(err, &actionErr) || actionErr.State != "SKIPPED" || writes != 2 {
+		t.Fatal("terminal issue was reopened", err, writes)
+	}
+	issue.Status, issue.StatusCategory, issue.AssigneeID = "todo", "todo", "another-person"
+	_, err = a.Publish(context.Background(), p)
+	if !errors.As(err, &actionErr) || actionErr.State != "BLOCKED" || writes != 2 {
+		t.Fatal("reassigned issue was changed", err, writes)
+	}
+}

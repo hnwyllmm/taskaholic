@@ -26,6 +26,7 @@ func main() {
 	codexSandbox := flag.String("codex-sandbox", "workspace-write", "Codex sandbox: read-only, workspace-write, or danger-full-access")
 	disableCodex := flag.Bool("disable-codex", false, "do not register the Codex Agent Adapter")
 	cursorBinary := flag.String("cursor-binary", "", "opt in to Cursor Agent by providing its executable path")
+	disableBackups := flag.Bool("disable-backups", false, "disable this process's backup scheduler when a colocated control process owns combined backups")
 	verbose := flag.Bool("verbose", false, "enable debug logs")
 	flag.Parse()
 
@@ -63,21 +64,23 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	directory, err := backup.Directory(filepath.Dir(*spoolPath))
-	if err != nil {
-		fatal(err)
+	if !*disableBackups {
+		directory, err := backup.Directory(filepath.Dir(*spoolPath))
+		if err != nil {
+			fatal(err)
+		}
+		backups, err := backup.New(backup.Config{Directory: directory, Sources: map[string]backup.Source{"runtime.sqlite": spool}})
+		if err != nil {
+			fatal(err)
+		}
+		if _, err := backups.Capture(ctx, "startup"); err != nil {
+			fatal(err)
+		}
+		backupCtx, cancelBackup := context.WithCancel(ctx)
+		backupDone := make(chan struct{})
+		go func() { defer close(backupDone); backups.Run(backupCtx) }()
+		defer func() { cancelBackup(); <-backupDone }()
 	}
-	backups, err := backup.New(backup.Config{Directory: directory, Sources: map[string]backup.Source{"runtime.sqlite": spool}})
-	if err != nil {
-		fatal(err)
-	}
-	if _, err := backups.Capture(ctx, "startup"); err != nil {
-		fatal(err)
-	}
-	backupCtx, cancelBackup := context.WithCancel(ctx)
-	backupDone := make(chan struct{})
-	go func() { defer close(backupDone); backups.Run(backupCtx) }()
-	defer func() { cancelBackup(); <-backupDone }()
 	if err := daemon.Run(ctx); err != nil {
 		fatal(err)
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,6 +26,7 @@ func TestCodexAdapterCreatesResumesAndAppliesQueuedDirective(t *testing.T) {
 test -z "$ASSISTANT_API_TOKEN" && test -z "$ASSISTANT_RUNTIME_TOKEN" || exit 9
 printf '%s\n' '--call--' >> "$CODEX_FAKE_LOG"
 for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_LOG"; done
+cat >> "$CODEX_FAKE_LOG"
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-123"}'
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"agent answer"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}'
@@ -88,6 +90,60 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens
 	}
 	if !foundSession || !foundMessage || !foundApplied || !foundUsage {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestCodexAdapterStreamsLargePromptOverStdin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses a POSIX shell script")
+	}
+	prompt := strings.Repeat("large prompt payload\n", 16*1024)
+	for _, tc := range []struct {
+		name      string
+		sessionID string
+	}{
+		{name: "new session"},
+		{name: "resumed session", sessionID: "existing-thread"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			directory := t.TempDir()
+			argsPath := filepath.Join(directory, "arguments.log")
+			stdinSizePath := filepath.Join(directory, "stdin-size.log")
+			fake := filepath.Join(directory, "codex-fake")
+			script := `#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_ARGS"; done
+wc -c > "$CODEX_FAKE_STDIN_SIZE"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-123"}'
+printf '%s\n' '{"type":"turn.completed"}'
+`
+			if err := os.WriteFile(fake, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("CODEX_FAKE_ARGS", argsPath)
+			t.Setenv("CODEX_FAKE_STDIN_SIZE", stdinSizePath)
+			adapter, err := NewCodexAdapter(fake, "read-only")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := adapter.runTurn(context.Background(), directory, "", "", tc.sessionID, prompt, func(Event) {}, nil)
+			if result.Err != nil || result.ExitCode != 0 {
+				t.Fatalf("result = %#v", result)
+			}
+			arguments, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(arguments), "\n-\n") || strings.Contains(string(arguments), "large prompt payload") {
+				t.Fatalf("prompt was not represented by the stdin sentinel:\n%s", arguments)
+			}
+			stdinSize, err := os.ReadFile(stdinSizePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.TrimSpace(string(stdinSize)) != fmt.Sprint(len(prompt)) {
+				t.Fatalf("stdin size = %q, want %d", strings.TrimSpace(string(stdinSize)), len(prompt))
+			}
+		})
 	}
 }
 
@@ -165,7 +221,8 @@ printf '%s\n' '{"type":"thread.started","thread_id":"original"}' '{"type":"turn.
 	if e != nil {
 		t.Fatal(e)
 	}
-	result := adapter.Run(context.Background(), model.RunSpec{TaskGoal: "implement", AgentSessionRef: "codex:original", RequireNativeSession: true, ExecutionGrant: &model.ExecutionGrant{ReviewID: "approved"}}, dir, nil, func(Event) {})
+	mailbox := filepath.Join(dir, "vm-mailbox")
+	result := adapter.Run(context.Background(), model.RunSpec{TaskGoal: "implement", AgentSessionRef: "codex:original", RequireNativeSession: true, ExecutionGrant: &model.ExecutionGrant{ReviewID: "approved"}, AdditionalWritableRoots: []string{mailbox}}, dir, nil, func(Event) {})
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
@@ -174,13 +231,59 @@ printf '%s\n' '{"type":"thread.started","thread_id":"original"}' '{"type":"turn.
 		t.Fatal(e)
 	}
 	args := string(raw)
-	for _, s := range []string{"resume", "original", `sandbox_mode="workspace-write"`, "sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
+	for _, s := range []string{"resume", "original", "--add-dir", mailbox, `sandbox_mode="workspace-write"`, "sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=false", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
 		if !strings.Contains(args, s) {
 			t.Fatal("missing sandbox boundary", s)
 		}
 	}
 	if strings.Contains(args, "danger-full-access") {
 		t.Fatal("inherited unsafe default")
+	}
+}
+
+func TestManagedReadNetworkUsesIsolatedWorkspaceSandbox(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fixture")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "args")
+	binary := filepath.Join(dir, "codex")
+	script := `#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg" >> "$CODEX_FAKE_LOG"; done
+printf '%s\n' '{"type":"thread.started","thread_id":"review-thread"}' '{"type":"turn.completed"}'
+`
+	if err := os.WriteFile(binary, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_FAKE_LOG", logPath)
+	adapter, err := NewCodexAdapter(binary, "danger-full-access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := adapter.Run(context.Background(), model.RunSpec{
+		ExecutionSettings:    model.ExecutionSettings{NetworkAccess: true},
+		TaskGoal:             "review PR",
+		ReadOnly:             true,
+		AgentSessionRef:      "codex:review-thread",
+		RequireNativeSession: true,
+	}, dir, nil, func(Event) {})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(raw)
+	for _, want := range []string{"resume\n", "\nreview-thread\n", `default_permissions="work-assistant-managed-read-network"`, `permissions.work-assistant-managed-read-network.extends=":workspace"`, "permissions.work-assistant-managed-read-network.network.enabled=true", "sandbox_workspace_write.writable_roots=[]", "sandbox_workspace_write.network_access=true", "sandbox_workspace_write.exclude_slash_tmp=true", "sandbox_workspace_write.exclude_tmpdir_env_var=true"} {
+		if !strings.Contains(args, want) {
+			t.Fatalf("missing %q in %s", want, args)
+		}
+	}
+	for _, forbidden := range []string{"danger-full-access", "--sandbox", "sandbox_mode=", "--add-dir"} {
+		if strings.Contains(args, forbidden) {
+			t.Fatalf("unexpected %q in %s", forbidden, args)
+		}
 	}
 }
 

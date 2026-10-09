@@ -6,13 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
 	"work-assistant/internal/model"
 	"work-assistant/internal/workflow"
 )
 
 // Only internal review tasks may be reopened, never the user's accepted task.
-// Session binding is left intact. Eight completed rounds per revision bounds
-// automatic discussion; manual holds and transport failures are never undone.
+// Session binding is left intact. Discussion has no artificial round limit;
+// manual holds and transport failures are never undone.
 func continuePRReviewsTx(ctx context.Context, tx *sql.Tx, target model.SourceTarget, key, message string) error {
 	parent, err := getTaskTx(ctx, tx, target.TaskID)
 	if err != nil {
@@ -51,10 +52,6 @@ func continuePRReviewsTx(ctx context.Context, tx *sql.Tx, target model.SourceTar
 		if exists {
 			continue
 		}
-		var rounds int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM run WHERE task_id=? AND state='COMPLETED'`, task).Scan(&rounds); err != nil {
-			return err
-		}
 		if strings.HasPrefix(key, "author-result:") {
 			if current.State != model.TaskStateCompleted && current.State != model.TaskStateBlocked {
 				continue
@@ -71,19 +68,7 @@ func continuePRReviewsTx(ctx context.Context, tx *sql.Tx, target model.SourceTar
 				continue
 			}
 		}
-		if rounds >= 8 {
-			if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=1,scheduler_error='同版本自动评审已达 8 轮，请核对未解决的问题后手动继续' WHERE task_id=?`, task); err != nil {
-				return err
-			}
-			if err = setWorkStateTx(ctx, tx, task, model.TaskStateBlocked); err != nil {
-				return err
-			}
-			if _, err = insertMessageTx(ctx, tx, target.TaskID, "system", "PR 自动评审已达 8 轮仍有新讨论，需要核对："+target.Entity+"\n评审任务："+task, "", "RECORDED"); err != nil {
-				return err
-			}
-			continue
-		}
-		if current.State == model.TaskStateCompleted {
+		if current.State == model.TaskStateCompleted || current.State == model.TaskStateWaitingTests {
 			if err = setWorkStateTx(ctx, tx, task, model.TaskStateQueued); err != nil {
 				return err
 			}
@@ -91,7 +76,7 @@ func continuePRReviewsTx(ctx context.Context, tx *sql.Tx, target model.SourceTar
 		if _, err = tx.ExecContext(ctx, `UPDATE source_review SET state='PENDING',feedback_sent=0 WHERE task_id=?`, task); err != nil {
 			return err
 		}
-		if _, err = taskEventMessageTx(ctx, tx, task, "继续此 PR 的评审，沿用原 Session。重新核对版本、讨论和测试，不凭旧结论自动通过。\n"+target.Entity+"\n固定版本："+target.HeadSHA+"\n"+truncateRunes(message, 6000), key, "system"); err != nil {
+		if _, err = taskEventMessageTx(ctx, tx, task, "继续此 PR 的评审，沿用原 Session。重新核对固定版本和相关讨论，不凭旧结论自动通过。CI/pipeline 仍由原开发任务处理。\n"+target.Entity+"\n固定版本："+target.HeadSHA+"\n"+truncateRunes(message, 6000), key, "system"); err != nil {
 			return err
 		}
 	}
