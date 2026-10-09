@@ -28,7 +28,8 @@ type multicaIssue struct {
 	Properties     map[string]json.RawMessage `json:"properties"`
 }
 type multicaCursor struct {
-	Issues map[string]string `json:"issues"`
+	Issues   map[string]string `json:"issues"`
+	Terminal map[string]bool   `json:"terminal,omitempty"`
 }
 type multicaProperty struct {
 	ID       string `json:"id"`
@@ -81,13 +82,16 @@ func (a *AntMultica) Poll(ctx context.Context, s model.TaskSource, t model.Sourc
 	if key == "" || value == "" {
 		return result, fmt.Errorf("AntMultica 找不到迭代 %s=%s；未扩大导入范围", s.Config.IterationKey, s.Config.IterationValue)
 	}
-	cursor := multicaCursor{Issues: map[string]string{}}
+	cursor := multicaCursor{Issues: map[string]string{}, Terminal: map[string]bool{}}
 	if len(t.Cursor) > 0 {
 		if err = json.Unmarshal(t.Cursor, &cursor); err != nil {
 			return result, fmt.Errorf("AntMultica 游标损坏，已停止导入")
 		}
 		if cursor.Issues == nil {
 			cursor.Issues = map[string]string{}
+		}
+		if cursor.Terminal == nil {
+			cursor.Terminal = map[string]bool{}
 		}
 	}
 	for offset := 0; ; {
@@ -112,20 +116,31 @@ func (a *AntMultica) Poll(ctx context.Context, s model.TaskSource, t model.Sourc
 			if json.Unmarshal(issue.Properties[key], &iteration) != nil || iteration != value {
 				continue
 			}
-			if issue.StatusCategory == "done" || issue.StatusCategory == "canceled" || issue.StatusCategory == "cancelled" || issue.Status == "done" || issue.Status == "canceled" {
+			statusCategory := strings.ToLower(strings.TrimSpace(issue.StatusCategory))
+			status := strings.ToLower(strings.TrimSpace(issue.Status))
+			terminal := statusCategory == "done" || statusCategory == "canceled" || statusCategory == "cancelled" || status == "done" || status == "canceled" || status == "cancelled"
+			previousRevision, previouslySeen := cursor.Issues[issue.ID]
+			// Do not import already-finished historical work. Once an active issue
+			// has been observed, however, its close/reopen lifecycle is durable
+			// quality evidence for the task that was created from it.
+			if terminal && !previouslySeen {
 				continue
 			}
 			if strings.TrimSpace(issue.Title) == "" {
 				return result, fmt.Errorf("AntMultica 工单缺少标题")
 			}
 			revision := digest(issue)
-			if cursor.Issues[issue.ID] == revision {
+			if previousRevision == revision && cursor.Terminal[issue.ID] == terminal {
 				continue
 			}
 			// Manager lifecycle writeback changes only status/status_category.
 			// Advance the source cursor without turning that echo into new work;
 			// title, description, assignment and properties still create events.
-			if antMulticaStatusOnlyRevision(cursor.Issues[issue.ID], issue) {
+			// A normal manager status echo stays quiet, but a status-only change
+			// may itself be the important lifecycle edge (closed or reopened).
+			// Never suppress that edge merely because title/description stayed the
+			// same.
+			if cursor.Terminal[issue.ID] == terminal && antMulticaStatusOnlyRevision(cursor.Issues[issue.ID], issue) {
 				cursor.Issues[issue.ID] = revision
 				continue
 			}
@@ -138,8 +153,17 @@ func (a *AntMultica) Poll(ctx context.Context, s model.TaskSource, t model.Sourc
 			if len(body) > 32000 {
 				return result, fmt.Errorf("AntMultica 工单 %s 超过 32 KB，需人工处理；没有截断导入", issue.Identifier)
 			}
-			result.Events = append(result.Events, model.SourceEvent{Key: "issue:" + issue.ID + ":" + revision, Kind: "antmultica.issue", Entity: "antmultica:" + s.Config.WorkspaceID + ":" + issue.ID, Title: title, Message: body, URL: url})
+			kind := "antmultica.issue"
+			if terminal {
+				kind = "antmultica.closed"
+				body = fmt.Sprintf("AntMultica 工单已进入终态。\n工单链接: %s\n工单: %s (%s)\n状态: %s", url, issue.Identifier, issue.ID, issue.Status)
+			} else if cursor.Terminal[issue.ID] {
+				kind = "antmultica.reopened"
+				body = "AntMultica 工单已重新打开。\n" + body
+			}
+			result.Events = append(result.Events, model.SourceEvent{Key: kind + ":" + issue.ID + ":" + revision, Kind: kind, Entity: "antmultica:" + s.Config.WorkspaceID + ":" + issue.ID, Title: title, Message: body, URL: url})
 			cursor.Issues[issue.ID] = revision
+			cursor.Terminal[issue.ID] = terminal
 		}
 		if !*page.HasMore {
 			break

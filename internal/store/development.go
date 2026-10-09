@@ -510,8 +510,14 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 			return true, err
 		}
 		if result.Outcome == "replan" {
+			if err := workflow.ValidatePlanChange(result.PlanChange); err != nil {
+				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{
+					Evidence: "Agent 请求重新设计，但没有提交可核验的重大方案变化材料：" + err.Error() + "\n" + truncateRunes(result.Message, 3000),
+					NextStep: "保持当前已批准方案。普通实现、构建、测试或环境问题在原 Session 中诊断和修复；只有需求范围、外部契约、安全边界或发布承诺被新证据推翻时，才提交完整 plan_change 和 task_update 重新设计。",
+				})
+			}
 			if result.ValidationPlan == nil {
-				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{Evidence: "Agent 申请调整方案，但没有提交更新后的结构化验证策略。", NextStep: "补充 validation_plan，明确哪些历史测试复用、哪些因改动重跑、哪些新增或排除，以及稳定候选的 final_gate；不要开始新范围实施。"})
+				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{Evidence: "Agent 申请重大方案调整，但没有提交更新后的结构化验证策略。", NextStep: "补充 validation_plan，明确哪些历史测试复用、哪些因改动重跑、哪些新增或排除，以及稳定候选的 final_gate；不要开始新范围实施。"})
 			}
 			d.Phase = "PLANNING"
 			d.Version++
@@ -519,7 +525,9 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 			if err = saveDevelopmentTx(ctx, tx, d, "PlanApprovalRevoked"); err != nil {
 				return true, err
 			}
-			_, err = taskEventMessageTx(ctx, tx, parent, "实施发现需要调整方案，请重新提交完整方案供 Agent 和人工评审：\n"+truncateRunes(result.Message, 6000), "replan:"+e.RunID, "system")
+			change := result.PlanChange
+			message := "实施发现已批准方案的重大变化（" + change.Kind + "），请重新提交完整方案供 Agent 和人工评审：\n被推翻的前提：" + truncateRunes(change.ApprovedAssumption, 2000) + "\n新证据：" + truncateRunes(change.NewEvidence, 4000) + "\n受影响范围：" + strings.Join(change.AffectedAreas, "、") + "\n\n" + truncateRunes(result.Message, 6000)
+			_, err = taskEventMessageTx(ctx, tx, parent, message, "replan:"+e.RunID, "system")
 			return true, err
 		}
 		if result.Outcome == "review" && len(result.PullRequests) == 0 {

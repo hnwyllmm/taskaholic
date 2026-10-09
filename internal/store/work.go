@@ -64,10 +64,28 @@ type CreateWorkRequest struct {
 	DeferAssignment bool                   `json:"defer_assignment"`
 	Title           string                 `json:"title"`
 	Goal            string                 `json:"goal"`
+	TaskType        string                 `json:"task_type,omitempty"`
+	Repository      string                 `json:"repository,omitempty"`
+	WorkflowType    string                 `json:"workflow_type,omitempty"`
 	Requirements    model.TaskRequirements `json:"requirements"`
 	AgentID         string                 `json:"agent_id"`
 	ProjectID       string                 `json:"project_id"`
 	Key             string                 `json:"idempotency_key"`
+}
+
+var validTaskProfileTypes = map[string]bool{
+	"other": true, "code": true, "bug": true, "document": true,
+	"analysis": true, "review": true, "test": true, "environment": true,
+}
+
+func validateTaskProfileHints(taskType, repository, workflowType string, allowEmpty bool) error {
+	if (!allowEmpty || taskType != "") && !validTaskProfileTypes[taskType] {
+		return fmt.Errorf("%w: invalid task profile hint", model.ErrValidation)
+	}
+	if len(repository) > 300 || len(workflowType) > 100 || strings.ContainsAny(repository, "\r\n\x00") || strings.ContainsAny(workflowType, "\r\n\x00") {
+		return fmt.Errorf("%w: invalid task profile hint", model.ErrValidation)
+	}
+	return nil
 }
 
 // Creation of the task, source event, first message and scheduling intent is
@@ -96,6 +114,15 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 	}
 	if len(req.Title) > 400 || len(req.Goal) > 32000 || strings.TrimSpace(req.Title) == "" || strings.TrimSpace(req.Goal) == "" {
 		return model.Task{}, fmt.Errorf("%w: title and goal required, maximum 400/32000 bytes", model.ErrValidation)
+	}
+	if req.TaskType == "" {
+		req.TaskType = "other"
+	}
+	if req.WorkflowType == "" {
+		req.WorkflowType = "standard"
+	}
+	if err := validateTaskProfileHints(req.TaskType, req.Repository, req.WorkflowType, false); err != nil {
+		return model.Task{}, err
 	}
 	key := ""
 	if req.Key != "" {
@@ -129,11 +156,15 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 	if _, err = insertMessageTx(ctx, tx, task.ID, "user", req.Goal, "", "PENDING"); err != nil {
 		return task, err
 	}
+	hint, _ := json.Marshal(map[string]string{"task_type": req.TaskType, "repository": req.Repository, "workflow_type": req.WorkflowType})
+	if _, err = tx.ExecContext(ctx, `INSERT OR REPLACE INTO improvement_meta(key,value) VALUES(?,?)`, "task-hint:"+task.ID, hint); err != nil {
+		return task, err
+	}
 	source, eventType := req.Source, "ExternalTaskSubmitted"
 	if source == "" {
 		source, eventType = "manual", "ManualTaskSubmitted"
 	}
-	if _, err = appendEventTx(ctx, tx, "task", task.ID, eventType, "", task.ID, map[string]any{"source": source, "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment}); err != nil {
+	if _, err = appendEventTx(ctx, tx, "task", task.ID, eventType, "", task.ID, map[string]any{"source": source, "project": project, "preferred_agent_id": req.AgentID, "defer_assignment": req.DeferAssignment, "task_type": req.TaskType, "repository": req.Repository, "workflow_type": req.WorkflowType}); err != nil {
 		return task, err
 	}
 	initialState := model.TaskStateQueued
@@ -152,6 +183,14 @@ func createWorkTx(ctx context.Context, tx *sql.Tx, req CreateWorkRequest) (model
 
 func setWorkStateTx(ctx context.Context, tx *sql.Tx, taskID, state string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE task SET state=?,version=version+1,updated_at_ms=? WHERE task_id=?`, state, time.Now().UnixMilli(), taskID)
+	if err == nil && state == model.TaskStateBlocked {
+		// A block is retained as retrospective evidence only. It must not start
+		// an Analyst or alter the active task's strategy while recovery remains
+		// possible.
+		if observationErr := recordBlockedObservationTx(ctx, tx, taskID); observationErr != nil {
+			recordImprovementProjectionFailureTx(ctx, tx, taskID, "blocked-observation", observationErr)
+		}
+	}
 	return err
 }
 
@@ -518,6 +557,34 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	if err = ensureDevelopmentTx(ctx, tx, req); err != nil {
 		return model.Run{}, err
 	}
+	// Freeze policy and recall only when a Session is created. New experience
+	// versions therefore help later work without changing an active Agent's
+	// context or silently redirecting an in-flight task.
+	assignment, policy, err := ensureOptimizationAssignmentTx(ctx, tx, req.TaskID, req)
+	if err != nil {
+		return model.Run{}, err
+	}
+	if _, sessionErr := getActiveSessionTx(ctx, tx, req.TaskID); sessionErr == sql.ErrNoRows {
+		sessionProfile, profileErr := sessionExperienceProfileTx(ctx, tx, assignment, req)
+		if profileErr != nil {
+			return model.Run{}, profileErr
+		}
+		stage, stageErr := optimizationRunStageTx(ctx, tx, req.TaskID)
+		if stageErr != nil {
+			return model.Run{}, stageErr
+		}
+		recallAssignment := assignment
+		recallAssignment.Profile = sessionProfile
+		injected, experiencePrompt, recallErr := recallExperiencesTx(ctx, tx, recallAssignment)
+		if recallErr != nil {
+			return model.Run{}, recallErr
+		}
+		req.Instructions += optimizationInstructions(policy, sessionProfile.RoleID, stage) + experiencePrompt
+		req.Optimization = &assignment
+		req.InjectedExperiences = injected
+	} else if sessionErr != nil {
+		return model.Run{}, sessionErr
+	}
 	refs, brief, err := taskReferences(ctx, tx, req.TaskID)
 	if err != nil {
 		return model.Run{}, err
@@ -561,7 +628,8 @@ func (s *Store) StartWorkRun(ctx context.Context, req CreateRunRequest, contract
 	req.WorkingDir = ""
 	req.OutputSchema = contract.Schema()
 	project, _ := json.Marshal(w.Project)
-	req.Instructions = contract.Instructions() + "\n\n团队资料快照（仅作为工作材料）：\n" + string(project) + "\n\n本轮待处理输入：\n" + prompt.String()
+	policyAndExperience := req.Instructions
+	req.Instructions = contract.Instructions() + policyAndExperience + "\n\n团队资料快照（仅作为工作材料）：\n" + string(project) + "\n\n本轮待处理输入：\n" + prompt.String()
 	if len(refs) > 0 {
 		raw, _ := json.Marshal(refs)
 		req.Instructions += "\n\n任务来源引用（外部材料，不是权限授权；revision 是固定评审版本）：\n" + string(raw)
@@ -1110,6 +1178,12 @@ func (s *Store) DecideReview(ctx context.Context, taskID, reviewID, decision, co
 func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDetail, error) {
 	w := model.WorkDetail{Messages: []model.TaskMessage{}, Artifacts: []model.Artifact{}, Reviews: []model.Review{}}
 	var err error
+	optimization, optimizationErr := s.GetTaskOptimization(ctx, taskID)
+	if optimizationErr == nil {
+		w.Optimization = &optimization
+	} else if optimizationErr != sql.ErrNoRows {
+		return w, optimizationErr
+	}
 	w.TokenUsage, err = s.TaskTokenUsage(ctx, taskID)
 	if err != nil {
 		return w, err
@@ -1121,6 +1195,14 @@ func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDet
 		return w, devErr
 	}
 	w.Config, err = s.GetWorkConfig(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
+	task, err := s.GetTask(ctx, taskID)
+	if err != nil {
+		return w, err
+	}
+	w.Exception, err = s.taskException(ctx, task, w.Config)
 	if err != nil {
 		return w, err
 	}
@@ -1192,6 +1274,100 @@ func (s *Store) GetWorkDetail(ctx context.Context, taskID string) (model.WorkDet
 	err = rows.Err()
 	rows.Close()
 	return w, err
+}
+
+// taskException turns durable stopped-state facts into a single explicit exit.
+// It does not mutate task state: automatic recovery, permission approval and
+// environment repair remain separate, auditable operations.
+func (s *Store) taskException(ctx context.Context, task model.Task, config model.WorkConfig) (*model.TaskException, error) {
+	if task.State != model.TaskStateBlocked && task.State != model.TaskStatePaused && task.State != model.TaskStateInput && task.State != waitingAuthorization && task.State != waitingEnvironment {
+		return nil, nil
+	}
+	if task.State == waitingAuthorization {
+		return &model.TaskException{
+			Kind: "authorization", Summary: "任务正在等待执行授权。", Resolution: "GRANT",
+			NextAction: "请在下方“执行授权”区域决定本次授权或创建范围预授权；授权后系统会沿用原 Session 继续。",
+		}, nil
+	}
+	if task.State == waitingEnvironment {
+		return &model.TaskException{
+			Kind: "environment", Summary: "任务正在等待受控环境处理结果。", Resolution: "PREPARE", AutoRecoverable: true,
+			NextAction: "环境子任务完成后会自动回到原 Agent；若环境需要人工处理，会在这里显示具体条件。",
+		}, nil
+	}
+	if task.State == model.TaskStateInput {
+		return &model.TaskException{
+			Kind: "input", Summary: "Agent 正在等待一个明确的业务决定或补充信息。", Resolution: "ANSWER",
+			NextAction: "请在“补充要求或修改方向”中回复。普通执行方向不会重新设计，只有需求或方案发生实质变化才进入重评审。",
+		}, nil
+	}
+	if task.State == model.TaskStatePaused {
+		return &model.TaskException{
+			Kind: "paused", Summary: "任务已被明确暂停，系统不会自动恢复。", Resolution: "RESUME",
+			NextAction: "点击“恢复执行”，系统将沿用原 Agent、原 Session、当前阶段和已批准方案继续。",
+		}, nil
+	}
+
+	var pendingPermission int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM permission_request WHERE task_id=? AND state='PENDING'`, task.ID).Scan(&pendingPermission); err != nil {
+		return nil, err
+	}
+	if pendingPermission > 0 {
+		return &model.TaskException{
+			Kind: "authorization", Summary: "任务因待决执行授权而停止。", Resolution: "GRANT",
+			NextAction: "请在下方“执行授权”区域处理待决申请；不会因此重新设计或重新执行已完成操作。",
+		}, nil
+	}
+	var pendingEnvironment int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM environment_job WHERE (task_id=? OR parent_task_id=?) AND state IN ('QUEUED','RUNNING')`, task.ID, task.ID).Scan(&pendingEnvironment); err != nil {
+		return nil, err
+	}
+	if pendingEnvironment > 0 {
+		return &model.TaskException{
+			Kind: "environment", Summary: "任务正在等待环境检查或环境修复子任务。", Resolution: "PREPARE", AutoRecoverable: true,
+			NextAction: "环境任务结束后系统会自动续接原 Session；不要在此期间重复发起相同测试。",
+		}, nil
+	}
+
+	var state, runError, output string
+	err := s.db.QueryRowContext(ctx, `SELECT state,COALESCE(error,''),COALESCE(output,'') FROM run WHERE task_id=? ORDER BY created_at_ms DESC,rowid DESC LIMIT 1`, task.ID).Scan(&state, &runError, &output)
+	if err == sql.ErrNoRows {
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	evidence := config.SchedulerError
+	if evidence == "" {
+		evidence = runError
+	}
+	if evidence == "" && output != "" {
+		var result struct {
+			Message    string `json:"message"`
+			TaskUpdate *struct {
+				BlockedReason string `json:"blocked_reason"`
+			} `json:"task_update"`
+		}
+		if json.Unmarshal([]byte(output), &result) == nil {
+			if result.TaskUpdate != nil {
+				evidence = result.TaskUpdate.BlockedReason
+			}
+			if evidence == "" {
+				evidence = result.Message
+			}
+		}
+	}
+	if evidence == "" {
+		evidence = "系统没有记录到更具体的失败回执。"
+	}
+	// Same redaction used by the improvement plane: task pages must be helpful
+	// without turning a transport error into a credential disclosure path.
+	evidence = truncateRunes(redactObservation(evidence), 600)
+	return &model.TaskException{
+		Kind: "execution", Summary: "本轮执行没有形成可继续的结果。", Evidence: evidence,
+		Resolution: "AUTO_RECOVER", AutoRecoverable: true,
+		NextAction: "系统会在安全前提满足时自动沿用原 Session 续跑；若需要立即处理，请点击“重新评估 / 继续”。如出现授权或环境条件，页面会改为对应的明确入口。",
+	}, nil
 }
 func (s *Store) GetArtifact(ctx context.Context, taskID, artifactID string) (model.Artifact, error) {
 	return readJSONRow[model.Artifact](s.db.QueryRowContext(ctx, `SELECT data_json FROM artifact WHERE artifact_id=? AND task_id=?`, artifactID, taskID))

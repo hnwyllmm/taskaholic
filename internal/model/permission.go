@@ -28,6 +28,8 @@ type PermissionRequest struct {
 	CreatedAtMS  int64  `json:"created_at_ms"`
 }
 type ExecutionCapability struct {
-	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"`
+	Available   bool   `json:"available"`
+	Reason      string `json:"reason,omitempty"`
+	CheckedAtMS int64  `json:"checked_at_ms,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }

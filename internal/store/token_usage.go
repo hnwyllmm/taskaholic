@@ -12,8 +12,15 @@ import (
 
 func migrateV21(db *sql.DB) error {
 	var version int
-	if err := db.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_version`).Scan(&version); err != nil || version >= 21 {
+	if err := db.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_version`).Scan(&version); err != nil {
 		return err
+	}
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='run_token_usage'`).Scan(&exists); err != nil {
+		return err
+	}
+	if version >= 21 && exists != 0 {
+		return nil
 	}
 	tx, err := db.Begin()
 	if err != nil {
@@ -75,7 +82,7 @@ func migrateV21(db *sql.DB) error {
 	if err = rows.Close(); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(`INSERT INTO schema_version VALUES(21,unixepoch('subsec')*1000)`); err != nil {
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO schema_version VALUES(21,unixepoch('subsec')*1000)`); err != nil {
 		return err
 	}
 	return tx.Commit()

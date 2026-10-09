@@ -26,6 +26,19 @@ type WorkConfig struct {
 	SchedulerError string  `json:"scheduler_error,omitempty"`
 }
 
+// TaskException is the Manager-owned explanation of why work is not making
+// forward progress.  It is intentionally derived from durable task/run/
+// permission/environment state, so a page refresh cannot lose the way out.
+// It never asks a model to diagnose or to change the plan.
+type TaskException struct {
+	Kind            string `json:"kind"`
+	Summary         string `json:"summary"`
+	Evidence        string `json:"evidence,omitempty"`
+	Resolution      string `json:"resolution"` // AUTO_RECOVER, GRANT, PREPARE, ANSWER, RESUME, RETRY
+	NextAction      string `json:"next_action"`
+	AutoRecoverable bool   `json:"auto_recoverable"`
+}
+
 type TaskMessage struct {
 	Seq         int64  `json:"seq"`
 	ID          string `json:"message_id"`
@@ -135,17 +148,19 @@ type TaskEfficiencySignal struct {
 }
 
 type WorkDetail struct {
-	TokenUsage    TaskTokenUsage  `json:"token_usage"`
-	Development   *Development    `json:"development,omitempty"`
-	Publications  []Publication   `json:"publications"`
-	References    []TaskReference `json:"references"`
-	ReviewBrief   *ReviewBrief    `json:"review_brief,omitempty"`
-	TestPipelines []TestPipeline  `json:"test_pipelines"`
-	ReviewTurns   []ReviewTurn    `json:"review_turns"`
-	Config        WorkConfig      `json:"config"`
-	Messages      []TaskMessage   `json:"messages"`
-	Artifacts     []Artifact      `json:"artifacts"`
-	Reviews       []Review        `json:"reviews"`
+	TokenUsage    TaskTokenUsage    `json:"token_usage"`
+	Optimization  *TaskOptimization `json:"optimization,omitempty"`
+	Exception     *TaskException    `json:"exception,omitempty"`
+	Development   *Development      `json:"development,omitempty"`
+	Publications  []Publication     `json:"publications"`
+	References    []TaskReference   `json:"references"`
+	ReviewBrief   *ReviewBrief      `json:"review_brief,omitempty"`
+	TestPipelines []TestPipeline    `json:"test_pipelines"`
+	ReviewTurns   []ReviewTurn      `json:"review_turns"`
+	Config        WorkConfig        `json:"config"`
+	Messages      []TaskMessage     `json:"messages"`
+	Artifacts     []Artifact        `json:"artifacts"`
+	Reviews       []Review          `json:"reviews"`
 }
 
 type TokenUsageTotals struct {

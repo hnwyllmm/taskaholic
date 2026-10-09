@@ -14,6 +14,8 @@ var SystemSlots = []SystemSlot{
 	{"task_consultation", "任务旁路咨询", "只读解释任务已记录的信息；使用独立 Session，不打断或指导工作成员。", "auto"},
 	{"role_builder", "角色设计", "为新角色草案生成职责和能力配置；已有草案继续原 Session。", "auto"},
 	{"task_router", "任务路由", "新任务可由指定成员在合格候选人中选择执行者；已有任务保持归属。", "rules"},
+	{"improvement_analyst", "改进分析", "低优先级分析已完成或持续受阻任务的确定性画像，只提出结构化候选，不直接改变策略。", "auto"},
+	{"improvement_judge", "改进盲评", "只读取目标、交付物与验证证据进行语义质量评分；看不到实验分组。", "auto"},
 	{"upgrade_builder", "升级构建", "使用本机成员在隔离副本中修改并测试系统；安装仍需人工确认。", "auto"},
 }
 

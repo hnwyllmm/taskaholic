@@ -105,6 +105,14 @@ func (d *Daemon) startVMBridge(ctx context.Context, spec model.RunSpec, workingD
 	if !filepath.IsAbs(profile.WinRMCommand) {
 		return "", noop, fmt.Errorf("Windows transport must be a configured absolute path")
 	}
+	// A connection preflight is cached by executionCapabilities.  Do not run an
+	// extra probe for every turn (and do not make a just-started runtime depend
+	// on that cache), but never hand an Agent a client after a known-bad health
+	// result.  This is an explicit environment exception, not a mysterious
+	// compiler failure later in the task.
+	if health, known := d.cachedAutonomousWindowsCapability(profile); known && !health.Available {
+		return "Windows VM 环境预检未通过：" + health.Reason + "。请提交 environment recovery request，说明需要恢复的 VM/WinRM/磁盘条件；不要猜测或替换仓库构建脚本。", noop, nil
+	}
 	dir := filepath.Join(workingDir, ".assistant-vm-"+spec.RunID)
 	if err = os.Mkdir(dir, 0700); err != nil {
 		return "", noop, err

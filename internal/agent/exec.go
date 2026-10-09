@@ -56,8 +56,12 @@ func (ExecAdapter) Run(ctx context.Context, spec model.RunSpec, workingDir strin
 		directiveReader.Add(1)
 		go rejectLiveDirectives(directives, directiveDone, emit, &directiveReader)
 	}
-	err = command.Wait()
+	// Cmd.Wait closes StdoutPipe/StderrPipe itself.  Waiting for it before the
+	// scanners have drained their kernel buffers can discard a short final line
+	// (and made stdout/stderr events nondeterministic under load).  The child
+	// closes its descriptors on exit, so drain both streams first, then reap.
 	readers.Wait()
+	err = command.Wait()
 	close(directiveDone)
 	directiveReader.Wait()
 	if err == nil {

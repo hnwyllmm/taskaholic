@@ -375,3 +375,25 @@ func TestWorkQueueSurvivesDatabaseReopen(t *testing.T) {
 		t.Fatalf("queue lost %+v %v", w, err)
 	}
 }
+
+func TestWorkDetailExposesRecoverableExecutionExit(t *testing.T) {
+	ctx := context.Background()
+	s, agent, task := workFixture(t)
+	run := startWork(t, s, agent, task)
+	if _, err := s.ApplyRuntimeEvent(ctx, model.RuntimeEvent{
+		RuntimeID: run.RuntimeID, Epoch: "epoch-role", RuntimeSeq: 3,
+		RunID: run.ID, TaskID: task.ID, Type: "run.failed", Error: "transport failed token=must-not-leak",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	work, err := s.GetWorkDetail(ctx, task.ID)
+	if err != nil || work.Exception == nil {
+		t.Fatalf("missing exception exit: %#v %v", work.Exception, err)
+	}
+	if work.Exception.Kind != "execution" || work.Exception.Resolution != "AUTO_RECOVER" || !work.Exception.AutoRecoverable {
+		t.Fatalf("unexpected exception: %#v", work.Exception)
+	}
+	if strings.Contains(work.Exception.Evidence, "must-not-leak") || !strings.Contains(work.Exception.NextAction, "重新评估 / 继续") {
+		t.Fatalf("unsafe or incomplete exception: %#v", work.Exception)
+	}
+}

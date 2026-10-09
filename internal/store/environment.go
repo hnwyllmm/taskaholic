@@ -90,7 +90,7 @@ func requestEnvironmentTx(ctx context.Context, tx *sql.Tx, taskID, runID string,
 	if err != nil {
 		return err
 	}
-	child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "Windows 验证 · " + truncateRunes(parent.Title, 100), Goal: "受控 Windows 执行子任务，不调用模型，不授予 Agent 宿主机权限。\n" + r.Reason, AgentID: agent, Source: "manager.environment", Key: "environment:" + runID})
+	child, err := createWorkTx(ctx, tx, CreateWorkRequest{Title: "Windows 验证 · " + truncateRunes(parent.Title, 100), Goal: "受控 Windows 执行子任务，不调用模型，不授予 Agent 宿主机权限。\n" + r.Reason, TaskType: "environment", Repository: d.Repository, WorkflowType: "standard", AgentID: agent, Source: "manager.environment", Key: "environment:" + runID})
 	if err != nil {
 		return err
 	}

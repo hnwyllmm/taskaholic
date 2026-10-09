@@ -11,6 +11,12 @@ var roleUI embed.FS
 func (s *Server) handlePageUI(w http.ResponseWriter, r *http.Request) {
 	var path, contentType string
 	switch r.URL.Path {
+	case "/improvements", "/improvements/":
+		path, contentType = "improvements.html", "text/html; charset=utf-8"
+	case "/assets/improvements.js":
+		path, contentType = "improvements.js", "text/javascript; charset=utf-8"
+	case "/assets/improvements.css":
+		path, contentType = "improvements.css", "text/css; charset=utf-8"
 	case "/permissions", "/permissions/":
 		path, contentType = "permissions.html", "text/html; charset=utf-8"
 	case "/assets/permissions.js":

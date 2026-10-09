@@ -26,12 +26,20 @@ type Config struct {
 	Sources    map[string]Source
 	KeepRecent int
 	KeepDays   int
+	// IDPrefix is used by the mandatory migration gate so recovery points are
+	// immediately recognizable. Empty keeps the normal snapshot- prefix.
+	IDPrefix string
 }
 
 type File struct {
 	Name   string `json:"name"`
 	SHA256 string `json:"sha256"`
 	Size   int64  `json:"size"`
+	// Zero explicitly means that this SQLite source (for example the Runtime
+	// spool) has no independent schema-version table. New manifests always
+	// retain the field so an operator can distinguish "unversioned" from an
+	// incomplete recovery record.
+	SchemaVersion int `json:"schema_version"`
 }
 
 type Snapshot struct {
@@ -85,6 +93,12 @@ func New(config Config) (*Manager, error) {
 	}
 	if config.KeepRecent < 1 || config.KeepDays < 1 {
 		return nil, errors.New("backup retention must be positive")
+	}
+	if config.IDPrefix == "" {
+		config.IDPrefix = "snapshot-"
+	}
+	if !validSnapshotPrefix(config.IDPrefix) {
+		return nil, errors.New("invalid backup ID prefix")
 	}
 	sources := make(map[string]Source, len(config.Sources))
 	for name, source := range config.Sources {
@@ -167,7 +181,7 @@ func (m *Manager) Capture(ctx context.Context, reason string) (snapshot Snapshot
 	}
 	defer os.RemoveAll(stage)
 	now := time.Now().UTC()
-	snapshot = Snapshot{Format: 1, ID: "snapshot-" + now.Format("20060102T150405.000000000Z") + "-" + strings.TrimPrefix(filepath.Base(stage), ".partial-"), Reason: reason, CreatedAt: now}
+	snapshot = Snapshot{Format: 1, ID: m.config.IDPrefix + now.Format("20060102T150405.000000000Z") + "-" + strings.TrimPrefix(filepath.Base(stage), ".partial-"), Reason: reason, CreatedAt: now}
 	var names []string
 	for name := range m.config.Sources {
 		names = append(names, name)
@@ -194,7 +208,11 @@ func (m *Manager) Capture(ctx context.Context, reason string) (snapshot Snapshot
 		if err != nil {
 			return snapshot, err
 		}
-		snapshot.Files = append(snapshot.Files, File{Name: name, SHA256: digest, Size: size})
+		schemaVersion, err := SQLiteSchemaVersion(ctx, path)
+		if err != nil {
+			return snapshot, fmt.Errorf("read %s schema version: %w", name, err)
+		}
+		snapshot.Files = append(snapshot.Files, File{Name: name, SHA256: digest, Size: size, SchemaVersion: schemaVersion})
 	}
 	snapshot.VerifiedAt = time.Now().UTC()
 	if err := writeJSONExclusive(filepath.Join(stage, "manifest.json"), snapshot); err != nil {
@@ -261,12 +279,12 @@ func readManifest(directory string) (Snapshot, error) {
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return snapshot, err
 	}
-	if snapshot.Format != 1 || !strings.HasPrefix(snapshot.ID, "snapshot-") || filepath.Base(snapshot.ID) != snapshot.ID || strings.ContainsAny(snapshot.ID, "\\/\x00") || len(snapshot.Files) == 0 || snapshot.CreatedAt.IsZero() || snapshot.VerifiedAt.IsZero() {
+	if snapshot.Format != 1 || !validSnapshotID(snapshot.ID) || filepath.Base(snapshot.ID) != snapshot.ID || strings.ContainsAny(snapshot.ID, "\\/\x00") || len(snapshot.Files) == 0 || snapshot.CreatedAt.IsZero() || snapshot.VerifiedAt.IsZero() {
 		return snapshot, errors.New("invalid or unsupported backup manifest")
 	}
 	seen := map[string]bool{}
 	for _, f := range snapshot.Files {
-		if !safeDBName(f.Name) || seen[f.Name] || f.Size <= 0 || len(f.SHA256) != 64 {
+		if !safeDBName(f.Name) || seen[f.Name] || f.Size <= 0 || len(f.SHA256) != 64 || f.SchemaVersion < 0 {
 			return snapshot, errors.New("invalid backup file entry")
 		}
 		seen[f.Name] = true
@@ -293,6 +311,12 @@ func Verify(ctx context.Context, directory string) (Snapshot, error) {
 		}
 		if err := VerifySQLite(ctx, path); err != nil {
 			return snapshot, fmt.Errorf("backup integrity: %s: %w", f.Name, err)
+		}
+		if f.SchemaVersion > 0 {
+			version, err := SQLiteSchemaVersion(ctx, path)
+			if err != nil || version != f.SchemaVersion {
+				return snapshot, fmt.Errorf("backup schema mismatch: %s", f.Name)
+			}
 		}
 	}
 	return snapshot, nil
@@ -356,7 +380,7 @@ func (m *Manager) list() ([]Snapshot, error) {
 	}
 	items := []Snapshot{}
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "snapshot-") {
+		if !entry.IsDir() || !validSnapshotID(entry.Name()) {
 			continue
 		}
 		item, err := readManifest(filepath.Join(m.config.Directory, entry.Name()))
@@ -375,6 +399,29 @@ func (m *Manager) list() ([]Snapshot, error) {
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 	return items, nil
+}
+
+func validSnapshotPrefix(prefix string) bool {
+	if prefix == "snapshot-" {
+		return true
+	}
+	if !strings.HasPrefix(prefix, "pre-schema-v") || !strings.HasSuffix(prefix, "-") {
+		return false
+	}
+	version := strings.TrimSuffix(strings.TrimPrefix(prefix, "pre-schema-v"), "-")
+	if version == "" {
+		return false
+	}
+	for _, r := range version {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validSnapshotID(value string) bool {
+	return strings.HasPrefix(value, "snapshot-") || strings.HasPrefix(value, "pre-schema-v")
 }
 
 func recent(items []Snapshot) []Snapshot {

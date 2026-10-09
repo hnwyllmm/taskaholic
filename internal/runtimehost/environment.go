@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ type windowsProfile struct {
 	SQLiteLibrarySHA256    string `json:"sqlite_library_sha256"`
 	SQLiteDLLSHA256        string `json:"sqlite_dll_sha256"`
 	AllowPolicySwitch      bool   `json:"allow_policy_switch"`
+	MinimumFreeGB          int    `json:"minimum_free_gb,omitempty"`
 }
 type windowsFile struct {
 	Name string `json:"name"`
@@ -63,7 +65,19 @@ type windowsReceipt struct {
 
 var phase0Files = []string{"CMakeLists.txt", "path_fixture.h", "path_fixture_test.cpp", "phase0.manifest", "README.md", "sqlite_path_probe.cpp"}
 
-// Advertise configured host capabilities; remote connectivity/build checks remain preflight.
+const windowsEnvironmentHealthTTL = 5 * time.Minute
+
+type windowsHealthCacheEntry struct {
+	fingerprint string
+	capability  model.ExecutionCapability
+	expiresAt   time.Time
+}
+
+// Advertise configured host capabilities.  Autonomous Windows execution is a
+// product environment, rather than a best-effort shell command: when a
+// runtime connects, run a small, read-only preflight and surface its result to
+// the Manager.  We deliberately do not probe compilers here; repositories own
+// their build contract and must use their official build script.
 func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
 	cap := model.ExecutionCapability{Reason: "缺少受控 Windows profile、固定依赖校验或宿主策略切换授权"}
 	raw, err := os.ReadFile(filepath.Join(d.config.WorkRoot, "windows-profiles.json"))
@@ -75,13 +89,110 @@ func (d *Daemon) executionCapabilities() map[string]model.ExecutionCapability {
 			cap = model.ExecutionCapability{Available: true}
 		}
 		if ok && p.Autonomous && e == nil && st.Mode().IsRegular() && st.Mode()&0111 != 0 && filepath.IsAbs(p.WinRMCommand) {
+			vm := d.autonomousWindowsCapability(p)
 			return map[string]model.ExecutionCapability{
-				"windows_vm":            {Available: true},
+				"windows_vm":            vm,
 				"windows_seekdb_phase0": {Reason: "此 VM 已改为 Agent 自主远程执行/上传工具，不再使用专用 environment_request。请在原开发 Session 使用本轮提供的 client.py。"},
 			}
 		}
 	}
 	return map[string]model.ExecutionCapability{"windows_seekdb_phase0": cap}
+}
+
+func windowsProfileFingerprint(p windowsProfile) string {
+	// Exclude all legacy build settings.  They do not define whether the VM is
+	// usable, and letting them affect this cache would turn normal repository
+	// build changes into accidental environment changes.
+	raw, _ := json.Marshal(struct {
+		Autonomous    bool   `json:"autonomous"`
+		WinRMCommand  string `json:"winrm_command"`
+		MinimumFreeGB int    `json:"minimum_free_gb"`
+	}{p.Autonomous, p.WinRMCommand, p.MinimumFreeGB})
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func (d *Daemon) cachedAutonomousWindowsCapability(p windowsProfile) (model.ExecutionCapability, bool) {
+	fingerprint := windowsProfileFingerprint(p)
+	d.environmentMu.Lock()
+	defer d.environmentMu.Unlock()
+	entry, ok := d.environmentHealth["windows_vm"]
+	if !ok || entry.fingerprint != fingerprint || time.Now().After(entry.expiresAt) {
+		return model.ExecutionCapability{}, false
+	}
+	return entry.capability, true
+}
+
+func (d *Daemon) autonomousWindowsCapability(p windowsProfile) model.ExecutionCapability {
+	if cached, ok := d.cachedAutonomousWindowsCapability(p); ok {
+		return cached
+	}
+
+	checkedAt := time.Now()
+	capability := model.ExecutionCapability{CheckedAtMS: checkedAt.UnixMilli(), Fingerprint: windowsProfileFingerprint(p)}
+	if !p.Autonomous {
+		capability.Reason = "Windows VM 未启用自主执行"
+		return d.cacheAutonomousWindowsCapability(p, capability, checkedAt)
+	}
+	st, err := os.Stat(p.WinRMCommand)
+	if err != nil || !st.Mode().IsRegular() || st.Mode()&0111 == 0 || !filepath.IsAbs(p.WinRMCommand) {
+		capability.Reason = "Windows WinRM 传输程序不可用；请检查受控运行环境配置"
+		return d.cacheAutonomousWindowsCapability(p, capability, checkedAt)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancel()
+	// This script is fixed, read-only, and intentionally does not carry model
+	// text or repository paths.  It verifies transport, PowerShell, and enough
+	// free space to start a build without trying to infer toolchains.
+	const script = "$ErrorActionPreference = 'Stop'\n$drive = Get-PSDrive -Name C\n$freeGB = [math]::Floor([double]$drive.Free / 1GB)\n[Console]::Out.WriteLine('WORK_ASSISTANT_VM_READY')\n[Console]::Out.WriteLine('WORK_ASSISTANT_FREE_GB=' + $freeGB)\n"
+	cmd := exec.CommandContext(ctx, p.WinRMCommand)
+	cmd.Stdin = strings.NewReader(script)
+	output, runErr := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		capability.Reason = "Windows VM 环境预检超时；请检查 VM 或 WinRM 连接"
+	} else if runErr != nil {
+		capability.Reason = "Windows VM 环境预检失败；请检查 VM 是否运行以及 WinRM 是否可用"
+	} else {
+		freeGB, parsed := windowsFreeGB(string(output))
+		minimum := p.MinimumFreeGB
+		if minimum <= 0 {
+			minimum = 12
+		}
+		switch {
+		case !strings.Contains(string(output), "WORK_ASSISTANT_VM_READY") || !parsed:
+			capability.Reason = "Windows VM 环境预检没有返回完整结果；请检查 WinRM 传输程序"
+		case freeGB < int64(minimum):
+			capability.Reason = fmt.Sprintf("Windows VM 可用磁盘仅 %d GiB，低于可靠构建所需的 %d GiB", freeGB, minimum)
+		default:
+			capability.Available = true
+		}
+	}
+	return d.cacheAutonomousWindowsCapability(p, capability, checkedAt)
+}
+
+func (d *Daemon) cacheAutonomousWindowsCapability(p windowsProfile, capability model.ExecutionCapability, checkedAt time.Time) model.ExecutionCapability {
+	d.environmentMu.Lock()
+	defer d.environmentMu.Unlock()
+	if d.environmentHealth == nil {
+		d.environmentHealth = make(map[string]windowsHealthCacheEntry)
+	}
+	d.environmentHealth["windows_vm"] = windowsHealthCacheEntry{
+		fingerprint: windowsProfileFingerprint(p), capability: capability, expiresAt: checkedAt.Add(windowsEnvironmentHealthTTL),
+	}
+	return capability
+}
+
+func windowsFreeGB(output string) (int64, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "WORK_ASSISTANT_FREE_GB=") {
+			continue
+		}
+		value, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(line, "WORK_ASSISTANT_FREE_GB=")), 10, 64)
+		return value, err == nil && value >= 0
+	}
+	return 0, false
 }
 
 func snapshotWindowsFiles(directory string) ([]windowsFile, string, error) {

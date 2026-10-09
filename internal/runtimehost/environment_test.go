@@ -1,6 +1,7 @@
 package runtimehost
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,5 +68,53 @@ func TestWindowsBuildUsesCurrentRepositoryWithoutApprovalHash(t *testing.T) {
 		if strings.Contains(windowsPhase0Script, forbidden) {
 			t.Fatal("executor still owns build parameters", forbidden)
 		}
+	}
+}
+
+func TestAutonomousWindowsEnvironmentPreflight(t *testing.T) {
+	root := t.TempDir()
+	transport := filepath.Join(t.TempDir(), "winrm-transport")
+	if err := os.WriteFile(transport, []byte("#!/bin/sh\ncat >/dev/null\nprintf 'WORK_ASSISTANT_VM_READY\\nWORK_ASSISTANT_FREE_GB=42\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := json.Marshal(map[string]windowsProfile{"windows_seekdb_phase0": {
+		Autonomous: true, WinRMCommand: transport, MinimumFreeGB: 12,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "windows-profiles.json"), profiles, 0600); err != nil {
+		t.Fatal(err)
+	}
+	d := &Daemon{config: Config{WorkRoot: root}}
+	capability := d.executionCapabilities()["windows_vm"]
+	if !capability.Available || capability.CheckedAtMS == 0 || capability.Fingerprint == "" {
+		t.Fatalf("unexpected healthy capability: %#v", capability)
+	}
+	// A second hello must use the cached read-only result, rather than probe a
+	// working VM for every Manager connection.
+	if repeated := d.executionCapabilities()["windows_vm"]; repeated != capability {
+		t.Fatalf("preflight was not stable: %#v != %#v", repeated, capability)
+	}
+}
+
+func TestAutonomousWindowsEnvironmentPreflightRejectsLowDisk(t *testing.T) {
+	root := t.TempDir()
+	transport := filepath.Join(t.TempDir(), "winrm-transport")
+	if err := os.WriteFile(transport, []byte("#!/bin/sh\ncat >/dev/null\nprintf 'WORK_ASSISTANT_VM_READY\\nWORK_ASSISTANT_FREE_GB=4\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := json.Marshal(map[string]windowsProfile{"windows_seekdb_phase0": {
+		Autonomous: true, WinRMCommand: transport, MinimumFreeGB: 12,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "windows-profiles.json"), profiles, 0600); err != nil {
+		t.Fatal(err)
+	}
+	capability := (&Daemon{config: Config{WorkRoot: root}}).executionCapabilities()["windows_vm"]
+	if capability.Available || !strings.Contains(capability.Reason, "4 GiB") {
+		t.Fatalf("low disk was accepted: %#v", capability)
 	}
 }

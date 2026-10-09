@@ -260,6 +260,32 @@ func TestRecoveryRequestValidation(t *testing.T) {
 	}
 }
 
+func TestMaterialPlanChangeValidation(t *testing.T) {
+	valid := Result{
+		Outcome: "replan", Message: "The approved external contract is no longer valid.", Artifacts: []File{},
+		PlanChange: &PlanChange{Kind: "external_contract", ApprovedAssumption: "The existing wire format remains compatible.", NewEvidence: "The upstream endpoint now requires a different request shape.", AffectedAreas: []string{"public client contract", "compatibility validation"}},
+		TaskUpdate: &TaskUpdate{Kind: "feature", Analysis: "The endpoint contract changed after approval.", Approach: "Revise the adapter and compatibility plan.", Reason: "The original plan cannot meet the new contract.", Validation: "Re-run contract and compatibility coverage."},
+	}
+	raw, _ := json.Marshal(valid)
+	if _, err := Parse(string(raw)); err != nil {
+		t.Fatalf("material replan rejected: %v", err)
+	}
+	for _, change := range []func(*Result){
+		func(r *Result) { r.PlanChange.Kind = "build_failure" },
+		func(r *Result) { r.PlanChange.NewEvidence = "" },
+		func(r *Result) { r.PlanChange.AffectedAreas = nil },
+		func(r *Result) { r.RecoveryRequest = &RecoveryRequest{Evidence: "build failed", NextStep: "retry"} },
+	} {
+		candidate := valid
+		candidate.PlanChange = &PlanChange{Kind: valid.PlanChange.Kind, ApprovedAssumption: valid.PlanChange.ApprovedAssumption, NewEvidence: valid.PlanChange.NewEvidence, AffectedAreas: append([]string(nil), valid.PlanChange.AffectedAreas...)}
+		change(&candidate)
+		raw, _ = json.Marshal(candidate)
+		if _, err := Parse(string(raw)); err == nil {
+			t.Fatal("non-material or side-effecting replan accepted", string(raw))
+		}
+	}
+}
+
 func TestCapabilityRequestValidation(t *testing.T) {
 	good := `{"outcome":"blocked","message":"need network","artifacts":[],"capability_request":{"capability":"network_access","reason":"fetch the approved repository dependency"}}`
 	if _, err := Parse(good); err != nil {

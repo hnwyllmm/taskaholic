@@ -29,6 +29,7 @@ type Result struct {
 	CapabilityRequest         *CapabilityRequest         `json:"capability_request,omitempty"`
 	EnvironmentResult         *model.EnvironmentResult   `json:"environment_result,omitempty"` // Executor output only, not part of the Agent schema.
 	PlanScope                 *PlanScope                 `json:"plan_scope,omitempty"`
+	PlanChange                *PlanChange                `json:"plan_change,omitempty"`
 	ValidationPlan            *ValidationPlan            `json:"validation_plan,omitempty"`
 	VerificationAmendment     *VerificationAmendment     `json:"verification_amendment,omitempty"`
 	PublishRequest            *PublishRequest            `json:"publish_request,omitempty"`
@@ -75,6 +76,16 @@ type CapabilityRequest struct {
 type PlanScope struct {
 	Repository string `json:"repository"`
 	BaseBranch string `json:"base_branch"`
+}
+
+// PlanChange is the evidence-bearing exception to an already approved
+// implementation plan. Routine implementation, build, test, and environment
+// failures use the original Session's recovery/exception path instead.
+type PlanChange struct {
+	Kind               string   `json:"kind"`
+	ApprovedAssumption string   `json:"approved_assumption"`
+	NewEvidence        string   `json:"new_evidence"`
+	AffectedAreas      []string `json:"affected_areas"`
 }
 
 // ValidationPlan is approved with the implementation plan. It distinguishes
@@ -154,7 +165,7 @@ func (JSONContract) Instructions() string {
 构建脚本修改属于已批准开发工作：可以在授权 worktree 修改 build.ps1 和构建配置并继续验证，不需要先创建 PR、额外评审或登记脚本哈希。既有提示中关于“入口评审/登记后才能验证”的要求已取消。方案范围变化仍需 replan，宿主配置和权限边界不变。
 Windows 测试能力以本轮运行时提供的工具和授权为准。若提供通用 VM client.py，开发 Agent 自行同步文件、选择远程构建/测试命令、读取日志并修复，environment_request 填 null，不再经过固定探针/固定产物/源码打包流程，也不需要为继续测试另起一轮。若没有提供通用工具，才使用已配置的旧 environment_request 接口。不得把模型指令当作 dev 宿主机权限；VM 内部操作按用户对该虚拟机的授权执行。失败和未执行如实报告，不能把连接成功当作测试通过。
 plan_scope / validation_plan / publish_request 在非开发流程填 null。开发流程的方案阶段，plan_scope 填待审批的 GitHub owner/repository 与 base_branch；完整方案放 artifacts，不能只填路径。validation_plan 必须把验证划分为 reuse（已有证据仍适用）、rerun（本次改动会影响，必须重跑）、add（新增覆盖）和 exclude（明确不在范围），每项写具体场景、理由及证据身份/缺口；没有的类别返回空数组。final_gate 是稳定候选创建 PR 前必须完成的最小验证集合。不得笼统填写“全部重跑”或“历史测试全部有效”；复用必须说明代码、依赖、制品、配置和环境等适用前提。只有 Manager 明确给出已批准的隔离开发授权时才可修改代码。开发过程中每次修改先跑直接受影响的 rerun/add 项，不因小改动反复执行完整矩阵；候选稳定后执行 final_gate。代码、依赖、制品、配置或关键环境身份发生变化时，受影响的 reuse 必须升级为 rerun。发布前在 task_update.validation 和 publish_request.body 中按 final_gate 汇总命令、结果与未覆盖项。开发验证完成后 publish_request 由 runtime 受控提交并创建 PR；你不要自行执行 git commit/push 或创建 PR。运行时没有授予发布权限时不可申请发布。需要重大调整已批准方案时 outcome=replan，并提交更新后的 validation_plan 重新进入方案评审，不能在普通聊天中自行推断批准。
-replan 必须便于人快速判断：task_update.reason 写明哪一条已批准前提被什么新证据推翻、为什么不能在原范围内继续；task_update.approach 写相对已批准方案具体新增、删除或改变的模块、依赖、接口和验证范围，不要只写“重新设计”或重复整份方案；task_update.analysis 和 validation 提供触发证据。普通实现细节调整、构建/测试失败及可在原范围内修复的问题不得使用 replan。仅仅“编译进产品”不能证明某模块属于本任务必经路径；必须给出目标场景的可触发调用链或验收要求。未被当前场景触发的可选模块风险应记录为后续事项，不能据此扩大方案或阻断原任务。
+replan 仅用于四类重大变化：scope（需求目标或交付范围变更）、external_contract（公开接口/外部行为或兼容承诺变更）、security_boundary（安全/权限边界变更）、release_commitment（发布、迁移或不可逆交付承诺变更）。必须同时填写 plan_change：approved_assumption 写被推翻的已批准前提，new_evidence 写实际新证据，affected_areas 列出受影响模块、接口或验证项。task_update.reason 写明为什么不能在原范围内继续；task_update.approach 写相对已批准方案具体新增、删除或改变的内容；task_update.analysis 和 validation 提供触发证据。普通实现细节调整、构建/测试失败及可在原范围内修复的问题不得使用 replan，应使用原 Session 的 recovery_request 或明确异常出口。仅仅“编译进产品”不能证明某模块属于本任务必经路径；必须给出目标场景的可触发调用链或验收要求。未被当前场景触发的可选模块风险应记录为后续事项，不能据此扩大方案或阻断原任务。
 review_decision：仅内部 PR reviewer 填 passed / changes_requested / blocked，其它任务填空字符串。reviewer 的正常工作无需人工逐条验收：Manager 在该 PR 上维护本角色唯一一条 code review 普通评论，持续更新 commit、结论、问题和建议；不是 GitHub Approve，不满足分支保护。passed 必须有真实的代码/方案检查证据；没有完成检查不能填 passed。发现问题在 message 中列出文件、行号、影响、证据和建议。QA reviewer 可以在给出 passed 或 changes_requested 的同一份报告中填 test_requests；测试申请提交后 reviewer 工作即完成，CI/pipeline 等待、失败处理和通过门禁由原开发任务及其 Agent 负责。不要等待 CI，不要把测试未完成当作 reviewer 无法给出结论的理由。不要自行发评论或操作凭据。
 task_update 给原工单回写必要信息，字段 kind=bug/feature/other，analysis=问题分析和已证实根因，approach=实现/修复方案，reason=为什么这样改，validation=实际验证结果，blocked_reason=不能继续或无法修复的原因及已尝试方法。无关字段填空字符串；BUG 提交 PR 时必须说明分析、方案和修复理由。没有证据的根因请明确写未确定。Manager 根据业务状态把这些信息和真实 PR/pipeline 链接回写已关联的原工单，无需逐条批准；不要包含凭据、私密路径、原始日志或无关资料，不要扩大回写目的地。
 外部平台语言：任务来源引用为 github.issue 时，task_update 的所有文本字段必须用英文；为 antmultica.issue 时必须用中文。GitHub PR 评审子任务会回写 GitHub，其 message 和评审结论详情必须用英文。内部任务消息可继续使用用户的语言。
@@ -210,7 +221,7 @@ func (JSONContract) Schema() json.RawMessage {
 	schema["required"] = append(schema["required"].([]any), "capability_request")
 	schema["properties"].(map[string]any)["capability_request"] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"capability", "reason"}, "properties": map[string]any{"capability": map[string]any{"type": "string", "enum": []string{"network_access", "host_full_access"}}, "reason": map[string]string{"type": "string"}}}}}
 	schema["properties"].(map[string]any)["outcome"] = map[string]any{"type": "string", "enum": []string{"review", "needs_input", "blocked", "replan", "amend_validation"}}
-	schema["required"] = append(schema["required"].([]any), "plan_scope", "validation_plan", "verification_amendment", "publish_request")
+	schema["required"] = append(schema["required"].([]any), "plan_scope", "plan_change", "validation_plan", "verification_amendment", "publish_request")
 	for name, fields := range map[string][]string{"plan_scope": {"repository", "base_branch"}, "publish_request": {"title", "body"}} {
 		props := map[string]any{}
 		for _, f := range fields {
@@ -218,6 +229,13 @@ func (JSONContract) Schema() json.RawMessage {
 		}
 		schema["properties"].(map[string]any)[name] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": fields, "properties": props}}}
 	}
+	changeFields := map[string]any{
+		"kind":                map[string]any{"type": "string", "enum": []string{"scope", "external_contract", "security_boundary", "release_commitment"}},
+		"approved_assumption": map[string]string{"type": "string"},
+		"new_evidence":        map[string]string{"type": "string"},
+		"affected_areas":      map[string]any{"type": "array", "minItems": 1, "maxItems": 16, "items": map[string]string{"type": "string"}},
+	}
+	schema["properties"].(map[string]any)["plan_change"] = map[string]any{"anyOf": []any{map[string]string{"type": "null"}, map[string]any{"type": "object", "additionalProperties": false, "required": []string{"kind", "approved_assumption", "new_evidence", "affected_areas"}, "properties": changeFields}}}
 	validationItem := map[string]any{"type": "object", "additionalProperties": false, "required": []string{"scenario", "reason", "evidence"}, "properties": map[string]any{"scenario": map[string]string{"type": "string"}, "reason": map[string]string{"type": "string"}, "evidence": map[string]string{"type": "string"}}}
 	validationProps := map[string]any{}
 	for _, name := range []string{"reuse", "rerun", "add", "exclude"} {
@@ -278,7 +296,7 @@ func Parse(raw string) (Result, error) {
 		return result, fmt.Errorf("at most four lightweight delegations per submission")
 	}
 	if len(result.Delegations) > 0 {
-		if result.Outcome != "blocked" || result.RecoveryRequest != nil || result.EnvironmentRequest != nil || result.CapabilityRequest != nil || result.EnvironmentResult != nil || result.PlanScope != nil || result.ValidationPlan != nil || result.VerificationAmendment != nil || result.PublishRequest != nil || result.ReviewDecision != "" || result.TaskUpdate != nil || len(result.PullRequests) != 0 || len(result.TestRequests) != 0 || result.PipelineFailureAssessment != nil {
+		if result.Outcome != "blocked" || result.RecoveryRequest != nil || result.EnvironmentRequest != nil || result.CapabilityRequest != nil || result.EnvironmentResult != nil || result.PlanScope != nil || result.PlanChange != nil || result.ValidationPlan != nil || result.VerificationAmendment != nil || result.PublishRequest != nil || result.ReviewDecision != "" || result.TaskUpdate != nil || len(result.PullRequests) != 0 || len(result.TestRequests) != 0 || result.PipelineFailureAssessment != nil {
 			return result, fmt.Errorf("invalid lightweight delegation combination")
 		}
 		keys := make(map[string]bool, len(result.Delegations))
@@ -355,6 +373,22 @@ func Parse(raw string) (Result, error) {
 				return result, fmt.Errorf("unrelated or inconclusive pipeline failure hold requires user input without recovery")
 			}
 		}
+	}
+	if result.Outcome == "replan" {
+		// PullRequests merely records an already-existing source reference. The
+		// state machine separately rejects registration of a new PR during plan
+		// work, so retaining a known PR here is not an external side effect.
+		if result.RecoveryRequest != nil || result.EnvironmentRequest != nil || result.CapabilityRequest != nil || result.EnvironmentResult != nil || result.VerificationAmendment != nil || result.PublishRequest != nil || len(result.TestRequests) != 0 || result.ReviewDecision != "" || len(result.Delegations) != 0 {
+			return result, fmt.Errorf("replan cannot combine execution, publication, test, review, delegation, or capability side effects")
+		}
+		if err := ValidatePlanChange(result.PlanChange); err != nil {
+			return result, err
+		}
+		if result.TaskUpdate == nil || strings.TrimSpace(result.TaskUpdate.Analysis) == "" || strings.TrimSpace(result.TaskUpdate.Approach) == "" || strings.TrimSpace(result.TaskUpdate.Reason) == "" || strings.TrimSpace(result.TaskUpdate.Validation) == "" {
+			return result, fmt.Errorf("replan requires complete task_update evidence")
+		}
+	} else if result.PlanChange != nil {
+		return result, fmt.Errorf("plan_change is only valid with replan")
 	}
 	if result.PlanScope != nil {
 		if err := model.ValidateDevelopmentRepository(result.PlanScope.Repository, result.PlanScope.BaseBranch); err != nil {
@@ -497,6 +531,28 @@ func verificationPath(candidate string) bool {
 		}
 	}
 	return false
+}
+
+// ValidatePlanChange is also used defensively by the state machine because
+// tests and adapters may construct a Result without going through Parse.
+func ValidatePlanChange(change *PlanChange) error {
+	if change == nil {
+		return fmt.Errorf("replan requires plan_change")
+	}
+	switch change.Kind {
+	case "scope", "external_contract", "security_boundary", "release_commitment":
+	default:
+		return fmt.Errorf("invalid material plan change kind")
+	}
+	if strings.TrimSpace(change.ApprovedAssumption) == "" || len(change.ApprovedAssumption) > 2000 || strings.TrimSpace(change.NewEvidence) == "" || len(change.NewEvidence) > 4000 || len(change.AffectedAreas) == 0 || len(change.AffectedAreas) > 16 {
+		return fmt.Errorf("material plan change requires approved assumption, evidence, and affected areas")
+	}
+	for _, area := range change.AffectedAreas {
+		if strings.TrimSpace(area) == "" || len(area) > 400 {
+			return fmt.Errorf("invalid material plan change affected area")
+		}
+	}
+	return nil
 }
 
 // normalizeArtifacts keeps runtime bookkeeping out of the business artifact

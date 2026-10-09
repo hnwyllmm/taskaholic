@@ -170,9 +170,9 @@ func TestUserValidationScopeAmendmentPreservesApprovalAndSession(t *testing.T) {
 		t.Fatalf("fixture did not become idle and paused: %+v %v", paused, err)
 	}
 	amendedPlan := model.DevelopmentValidationPlan{
-		Reuse: []model.DevelopmentValidationItem{{Scenario: "exact four-profile mirror replacement", Reason: "the patch was already applied in the approved worktree", Evidence: "record the candidate diff against BASE_SHA"}},
-		Rerun: []model.DevelopmentValidationItem{{Scenario: "download every dependency URL from the affected profiles", Reason: "the accepted risk is availability of the replacement mirror", Evidence: "use an Android development environment when available; record commands and results"}},
-		Exclude: []model.DevelopmentValidationItem{{Scenario: "macOS ARM init and release build", Reason: "the user explicitly accepted the unavailable ARM environment as a validation limitation", Evidence: "must remain visible in the delivery evidence"}},
+		Reuse:     []model.DevelopmentValidationItem{{Scenario: "exact four-profile mirror replacement", Reason: "the patch was already applied in the approved worktree", Evidence: "record the candidate diff against BASE_SHA"}},
+		Rerun:     []model.DevelopmentValidationItem{{Scenario: "download every dependency URL from the affected profiles", Reason: "the accepted risk is availability of the replacement mirror", Evidence: "use an Android development environment when available; record commands and results"}},
+		Exclude:   []model.DevelopmentValidationItem{{Scenario: "macOS ARM init and release build", Reason: "the user explicitly accepted the unavailable ARM environment as a validation limitation", Evidence: "must remain visible in the delivery evidence"}},
 		FinalGate: []string{"the exact diff only changes the approved mirror hostnames", "all affected mirrors.oceanbase.com dependency archives are downloadable", "the PR body records the accepted macOS ARM validation limitation"},
 	}
 	amended, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{
@@ -228,7 +228,7 @@ func TestUserValidationScopeAmendmentRejectsActiveOrInvalidPlans(t *testing.T) {
 	}
 }
 
-func TestVerificationAmendmentCanRestoreLegacyBroadReplan(t *testing.T) {
+func TestImplementationRejectsNonMaterialReplanAndKeepsApprovedPlan(t *testing.T) {
 	ctx := context.Background()
 	s, dev, reviewer, task := developmentFixture(t)
 	first := startWork(t, s, dev, task)
@@ -247,43 +247,19 @@ func TestVerificationAmendmentCanRestoreLegacyBroadReplan(t *testing.T) {
 	implementation := startWork(t, s, dev, task)
 	approved := *developmentState(t, s, task.ID)
 	legacy := submittedPlan("legacy replan only adds test coverage")
-	legacy.Outcome = "replan"
+	legacy.Outcome = "replan" // no material plan_change evidence
 	developmentFinish(t, s, implementation, 3, legacy)
-	if developmentState(t, s, task.ID).Phase != "PLANNING" {
-		t.Fatal("fixture did not create legacy broad replan")
-	}
-	revised := startWork(t, s, dev, task)
-	developmentFinish(t, s, revised, 4, submittedPlan("revised validation plan"))
-	if err := s.RoutePlanReviews(ctx); err != nil {
-		t.Fatal(err)
-	}
-	reviewerTask, _ := s.GetTask(ctx, developmentState(t, s, task.ID).ReviewerTaskID)
-	reviewerRun := startWork(t, s, reviewer, reviewerTask)
-	developmentFinish(t, s, reviewerRun, 5, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "tests are sufficient", Artifacts: []workflow.File{}})
 	current, _ := s.GetTask(ctx, task.ID)
-	if developmentState(t, s, task.ID).Phase != "HUMAN_REVIEW" || current.State != model.TaskStateReview {
-		t.Fatal("fixture did not reach pending revised plan review")
+	config, _ := s.GetWorkConfig(ctx, task.ID)
+	if d := developmentState(t, s, task.ID); d.Phase != "IMPLEMENTING" || d.PlanRunID != approved.PlanRunID || d.PlanHash != approved.PlanHash || d.ApprovedReviewID != approved.ApprovedReviewID || current.State != model.TaskStateBlocked || !config.Paused || !strings.Contains(config.SchedulerError, "replan requires plan_change") {
+		t.Fatalf("non-material replan replaced the approved plan: development=%+v task=%+v config=%+v", d, current, config)
 	}
-	restored, err := s.ContinueApprovedDevelopmentAfterVerificationAmendment(ctx, task.ID, current.Version, "The revised scope only adds durable test coverage requested by review.")
-	if err != nil {
+	if _, err := s.RetryWork(ctx, task.ID, current.Version); err != nil {
 		t.Fatal(err)
-	}
-	if restored.Phase != "IMPLEMENTING" || restored.PlanRunID != approved.PlanRunID || restored.PlanHash != approved.PlanHash || restored.ApprovedReviewID != approved.ApprovedReviewID {
-		t.Fatalf("previous approval was not restored: approved=%+v restored=%+v", approved, restored)
-	}
-	w, _ = s.GetWorkDetail(ctx, task.ID)
-	for _, review := range w.Reviews {
-		if review.State == "PENDING" {
-			t.Fatal("superseded revised plan still awaits human approval", review)
-		}
-	}
-	current, _ = s.GetTask(ctx, task.ID)
-	if current.State != model.TaskStateQueued {
-		t.Fatal("restored implementation was not queued", current.State)
 	}
 	next := startWork(t, s, dev, task)
 	if next.SessionID != implementation.SessionID || outboxSpec(t, s, next.ID).ExecutionGrant == nil || outboxSpec(t, s, next.ID).ExecutionGrant.ReviewID != approved.ApprovedReviewID {
-		t.Fatal("legacy restoration lost the original session or approval", next, outboxSpec(t, s, next.ID).ExecutionGrant)
+		t.Fatal("recovery lost the original session or approval", next, outboxSpec(t, s, next.ID).ExecutionGrant)
 	}
 }
 
@@ -336,6 +312,8 @@ func TestPlanningAcceptsCompleteReplanWithKnownPRReference(t *testing.T) {
 	}
 	revised := submittedPlan("complete revised plan")
 	revised.Outcome = "replan"
+	revised.PlanChange = &workflow.PlanChange{Kind: "external_contract", ApprovedAssumption: "The linked PR is only a source reference and does not affect the plan.", NewEvidence: "The confirmed source PR changes the public contract required by this task.", AffectedAreas: []string{"public contract", "compatibility tests"}}
+	revised.TaskUpdate = &workflow.TaskUpdate{Kind: "feature", Analysis: "The source PR establishes a changed public contract.", Approach: "Revise the implementation and compatibility coverage.", Reason: "The approved contract assumption is false.", Validation: "Re-run the public compatibility gate."}
 	revised.PullRequests = []workflow.PullRequest{{URL: prURL}}
 	developmentFinish(t, s, run, 1, revised)
 	d := developmentState(t, s, task.ID)

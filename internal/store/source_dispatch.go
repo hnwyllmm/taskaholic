@@ -48,7 +48,7 @@ func (s *Store) ProcessSourceEvents(ctx context.Context, planners ...router.Revi
 				var taskID string
 				err = tx.QueryRowContext(ctx, `SELECT task_id FROM source_entity WHERE entity=?`, e.Entity).Scan(&taskID)
 				if err == sql.ErrNoRows {
-					task, createErr := createWorkTx(ctx, tx, CreateWorkRequest{Title: e.Title, Goal: e.Message, Key: e.ID, Source: "antmultica"})
+					task, createErr := createWorkTx(ctx, tx, CreateWorkRequest{Title: e.Title, Goal: e.Message, TaskType: e.TaskType, Repository: e.Repository, WorkflowType: e.WorkflowType, Key: e.ID, Source: "antmultica"})
 					if createErr != nil {
 						return createErr
 					}
@@ -61,6 +61,28 @@ func (s *Store) ProcessSourceEvents(ctx context.Context, planners ...router.Revi
 					return err
 				}
 				current.TaskID = taskID
+			case "antmultica.closed", "antmultica.reopened":
+				var taskID string
+				if err = tx.QueryRowContext(ctx, `SELECT task_id FROM source_entity WHERE entity=?`, e.Entity).Scan(&taskID); err != nil {
+					// A lifecycle event must never create a new task. If the original
+					// import is still being applied, retain this inbox event for retry.
+					return err
+				}
+				current.TaskID = taskID
+				lifecycleEvent := "ExternalTaskClosed"
+				if e.Kind == "antmultica.reopened" {
+					lifecycleEvent = "ExternalTaskReopened"
+					current.State, err = sourceMessageTx(ctx, tx, taskID, e.Message, e.ID)
+				} else {
+					_, err = insertMessageTx(ctx, tx, taskID, "source", e.Message, "", "RECORDED")
+					current.State = "RECORDED"
+				}
+				if err != nil {
+					return err
+				}
+				if _, err = appendEventTx(ctx, tx, "task", taskID, lifecycleEvent, e.ID, taskID, map[string]any{"source_id": e.SourceID, "entity": e.Entity, "url": e.URL}); err != nil {
+					return err
+				}
 			case "github.head":
 				if t.HeadSHA != e.HeadSHA {
 					current.State = "SUPERSEDED"

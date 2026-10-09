@@ -267,13 +267,19 @@ func TestVMBridgeRetrievesPersistedResultAcrossRunsWithoutUsingWindowsGate(t *te
 	}
 	defer stop()
 	client := filepath.Join(session, ".assistant-vm-"+current.RunID, "client.py")
-	started := time.Now()
-	cmd := exec.Command("python3", client, "result", operationID)
+	// The gate is intentionally held for this entire test. A successful lookup
+	// therefore proves it did not try to acquire the Windows execution slot.
+	// Bound the client separately so a regression does not turn into the test
+	// suite's much longer global timeout; avoid a fragile sub-two-second wall
+	// clock assertion when other packages are compiling in parallel.
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelLookup()
+	cmd := exec.CommandContext(lookupCtx, "python3", client, "result", operationID)
 	output, runErr := cmd.CombinedOutput()
 	if runErr == nil || cmd.ProcessState.ExitCode() != 7 {
 		t.Fatalf("result lookup exit = %v, output %s", runErr, output)
 	}
-	if time.Since(started) > 2*time.Second || !strings.Contains(string(output), "persisted stdout") || !strings.Contains(string(output), "persisted stderr") {
+	if lookupCtx.Err() == context.DeadlineExceeded || !strings.Contains(string(output), "persisted stdout") || !strings.Contains(string(output), "persisted stderr") {
 		t.Fatalf("result lookup waited for VM gate or lost output: %s", output)
 	}
 	if _, err = os.Stat(marker); !os.IsNotExist(err) {

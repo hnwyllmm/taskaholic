@@ -80,7 +80,10 @@ func TestTaskRunEventLifecycleAndBackup(t *testing.T) {
 	if detail.Session == nil || detail.Session.ID != run.SessionID {
 		t.Fatalf("task session = %#v", detail.Session)
 	}
-	if len(detail.Runs) != 1 || len(detail.Events) != 8 || detail.Summary == nil {
+	// The improvement plane appends auditable profile/assignment/job events;
+	// the business lifecycle events remain present but are no longer the only
+	// events attached to a completed root task.
+	if len(detail.Runs) != 1 || len(detail.Events) < 8 || detail.Summary == nil {
 		t.Fatalf("detail has %d runs and %d events", len(detail.Runs), len(detail.Events))
 	}
 	if detail.Summary.SourceType != "run" || detail.Summary.SourceID != run.ID || detail.Summary.Metrics.RunCount != 1 {

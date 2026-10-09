@@ -427,6 +427,12 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 		return e
 	} else {
 		selectedID := config.AgentID
+		// Freeze the improvement profile before assigning the first session. It
+		// keeps the task, its children, and any later recovery on one policy
+		// generation; a newly learned experience never redirects active work.
+		if _, _, e := s.store.PrepareTaskOptimization(ctx, taskID); e != nil {
+			return e
+		}
 		// A lightweight delegated child is already a narrowly classified request
 		// from its parent Agent. Route it deterministically through the normal
 		// Router policy instead of spending a separate task_router Agent turn.
@@ -471,6 +477,18 @@ func (s *Server) scheduleOne(ctx context.Context, taskID string) error {
 					return e
 				}
 				return fmt.Errorf("%w: AI 路由已排队，等待选择执行者", model.ErrConflict)
+			}
+			if selectedID == "" && binding.Mode == "rules" {
+				pool := []model.AgentProfile{}
+				for _, candidate := range eligible {
+					if candidate.State == "ACTIVE" && candidate.ActiveRuns < candidate.MaxConcurrent && router.Matches(task.Requirements, candidate) {
+						pool = append(pool, candidate)
+					}
+				}
+				selectedID, e = s.store.SelectAgentByOptimizationPolicy(ctx, taskID, pool)
+				if e != nil {
+					return e
+				}
 			}
 		}
 		a, e := s.agentRouter.SelectAgent(ctx, router.AgentRequest{Requirements: task.Requirements, AgentID: selectedID}, eligible, runtimes)

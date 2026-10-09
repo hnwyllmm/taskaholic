@@ -95,6 +95,7 @@ type SubtaskResult struct {
 
 const (
 	TaskEdgeDecomposedInto = "DECOMPOSED_INTO"
+	TaskEdgeReviews        = "REVIEWS"
 	// TaskEdgeDelegatedTo is a bounded, Manager-owned light-work fan-out. It
 	// participates in the work hierarchy but is distinct from user/API task
 	// decomposition so it can be resumed into the originating Agent session.
