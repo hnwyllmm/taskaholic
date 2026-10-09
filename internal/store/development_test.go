@@ -357,11 +357,17 @@ func TestDevelopmentPlanReviewHumanGateAndSessionContinuity(t *testing.T) {
 	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
 	reviewOne := startWork(t, s, reviewer, child)
 	developmentFinish(t, s, reviewOne, 2, workflow.Result{Outcome: "review", ReviewDecision: "changes_requested", Message: "Add boundary tests", Artifacts: []workflow.File{}})
-	if developmentState(t, s, task.ID).Phase != "PLANNING" {
+	if developmentState(t, s, task.ID).Phase != "AGENT_REVIEW" {
 		t.Fatal("feedback not delivered")
 	}
 	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateCompleted {
 		t.Fatal("completed reviewer was left waiting for nonexistent subtasks", got.State)
+	}
+	if err := s.RoutePlanReviews(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetTask(ctx, child.ID); got.State != model.TaskStateCompleted {
+		t.Fatal("same plan was rerouted before its revision", got.State)
 	}
 	second := startWork(t, s, dev, task)
 	if second.SessionID != first.SessionID {
@@ -478,7 +484,7 @@ func TestDevelopmentStaleReviewerAndRestartKeepHistory(t *testing.T) {
 	d := developmentState(t, s, task.ID)
 	child, _ := s.GetTask(ctx, d.ReviewerTaskID)
 	oldReview := startWork(t, s, reviewer, child)
-	if _, e := s.MessageWork(ctx, task.ID, "Change the scope", "scope", false); e != nil {
+	if _, e := s.MessageWorkWithMode(ctx, task.ID, "Return to design", "scope", false, WorkMessagePlanChange); e != nil {
 		t.Fatal(e)
 	}
 	developmentFinish(t, s, oldReview, 2, workflow.Result{Outcome: "review", ReviewDecision: "passed", Message: "old plan passed", Artifacts: []workflow.File{}})

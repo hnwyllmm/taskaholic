@@ -484,7 +484,11 @@ func TestIssuePlansPublishOnlyAfterHumanApproval(t *testing.T) {
 	checkCount(1)
 	third := startWork(t, s, dev, task)
 	developmentFinish(t, s, third, 5, plan("final approved proposal"))
-	review(6, "passed")
+	// Human-stage feedback revises the proposal in place; it does not start
+	// another Agent review or publish an unapproved intermediate version.
+	if developmentState(t, s, task.ID).Phase != "HUMAN_REVIEW" {
+		t.Fatal("human feedback returned to an earlier phase")
+	}
 	w, _ = s.GetWorkDetail(ctx, task.ID)
 	if _, err := s.DecideReview(ctx, task.ID, w.Reviews[0].ID, "PLAN_APPROVED", "approved"); err != nil {
 		t.Fatal(err)

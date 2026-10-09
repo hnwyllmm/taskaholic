@@ -177,7 +177,20 @@ test('Implementation messages default to execution direction and require an expl
  p.$('message-mode').value='plan_change';p.$('message-mode').onchange();p.$('message').value='Change the approved scope';p.$('steer').onclick();await p.settle();
  request=p.requests.filter(r=>r.method==='POST'&&r.route.endsWith('/messages')).at(-1);
  assert.equal(request.body.mode,'plan_change');assert.equal(request.body.interrupt,true);
- assert.match(p.$('message-mode-hint').textContent,/重新进入方案评审/);
+ assert.match(p.$('message-mode-hint').textContent,/明确打回方案设计/);
+});
+
+test('Review-stage messages default to current-stage guidance',async()=>{
+ for(const phase of ['AGENT_REVIEW','HUMAN_REVIEW']){
+  const task={task_id:'reviewing',title:'Reviewing',goal:'Revise within review',state:'REVIEW_PENDING',version:3};
+  const p=await page({initialTasks:[task]});
+  p.details.reviewing.work.development={phase};
+  await vm.runInContext('selectTask("reviewing")',p.ctx);await p.settle();
+  assert.equal(p.$('message-mode').value,'execution_direction');
+  assert.equal(p.$('message-mode-label').hidden,false);
+  p.$('message').value='Reduce test scope';p.$('send').onclick();await p.settle();
+  assert.equal(p.requests.find(r=>r.method==='POST'&&r.route.endsWith('/messages')).body.mode,'execution_direction');
+ }
 });
 
 test('Plan approval is explicit and different from final delivery acceptance',async()=>{

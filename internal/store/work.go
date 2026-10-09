@@ -234,26 +234,24 @@ func scanMessage(row rowScanner) (model.TaskMessage, error) {
 // Messages remain PENDING during a running turn. The next Run consumes them in
 // the same transaction as its durable outbox; there is no late-directive race.
 func (s *Store) MessageWork(ctx context.Context, taskID, content, key string, interrupt bool) (model.TaskMessage, error) {
-	return s.MessageWorkWithMode(ctx, taskID, content, key, interrupt, WorkMessagePlanChange)
+	return s.MessageWorkWithMode(ctx, taskID, content, key, interrupt, WorkMessageExecutionDirection)
 }
 
 const (
-	// WorkMessagePlanChange is the backwards-compatible mode for new or changed
-	// requirements. During development it invalidates the approved plan.
-	WorkMessagePlanChange = "plan_change"
-	// WorkMessageExecutionDirection steers an already approved implementation
-	// without changing its scope, approval or execution grant.
+	// Only an explicit user choice can return a task to an earlier phase.
+	WorkMessagePlanChange  = "plan_change"
+	WorkMessageAgentReview = "agent_review"
+	// Ordinary guidance stays in the current phase and never grants permissions.
 	WorkMessageExecutionDirection = "execution_direction"
 )
 
-// MessageWorkWithMode distinguishes an implementation steering message from a
-// requirements change. Callers must opt in explicitly; the legacy API remains
-// plan-changing so old clients cannot silently bypass plan review.
+// Omitted mode means current-stage guidance. Phase rollback requires an
+// explicit user choice, including when the caller uses the legacy API.
 func (s *Store) MessageWorkWithMode(ctx context.Context, taskID, content, key string, interrupt bool, mode string) (model.TaskMessage, error) {
 	if mode == "" {
-		mode = WorkMessagePlanChange
+		mode = WorkMessageExecutionDirection
 	}
-	if mode != WorkMessagePlanChange && mode != WorkMessageExecutionDirection {
+	if mode != WorkMessagePlanChange && mode != WorkMessageExecutionDirection && mode != WorkMessageAgentReview {
 		return model.TaskMessage{}, fmt.Errorf("%w: unsupported work message mode %q", model.ErrValidation, mode)
 	}
 	s.writeMu.Lock()
@@ -275,7 +273,7 @@ func messageWorkTx(ctx context.Context, tx *sql.Tx, taskID, content, key string,
 }
 
 func messageWorkFromTx(ctx context.Context, tx *sql.Tx, taskID, content, key string, interrupt bool, speaker string) (model.TaskMessage, error) {
-	return messageWorkFromTxMode(ctx, tx, taskID, content, key, interrupt, speaker, WorkMessagePlanChange)
+	return messageWorkFromTxMode(ctx, tx, taskID, content, key, interrupt, speaker, WorkMessageExecutionDirection)
 }
 
 func messageWorkModeTx(ctx context.Context, tx *sql.Tx, taskID, content, key string, interrupt bool, mode string) (model.TaskMessage, error) {
@@ -318,16 +316,20 @@ func messageWorkFromTxMode(ctx context.Context, tx *sql.Tx, taskID, content, key
 		return model.TaskMessage{}, fmt.Errorf("%w: pending messages exceed 96 KB; wait for the agent", model.ErrConflict)
 	}
 	d, devErr := developmentTx(ctx, tx, taskID)
-	executionDirection := speaker == "user" && mode == WorkMessageExecutionDirection
-	if executionDirection {
-		if devErr == sql.ErrNoRows || d.Phase != "IMPLEMENTING" || d.ApprovedReviewID == "" || d.PlanHash == "" {
-			return model.TaskMessage{}, fmt.Errorf("%w: execution direction requires an approved implementation; send a plan change instead", model.ErrConflict)
-		}
+	if devErr != nil && devErr != sql.ErrNoRows {
+		return model.TaskMessage{}, devErr
+	}
+	explicitReturn := speaker == "user" && (mode == WorkMessagePlanChange || mode == WorkMessageAgentReview)
+	if !explicitReturn && devErr == nil && d.Phase == "IMPLEMENTING" {
 		review, reviewErr := readJSONRow[model.Review](tx.QueryRowContext(ctx, `SELECT data_json FROM review WHERE review_id=? AND task_id=?`, d.ApprovedReviewID, taskID))
 		if reviewErr != nil || review.State != "PLAN_APPROVED" || review.PlanHash != d.PlanHash || review.RunID != d.PlanRunID {
 			return model.TaskMessage{}, fmt.Errorf("%w: approved plan no longer matches execution direction", model.ErrConflict)
 		}
-	} else if speaker == "user" {
+	}
+	if explicitReturn {
+		if mode == WorkMessageAgentReview && (devErr != nil || (d.Phase != "HUMAN_REVIEW" && d.Phase != "IMPLEMENTING") || d.PlanRunID == "") {
+			return model.TaskMessage{}, fmt.Errorf("%w: no earlier Agent review stage to return to", model.ErrConflict)
+		}
 		if err = invalidatePermissionsTx(ctx, tx, taskID); err != nil {
 			return model.TaskMessage{}, err
 		}
@@ -335,16 +337,14 @@ func messageWorkFromTxMode(ctx context.Context, tx *sql.Tx, taskID, content, key
 			return model.TaskMessage{}, err
 		}
 	}
-	if devErr != nil && devErr != sql.ErrNoRows {
-		return model.TaskMessage{}, devErr
-	}
-	if !executionDirection && devErr == nil && (d.Phase == "AGENT_REVIEW" || d.Phase == "HUMAN_REVIEW" || (d.Phase == "IMPLEMENTING" && speaker == "user")) {
-		// Explicit task guidance changes the plan; review-chat remains a separate,
-		// read-only conversation and never enters this path.
+	if explicitReturn && devErr == nil {
 		d.Phase = "PLANNING"
+		if mode == WorkMessageAgentReview {
+			d.Phase = "AGENT_REVIEW"
+		}
 		d.Version++
 		d.ApprovedReviewID = ""
-		if err = saveDevelopmentTx(ctx, tx, d, "PlanInvalidatedByMessage"); err != nil {
+		if err = saveDevelopmentTx(ctx, tx, d, "StageReturnedByUser"); err != nil {
 			return model.TaskMessage{}, err
 		}
 		interrupt = true
@@ -353,11 +353,12 @@ func messageWorkFromTxMode(ctx context.Context, tx *sql.Tx, taskID, content, key
 	if err != nil {
 		return m, err
 	}
-	if !executionDirection {
-		if err = supersedeReviewsTx(ctx, tx, taskID); err != nil {
-			return m, err
-		}
-	} else if _, err = appendEventTx(ctx, tx, "task", taskID, "ExecutionDirectionQueued", m.ID, taskID, map[string]any{"message_id": m.ID, "interrupt": interrupt, "plan_hash": d.PlanHash, "approved_review_id": d.ApprovedReviewID}); err != nil {
+	// A new delivery needs a new acceptance record; PLAN_APPROVED history is
+	// not a pending review and remains valid for implementation guidance.
+	if err = supersedeReviewsTx(ctx, tx, taskID); err != nil {
+		return m, err
+	}
+	if _, err = appendEventTx(ctx, tx, "task", taskID, "ExecutionDirectionQueued", m.ID, taskID, map[string]any{"message_id": m.ID, "interrupt": interrupt, "phase": d.Phase, "mode": mode, "plan_hash": d.PlanHash, "approved_review_id": d.ApprovedReviewID}); err != nil {
 		return m, err
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE task_workflow SET paused=?,scheduler_error='',retry_at_ms=0 WHERE task_id=?`, task.State == model.TaskStateNew, taskID); err != nil {

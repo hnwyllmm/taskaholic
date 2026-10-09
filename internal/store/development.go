@@ -372,7 +372,7 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		req.ExecutionGrant = &model.ExecutionGrant{ReviewID: d.ApprovedReviewID, PlanHash: d.PlanHash, Repository: d.Repository, BaseBranch: d.BaseBranch}
 		req.Instructions = strings.ReplaceAll(req.Instructions, "当前运行使用只读沙箱。", "当前运行使用已批准的隔离开发沙箱。")
 		req.Instructions = strings.ReplaceAll(req.Instructions, "不自行执行仓库写入、发布、推送、合并、发消息或其它外部变更。", "本轮允许在批准的隔离源码目录写入和验证；发布、推送、合并、发消息或其它外部变更仍必须走受控执行器。")
-		req.Instructions += "\n当前阶段：人工已批准方案，开始实施。执行范围仅为下述批准的仓库和隔离工作目录。角色历史快照中关于普通任务只读的旧部署说明由本轮执行授权取代，其它职责和边界不变。请真正修改代码、运行可行的验证。实施期间没有 Phase 0/Phase 1、入口评审、清单评审或其它由你自行设立的 Agent 放行门槛；不得因“等待 Manager 安排独立复审”而停止实施。尚有批准范围内的工作时继续完成；如果本轮必须结束但仍可自主继续，使用 recovery_request 续接原 Session。只有代码和必要验证完成后才提交 publish_request。不要修改共享仓库，不要自行 commit/push/创建 PR，Manager 会在你提交 publish_request 后受控发布。PR 创建后，新建 PR 及每个新 commit 由任务源和 Router 触发独立 reviewer，不要在 PR 前自行邀请 reviewer。需要重大调整方案时返回 replan，不要擅自扩大范围。不得用文档代替代码实现；如果无法验证，明确未验证和阻塞，不要虚报完成。\n"
+		req.Instructions += "\n当前阶段：人工已批准方案，开始实施。执行范围仅为下述批准的仓库和隔离工作目录。角色历史快照中关于普通任务只读的旧部署说明由本轮执行授权取代，其它职责和边界不变。请真正修改代码、运行可行的验证。实施期间没有 Phase 0/Phase 1、入口评审、清单评审或其它由你自行设立的 Agent 放行门槛；不得因“等待 Manager 安排独立复审”而停止实施。尚有批准范围内的工作时继续完成；如果本轮必须结束但仍可自主继续，使用 recovery_request 续接原 Session。只有代码和必要验证完成后才提交 publish_request。不要修改共享仓库，不要自行 commit/push/创建 PR，Manager 会在你提交 publish_request 后受控发布。PR 创建后，新建 PR 及每个新 commit 由任务源和 Router 触发独立 reviewer，不要在 PR 前自行邀请 reviewer。普通修改意见在当前阶段处理。需要重大调整时可提交 replan 建议，由用户决定是否返回过去的阶段；不得自行退回或扩大授权范围。不得用文档代替代码实现；如果无法验证，明确未验证和阻塞，不要虚报完成。\n"
 		if guidance := repositoryBuildGuidance(d.Repository); guidance != "" {
 			req.Instructions += "\n" + guidance + "\n"
 		}
@@ -380,6 +380,15 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 			raw, _ := json.Marshal(d.ValidationPlan)
 			req.Instructions += "\n当前方案已批准的结构化验证策略：\n" + string(raw) + "\n先按本轮改动影响执行必要的增量验证；稳定候选才执行 final_gate。复用项的代码、依赖、制品、配置或环境前提变化时，不得继续引用旧结果，必须重跑并在发布说明中逐项对账。若系统消息明确标示为“用户已受控确认调整验证范围”，本轮 validation_plan 就是保留原审批后的唯一验证门槛；不得自行重新设计或另邀方案 reviewer，也不得把这个例外扩展到其它产品/权限变更。\n"
 		}
+	} else if d.Phase == "AGENT_REVIEW" || d.Phase == "HUMAN_REVIEW" {
+		var pending bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING')`, req.TaskID).Scan(&pending); err != nil {
+			return nil, err
+		}
+		if !pending {
+			return nil, fmt.Errorf("%w: lifecycle is waiting for review", model.ErrConflict)
+		}
+		req.Instructions += "\n当前阶段仍为 " + d.Phase + "。在本评审阶段回应意见、修订材料并提交完整方案（artifacts、plan_scope、validation_plan，outcome=review）。不得自行退回设计阶段，也不得开始开发；人工评审中的修订直接继续人工评审，不重新邀请 Agent。只有用户通过明确的阶段返回操作才能打回。\n"
 	} else if d.Phase == "PLANNING" {
 		req.Instructions += "\n当前阶段：形成/修订方案（只读）。需求给设计文档，BUG 给问题分析与修复方案；检查真实代码、明确范围、风险、测试方法和验收标准，完整方案放 artifacts。outcome=review 时 plan_scope 填 GitHub owner/repository 和 base_branch，并提交结构化 validation_plan，区分可复用证据、受影响需重跑、需要补测、明确排除以及稳定候选的最终门禁；这是待审批的执行范围，不是权限。Manager 会安排另一个 Agent 互审，达成一致后用户审批，通过前严禁开发或创建 PR。历史方案可参考，但本轮必须提交完整方案。不要自行邀请人验收。\n"
 	} else {
@@ -468,7 +477,6 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 				return true, err
 			}
 		} else {
-			d.Phase = "PLANNING"
 			if err = saveDevelopmentTx(ctx, tx, d, "PlanChangesRequested"); err != nil {
 				return true, err
 			}
@@ -513,22 +521,21 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 			if err := workflow.ValidatePlanChange(result.PlanChange); err != nil {
 				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{
 					Evidence: "Agent 请求重新设计，但没有提交可核验的重大方案变化材料：" + err.Error() + "\n" + truncateRunes(result.Message, 3000),
-					NextStep: "保持当前已批准方案。普通实现、构建、测试或环境问题在原 Session 中诊断和修复；只有需求范围、外部契约、安全边界或发布承诺被新证据推翻时，才提交完整 plan_change 和 task_update 重新设计。",
+					NextStep: "保持当前已批准方案。普通实现、构建、测试或环境问题在原 Session 中诊断和修复；重大变化提交完整 plan_change 和 task_update 请求用户决定，只有用户明确选择返回阶段才会重新设计。",
 				})
 			}
 			if result.ValidationPlan == nil {
 				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{Evidence: "Agent 申请重大方案调整，但没有提交更新后的结构化验证策略。", NextStep: "补充 validation_plan，明确哪些历史测试复用、哪些因改动重跑、哪些新增或排除，以及稳定候选的 final_gate；不要开始新范围实施。"})
 			}
-			d.Phase = "PLANNING"
-			d.Version++
-			d.ApprovedReviewID = ""
-			if err = saveDevelopmentTx(ctx, tx, d, "PlanApprovalRevoked"); err != nil {
+			change := result.PlanChange
+			message := "Agent 建议调整方案，当前阶段与原审批已保留，等待你决定。可在当前阶段给出修改意见继续；需要打回时请明确选择返回方案设计或 Agent 评审。不得在决定前实施超出原授权的变更。\n变化类型：" + change.Kind + "\n原前提：" + truncateRunes(change.ApprovedAssumption, 2000) + "\n新证据：" + truncateRunes(change.NewEvidence, 4000) + "\n受影响范围：" + strings.Join(change.AffectedAreas, "、") + "\n\n" + truncateRunes(result.Message, 6000)
+			if _, err = insertMessageTx(ctx, tx, parent, "system", message, e.RunID, "RECORDED"); err != nil {
 				return true, err
 			}
-			change := result.PlanChange
-			message := "实施发现已批准方案的重大变化（" + change.Kind + "），请重新提交完整方案供 Agent 和人工评审：\n被推翻的前提：" + truncateRunes(change.ApprovedAssumption, 2000) + "\n新证据：" + truncateRunes(change.NewEvidence, 4000) + "\n受影响范围：" + strings.Join(change.AffectedAreas, "、") + "\n\n" + truncateRunes(result.Message, 6000)
-			_, err = taskEventMessageTx(ctx, tx, parent, message, "replan:"+e.RunID, "system")
-			return true, err
+			if _, err = appendEventTx(ctx, tx, "task", parent, "PlanChangeDecisionRequested", e.RunID, parent, map[string]any{"plan_change": change, "phase": d.Phase, "plan_hash": d.PlanHash}); err != nil {
+				return true, err
+			}
+			return true, setWorkStateTx(ctx, tx, parent, model.TaskStateInput)
 		}
 		if result.Outcome == "review" && len(result.PullRequests) == 0 {
 			return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{
@@ -560,7 +567,9 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 	}
 	d.Version++
 	d.Rounds++
-	d.Phase = "AGENT_REVIEW"
+	if phase != "HUMAN_REVIEW" {
+		d.Phase = "AGENT_REVIEW"
+	}
 	d.PlanRunID = e.RunID
 	d.PlanHash = publicationKey(e.Output)
 	d.Repository = result.PlanScope.Repository
@@ -569,6 +578,20 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 	d.ApprovedReviewID = ""
 	if err = saveDevelopmentTx(ctx, tx, d, "PlanSubmitted"); err != nil {
 		return true, err
+	}
+	if phase == "HUMAN_REVIEW" {
+		if err = supersedeReviewsTx(ctx, tx, parent); err != nil {
+			return true, err
+		}
+		r := model.Review{ID: id.New("review"), TaskID: parent, RunID: e.RunID, Kind: "plan", PlanHash: d.PlanHash, State: "PENDING", ArtifactIDs: artifactIDs, CreatedAtMS: now}
+		raw, _ := json.Marshal(r)
+		if _, err = tx.ExecContext(ctx, `INSERT INTO review VALUES(?,?,?,?,?)`, r.ID, parent, r.RunID, r.State, raw); err != nil {
+			return true, err
+		}
+		if _, err = appendEventTx(ctx, tx, "task", parent, "PlanReviewRequested", e.RunID, parent, r); err != nil {
+			return true, err
+		}
+		return true, setWorkStateTx(ctx, tx, parent, model.TaskStateReview)
 	}
 	return true, setWorkStateTx(ctx, tx, parent, model.TaskStateWaiting)
 }
@@ -724,6 +747,14 @@ func (s *Store) RoutePlanReviews(ctx context.Context) error {
 			return err
 		}
 		for _, d := range ds {
+			// Wait for the developer to revise this version before routing it again.
+			var waitingForRevision bool
+			if err = tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING') OR EXISTS(SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')) OR EXISTS(SELECT 1 FROM development_run WHERE run_id=? AND plan_version=?)`, d.TaskID, d.TaskID, d.ReviewerRunID, d.Version).Scan(&waitingForRevision); err != nil {
+				return err
+			}
+			if waitingForRevision {
+				continue
+			}
 			if d.ReviewerTaskID == "" {
 				task, err := getTaskTx(ctx, tx, d.TaskID)
 				if err != nil {
@@ -828,10 +859,6 @@ func decidePlanTx(ctx context.Context, tx *sql.Tx, d model.Development, r *model
 		if _, err := createTaskSummaryTx(ctx, tx, d.ReviewerTaskID, "run", d.ReviewerRunID, time.Now().UnixMilli()); err != nil {
 			return err
 		}
-	} else {
-		d.Phase = "PLANNING"
-		d.Version++
-		d.ApprovedReviewID = ""
 	}
 	r.State = decision
 	r.Comment = comment
@@ -843,7 +870,7 @@ func decidePlanTx(ctx context.Context, tx *sql.Tx, d model.Development, r *model
 	if err := saveDevelopmentTx(ctx, tx, d, "PlanHumanDecided"); err != nil {
 		return err
 	}
-	message := "人工要求修改方案，重新走 Agent 互审与人工确认：\n" + comment
+	message := "人工评审要求修改，继续当前人工评审阶段并提交修订后的完整材料；不退回方案设计或重新邀请 Agent：\n" + comment
 	if decision == "PLAN_APPROVED" {
 		message = "人工明确批准当前方案。请在隔离工作区按批准方案开发、验证并提交真实 PR，然后进入 PR 评审流程。\n" + comment
 	}
