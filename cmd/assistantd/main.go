@@ -65,7 +65,11 @@ func main() {
 	if *runtimeDatabase != "" {
 		backupSources["runtime.sqlite"] = backup.DatabaseSource{Path: *runtimeDatabase}
 	}
-	backups, err := backup.New(backup.Config{Directory: directory, Sources: backupSources})
+	backupConfig, err := backup.ApplyRetentionEnvironment(backup.Config{Directory: directory, Sources: backupSources})
+	if err != nil {
+		fatal(err)
+	}
+	backups, err := backup.New(backupConfig)
 	if err != nil {
 		fatal(err)
 	}

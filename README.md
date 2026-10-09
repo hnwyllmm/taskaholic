@@ -165,7 +165,7 @@ schema v9 增加系统岗位与 AI 路由决策；v10 添加 `review_turn`；v11
 
 自动恢复点位于 `os.UserConfigDir()/WorkAssistant/backups/<数据目录标识>/`；macOS 为 `~/Library/Application Support/WorkAssistant/backups/…`。`ASSISTANT_BACKUP_DIR` 可指定专用备份根目录，例如由用户管理的独立磁盘目录；不要指向共享公共目录，不要在原磁盘丢失后用同名本地目录代替外置磁盘。路径本身不能证明异机/异盘保护，本版不自动上传数据或确认外置设备挂载。
 
-每次先写私有临时目录，逐库执行一致性 SQLite 快照（包含已提交 WAL）、`integrity_check`、`foreign_key_check`，生成 SHA-256 / 大小 / 时间清单，fsync 后再发布不可覆盖的新恢复点。失败不替换上一份有效快照；只有新快照成功后才清理本功能管理的旧自动快照，保留最近 48 份以及近 30 天每日最新一份。手动恢复点、已有旧备份和未知文件不自动清理。异常留下的隐藏临时目录不算有效恢复点，需人工检查空间。自动备份失败或超过两个周期未成功会在首页和系统页提示。
+每次先写私有临时目录，逐库执行一致性 SQLite 快照（包含已提交 WAL）、`integrity_check`、`foreign_key_check`，生成 SHA-256 / 大小 / 时间清单，fsync 后再发布不可覆盖的新恢复点。失败不替换上一份有效快照；只有新快照成功后才清理本功能管理的旧自动快照，默认保留最近 48 份以及近 30 天每日最新一份。可通过 `ASSISTANT_BACKUP_KEEP_RECENT` 与 `ASSISTANT_BACKUP_KEEP_DAYS` 设置正整数以缩小自动快照窗口，例如 `12` 与 `14` 分别表示保留最近 12 份和近 14 天每天最新一份。手动恢复点、已有旧备份和未知文件不自动清理。异常留下的隐藏临时目录不算有效恢复点，需人工检查空间。自动备份失败或超过两个周期未成功会在首页和系统页提示。
 
 ```bash
 # 离线校验目录中的 manifest.json、文件校验和与 SQLite 完整性

@@ -102,7 +102,11 @@ func run() error {
 	defer stop()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	backups, err := backup.New(backup.Config{Directory: directory, Sources: map[string]backup.Source{"control.sqlite": state, "runtime.sqlite": spool}})
+	backupConfig, err := backup.ApplyRetentionEnvironment(backup.Config{Directory: directory, Sources: map[string]backup.Source{"control.sqlite": state, "runtime.sqlite": spool})
+	if err != nil {
+		return err
+	}
+	backups, err := backup.New(backupConfig)
 	if err != nil {
 		return err
 	}
