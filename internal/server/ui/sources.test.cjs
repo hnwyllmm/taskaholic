@@ -124,3 +124,28 @@ test('Empty targets keep table structure and narrow screens scroll instead of re
   assert.match(css,/\.source-target-scroll\{[^}]*overflow-x:auto/);
   assert.match(css,/\.source-target-table\{[^}]*table-layout:fixed/);
 });
+
+test('Tracking targets precede stopped targets and disabled sources, including retrying connections',async()=>{
+  const rows=[target({target_id:'paused',enabled:false,entity:'https://github.com/o/r/pull/1'}),target({target_id:'disabled-source',source_id:'off',entity:'https://github.com/o/r/pull/2'}),target({target_id:'retrying',error:'temporary connection error',entity:'https://github.com/o/r/pull/3'}),target({target_id:'active',entity:'https://github.com/o/r/pull/4'})];
+  const {$,data,settle}=await fixture({targets:rows});
+  assert.deepEqual($('targets').children.map(r=>r.children[0].children[0].textContent),['o/r #3','o/r #4','o/r #1','o/r #2']);
+  assert.equal(data.targets[0].target_id,'paused');
+  $('refresh').onclick();await settle();
+  assert.deepEqual($('targets').children.map(r=>r.children[0].children[0].textContent),['o/r #3','o/r #4','o/r #1','o/r #2']);
+});
+
+test('Pagination retains the current page on refresh and clamps after targets are removed',async()=>{
+  const rows=Array.from({length:45},(_,i)=>target({target_id:'pr-'+i,entity:'https://github.com/o/r/pull/'+(i+1)}));
+  const originalRows=[...rows];
+  const {$,data,settle}=await fixture({targets:rows});
+  assert.equal($('targets').children.length,20);assert.equal($('targets-prev').disabled,true);assert.equal($('targets-next').disabled,false);
+  $('targets-next').onclick();assert.equal($('targets').children[0].children[0].children[0].textContent,'o/r #21');
+  $('refresh').onclick();await settle();
+  assert.match($('targets-page-info').textContent,/第 2 \/ 3 页/);assert.equal($('targets-prev').disabled,false);
+  $('targets-next').onclick();assert.equal($('targets').children.length,5);assert.equal($('targets-next').disabled,true);
+  data.targets.splice(0,40);$('refresh').onclick();await settle();
+  assert.match($('targets-page-info').textContent,/第 1 \/ 1 页/);assert.equal($('targets').children.length,5);assert.equal($('targets-next').disabled,true);assert.equal($('targets-prev').disabled,true);
+  data.targets.push(...originalRows.slice(0,40));$('refresh').onclick();await settle();
+  $('targets-next').onclick();$('targets-page-size').value='50';$('targets-page-size').onchange();
+  assert.equal($('targets').children.length,45);assert.match($('targets-page-info').textContent,/第 1 \/ 1 页/);
+});

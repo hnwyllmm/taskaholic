@@ -12,6 +12,10 @@
 .source-fields label{display:block}fieldset{border:1px solid var(--border);border-radius:8px;padding:15px;margin:14px 0}
 .source-row .source-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .source-target-heading{display:flex;align-items:baseline;gap:12px}
+.target-pagination{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:12px}
+.target-pagination label{display:flex;align-items:center;gap:6px;margin:0;font-size:12px;color:var(--muted)}
+.target-pagination select{width:auto;padding:5px 9px;font-size:12px}
+.target-page-actions{display:flex;gap:8px;margin-left:auto}.target-page-actions button{padding:6px 10px;font-size:12px}
 .source-target-scroll{width:100%;max-width:100%;overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:#fff;overscroll-behavior-x:contain}
 .source-target-table{width:100%;min-width:1000px;border-collapse:collapse;table-layout:fixed;text-align:left;font-size:12px}
 .source-target-table th,.source-target-table td{padding:11px 13px;border-bottom:1px solid #edf0e8;vertical-align:middle}

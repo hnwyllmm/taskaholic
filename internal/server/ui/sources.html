@@ -14,6 +14,11 @@
   <section class="card-grid" id="sources" aria-label="任务源配置"></section>
   <section class="source-section">
     <div class="section-heading"><div class="source-target-heading"><h2>轮询目标</h2><span id="targets-count" class="small muted"></span></div><span class="small muted">暂停轮询不删除历史，也不中断正在工作的 Agent</span></div>
+    <nav class="target-pagination" aria-label="轮询目标分页">
+      <label for="targets-page-size">每页 <select id="targets-page-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select> 条</label>
+      <span id="targets-page-info" class="small muted" aria-live="polite"></span>
+      <div class="target-page-actions"><button id="targets-prev" type="button">上一页</button><button id="targets-next" type="button">下一页</button></div>
+    </nav>
     <div class="source-target-scroll" role="region" aria-label="轮询目标表格，可横向滚动" tabindex="0">
       <table class="source-target-table">
         <caption class="sr">轮询目标、来源、状态、轮询时间、版本及操作</caption>

@@ -1,7 +1,7 @@
 'use strict';
 const {el,api,notice,link,date}=WA;
 const $=id=>document.getElementById(id);
-const state={sources:[],targets:[],events:[],reviews:[],roles:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set()};
+const state={sources:[],targets:[],events:[],reviews:[],roles:[],tasks:[],editing:null,busy:false,loading:false,targetErrors:new Set(),targetPage:1,targetPageSize:20};
 const eventLabels={'antmultica.issue':'工单新增 / 更新','github.head':'PR 新版本','github.comment':'PR 评论 / 评审意见','github.ci_failed':'CI 失败','github.review_result':'Agent 评审汇总','github.merged':'PR 已合并','github.closed':'PR 已关闭','gitlab.pipeline':'回归测试状态更新'};
 const stateLabels={PENDING:'待处理',APPLIED:'已处理',RECORDED:'仅记录',SUPERSEDED:'旧版本',COMPLETED:'已交付'};
 function options(select,items,idKey,empty){
@@ -18,7 +18,7 @@ async function action(fn){
     notice(e.message,true);
     const error=$('source-dialog').open?$('source-error'):$('pr-dialog').open?$('pr-error'):null;
     if(error){error.textContent=e.message;error.hidden=false;}
-  }finally{state.busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}
+  }finally{state.busy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);updateTargetPagination();}
 }
 async function refresh(){
   if(state.loading)return;
@@ -61,9 +61,23 @@ function render(){
   }
   if(!state.events.length)$('events').append(el('p','暂无外部事件。没有更新时，不会创建新的任务。','empty-state'));
 }
+function updateTargetPagination(){
+  const total=state.targets.length,pages=Math.max(1,Math.ceil(total/state.targetPageSize));
+  state.targetPage=Math.max(1,Math.min(state.targetPage,pages));
+  $('targets-page-size').value=String(state.targetPageSize);
+  $('targets-page-info').textContent=total?`第 ${state.targetPage} / ${pages} 页 · ${(state.targetPage-1)*state.targetPageSize+1}–${Math.min(state.targetPage*state.targetPageSize,total)} / ${total}`:'暂无目标';
+  $('targets-prev').disabled=state.busy||state.targetPage===1;
+  $('targets-next').disabled=state.busy||state.targetPage===pages;
+}
 function renderTargets(){
   $('targets').replaceChildren();$('targets-count').textContent=state.targets.length+' 个目标';
-  for(const t of state.targets){
+  updateTargetPagination();
+  const sources=new Map(state.sources.map(s=>[s.source_id,s]));
+  const active=t=>!!sources.get(t.source_id)?.enabled&&!!t.enabled;
+  // Stable ordering within each group keeps polling updates from moving rows.
+  const ordered=[...state.targets].sort((a,b)=>Number(active(b))-Number(active(a)));
+  const start=(state.targetPage-1)*state.targetPageSize;
+  for(const t of ordered.slice(start,start+state.targetPageSize)){
     const source=state.sources.find(s=>s.source_id===t.source_id),row=el('tr');
     const target=el('th');target.scope='row';
     const pr=/^https:\/\/github\.com\/([a-zA-Z0-9_.-]+)\/([a-zA-Z0-9_.-]+)\/pull\/([1-9]\d*)$/.exec(t.entity);
@@ -95,6 +109,9 @@ function renderTargets(){
   }
   if(!state.targets.length){const row=el('tr'),empty=el('td','尚无轮询目标。添加 AntMultica 源或登记一个 PR。','target-empty');empty.colSpan=7;row.append(empty);$('targets').append(row);}
 }
+$('targets-prev').onclick=()=>{if(!state.busy){state.targetPage--;renderTargets();}};
+$('targets-next').onclick=()=>{if(!state.busy){state.targetPage++;renderTargets();}};
+$('targets-page-size').onchange=()=>{const size=Number($('targets-page-size').value);if(![20,50,100].includes(size))return;state.targetPageSize=size;state.targetPage=1;renderTargets();};
 function editSource(source){
   state.editing=source;
   const c=source.config;
