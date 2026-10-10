@@ -106,8 +106,9 @@ type ApprovedValidationPlanAmendment struct {
 	IdempotencyKey  string
 }
 
-// AmendApprovedValidationPlan replaces only the validation gate of an idle,
-// human-approved implementation and resumes its existing Session. A human must
+// AmendApprovedValidationPlan replaces only the validation gate of a
+// human-approved implementation. Active runs finish with their current input;
+// the next turn reads the persisted gate without interruption. A human must
 // make this explicit through the authenticated API; an Agent result cannot use
 // this path to weaken its own approval requirements.
 func (s *Store) AmendApprovedValidationPlan(ctx context.Context, taskID string, req ApprovedValidationPlanAmendment) (model.Development, error) {
@@ -147,8 +148,9 @@ func (s *Store) AmendApprovedValidationPlan(ctx context.Context, taskID string, 
 		if err != nil {
 			return err
 		}
-		if task.Version != req.ExpectedVersion || (task.State != model.TaskStatePaused && task.State != model.TaskStateBlocked) {
-			return fmt.Errorf("%w: validation scope amendment requires the current paused or blocked task version", model.ErrConflict)
+		activeAmendment := task.State == model.TaskStateInProgress || task.State == model.TaskStateQueued
+		if task.Version != req.ExpectedVersion || (!activeAmendment && task.State != model.TaskStatePaused && task.State != model.TaskStateBlocked) {
+			return fmt.Errorf("%w: validation scope amendment requires the current task version in implementation", model.ErrConflict)
 		}
 		d, err := developmentTx(ctx, tx, taskID)
 		if err != nil {
@@ -166,13 +168,13 @@ func (s *Store) AmendApprovedValidationPlan(ctx context.Context, taskID string, 
 		}
 		var busy bool
 		if err = tx.QueryRowContext(ctx, `SELECT EXISTS(
-			SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING'
-			UNION ALL SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING')
+			SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING' AND ?=0
+			UNION ALL SELECT 1 FROM run WHERE task_id=? AND state IN ('QUEUED','RUNNING') AND ?=0
 			UNION ALL SELECT 1 FROM review WHERE task_id=? AND state='PENDING'
 			UNION ALL SELECT 1 FROM review_turn WHERE task_id=? AND state IN ('QUEUED','RUNNING')
 			UNION ALL SELECT 1 FROM environment_job WHERE parent_task_id=? AND state IN ('QUEUED','RUNNING')
 			UNION ALL SELECT 1 FROM publication WHERE task_id=? AND state IN ('QUEUED','SUBMITTING','UNCERTAIN')
-		)`, taskID, taskID, taskID, taskID, taskID, taskID).Scan(&busy); err != nil {
+		)`, taskID, activeAmendment, taskID, activeAmendment, taskID, taskID, taskID, taskID).Scan(&busy); err != nil {
 			return err
 		}
 		if busy {
@@ -376,10 +378,6 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		if guidance := repositoryBuildGuidance(d.Repository); guidance != "" {
 			req.Instructions += "\n" + guidance + "\n"
 		}
-		if d.ValidationPlan != nil {
-			raw, _ := json.Marshal(d.ValidationPlan)
-			req.Instructions += "\n当前方案已批准的结构化验证策略：\n" + string(raw) + "\n先按本轮改动影响执行必要的增量验证；稳定候选才执行 final_gate。复用项的代码、依赖、制品、配置或环境前提变化时，不得继续引用旧结果，必须重跑并在发布说明中逐项对账。若系统消息明确标示为“用户已受控确认调整验证范围”，本轮 validation_plan 就是保留原审批后的唯一验证门槛；不得自行重新设计或另邀方案 reviewer，也不得把这个例外扩展到其它产品/权限变更。\n"
-		}
 	} else if d.Phase == "AGENT_REVIEW" || d.Phase == "HUMAN_REVIEW" {
 		var pending bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM task_message WHERE task_id=? AND delivery='PENDING')`, req.TaskID).Scan(&pending); err != nil {
@@ -408,7 +406,27 @@ func developmentInstructionsTx(ctx context.Context, tx *sql.Tx, req *CreateRunRe
 		}
 		req.Instructions += "\n独立 reviewer 最近一轮完整反馈（工作材料）：\n" + raw
 	}
+	if !reviewer && d.Phase == "IMPLEMENTING" && d.ValidationPlan != nil {
+		raw, _ := json.Marshal(d.ValidationPlan)
+		req.Instructions += "\n本轮生效的持久化 validation_plan（结构化验证策略，覆盖以上历史方案、旧轮次记忆和评审材料中的验证矩阵）：\n" + string(raw) + "\n只执行当前改动直接影响的 rerun/add；稳定候选执行 final_gate。未受影响的真实历史结果可以复用，受影响的证据需重跑。exclude 不得恢复成交付门槛；排除范围必须在 PR 和最终总结中注明未验证，不能标为通过。质量问题仍需修复并运行与问题直接相关的测试，不据此恢复全平台、打包、性能或全量矩阵。\n"
+		controlled, reason, err := userValidationScopeTx(ctx, tx, d)
+		if err != nil {
+			return nil, err
+		}
+		if controlled {
+			req.Instructions += "\n用户已受控确认调整验证范围：" + reason + "\n此范围持续生效，不依赖一次性聊天消息。只有用户通过验证范围接口再次确认才能修改持久化门槛；Agent 不得用 amend_validation 覆盖它。必要的针对性测试在现有直接测试类别内完成，结果写入 task_update.validation。保留原阶段、审批、工作树与 Session。\n"
+		}
+	}
 	return &d, nil
+}
+
+func userValidationScopeTx(ctx context.Context, tx *sql.Tx, d model.Development) (bool, string, error) {
+	var reason string
+	err := tx.QueryRowContext(ctx, `SELECT json_extract(payload_json,'$.reason') FROM event_log WHERE aggregate_type='task' AND aggregate_id=? AND event_type='UserValidationScopeAmendmentAccepted' AND json_extract(payload_json,'$.plan_hash')=? AND json_extract(payload_json,'$.approved_review_id')=? ORDER BY aggregate_seq DESC LIMIT 1`, d.TaskID, d.PlanHash, d.ApprovedReviewID).Scan(&reason)
+	if err == sql.ErrNoRows {
+		return false, "", nil
+	}
+	return err == nil, reason, err
 }
 
 func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e model.RuntimeEvent, result workflow.Result, artifactIDs []string, now int64) (bool, error) {
@@ -493,6 +511,16 @@ func applyDevelopmentResultTx(ctx context.Context, tx *sql.Tx, taskID string, e 
 	}
 	if phase == "IMPLEMENTING" {
 		if result.Outcome == "amend_validation" {
+			controlled, _, err := userValidationScopeTx(ctx, tx, d)
+			if err != nil {
+				return true, err
+			}
+			if controlled {
+				if _, err = appendEventTx(ctx, tx, "task", parent, "AgentValidationScopeOverrideIgnored", e.RunID, parent, map[string]any{"run_id": e.RunID, "plan_hash": d.PlanHash}); err != nil {
+					return true, err
+				}
+				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{Evidence: "Agent 提交了验证策略修订，但当前验证范围已由用户显式确认，未覆盖其持久化清单。", NextStep: "继续当前 validation_plan；必要针对性测试在现有直接测试类别内完成，结果写 task_update.validation。不得恢复 exclude 项或扩大 final_gate，也不需要重新设计、方案评审或修改持久化策略。"})
+			}
 			if result.ValidationPlan == nil || result.VerificationAmendment == nil {
 				return true, requestRecoveryTx(ctx, tx, parent, e.RunID, workflow.RecoveryRequest{Evidence: "Agent 声称仅补充验证，但没有提交完整的结构化验证策略或受限测试路径。", NextStep: "若产品方案没有变化，提交 outcome=amend_validation、完整 validation_plan、verification_amendment 和 task_update；若产品行为或范围变化，使用 replan。"})
 			}

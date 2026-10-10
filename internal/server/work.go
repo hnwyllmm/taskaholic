@@ -128,13 +128,14 @@ func (s *Server) handleDevelopmentRetry(w http.ResponseWriter, r *http.Request) 
 
 // handleAmendApprovedValidationPlan is an explicit human action for changing
 // only the evidence gate of an approved implementation. The Store keeps the
-// product plan, review and execution grant immutable and rejects active work.
+// product plan, review and execution grant immutable. An active Run continues;
+// the new gate is consumed on its next turn.
 func (s *Server) handleAmendApprovedValidationPlan(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ExpectedVersion int64                          `json:"expected_version"`
-		Reason          string                         `json:"reason"`
+		ExpectedVersion int64                           `json:"expected_version"`
+		Reason          string                          `json:"reason"`
 		ValidationPlan  model.DevelopmentValidationPlan `json:"validation_plan"`
-		IdempotencyKey  string                         `json:"idempotency_key"`
+		IdempotencyKey  string                          `json:"idempotency_key"`
 	}
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, 400, err)

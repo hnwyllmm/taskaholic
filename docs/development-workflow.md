@@ -14,6 +14,8 @@
 8. 开发在 Session 下独立 checkout 中修改、验证。由 runtime 受控 commit/push/创建 PR，登记后复用已有 PR 轮询、自动 reviewer、测试、反馈修复与最终人工验收流程。不自动合并。
    实施期间不额外设置 Phase 0/Phase 1、入口评审或清单评审等 Agent 放行门槛。实现和必要验证完成后提交 `publish_request`；PR 新建及每次出现新 commit 后，再由 Router 邀请配置的 reviewer。Agent 过早返回 `outcome=review` 且未发布 PR 时，Manager 续接原 Agent/Session，不创建人工验收或 PR 前复审任务。
 
+用户调整测试范围时，使用 `POST /api/v1/work/tasks/{id}/development/validation-plan`，提交当前任务的 `expected_version`、原因、完整 `validation_plan` 和幂等键，将范围持久化而非仅发送聊天消息。运行中的轮次无需暂停，更新意见留在同一 Session 的收件箱，下一轮读取新清单。该清单在每轮输入末尾覆盖历史方案及旧评审里的测试矩阵；用户显式确认后，Agent 不能用 `amend_validation` 覆盖它。直接受影响的必要测试仍在当前范围内执行，不恢复已排除的平台或完整矩阵。范围调整保留原方案、阶段、审批和授权。
+
 ### 固定主流程与重新设计边界
 
 一条正常开发任务只沿下列主流程前进：

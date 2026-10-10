@@ -208,13 +208,13 @@ func TestUserValidationScopeAmendmentPreservesApprovalAndSession(t *testing.T) {
 	}
 }
 
-func TestUserValidationScopeAmendmentRejectsActiveOrInvalidPlans(t *testing.T) {
+func TestUserValidationScopeAmendmentRejectsStaleOrInvalidPlans(t *testing.T) {
 	ctx := context.Background()
 	s, _, task, implementation := approvedImplementation(t)
 	current, _ := s.GetTask(ctx, task.ID)
 	valid := model.DevelopmentValidationPlan{Reuse: []model.DevelopmentValidationItem{{Scenario: "existing proof", Reason: "unaffected", Evidence: "baseline"}}, FinalGate: []string{"record evidence"}}
-	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version, Reason: "change", ValidationPlan: valid}); !errors.Is(err, model.ErrConflict) {
-		t.Fatal("active implementation accepted scope amendment", err)
+	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version - 1, Reason: "change", ValidationPlan: valid}); !errors.Is(err, model.ErrConflict) {
+		t.Fatal("stale task version accepted scope amendment", err)
 	}
 	if err := s.PauseWork(ctx, task.ID); err != nil {
 		t.Fatal(err)
@@ -225,6 +225,48 @@ func TestUserValidationScopeAmendmentRejectsActiveOrInvalidPlans(t *testing.T) {
 	current, _ = s.GetTask(ctx, task.ID)
 	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version, Reason: "change", ValidationPlan: model.DevelopmentValidationPlan{}}); !errors.Is(err, model.ErrValidation) {
 		t.Fatal("invalid validation plan accepted", err)
+	}
+}
+
+func TestActiveUserValidationScopePersistsWithoutInterruptOrAgentOverride(t *testing.T) {
+	ctx := context.Background()
+	s, dev, task, running := approvedImplementation(t)
+	before := *developmentState(t, s, task.ID)
+	current, _ := s.GetTask(ctx, task.ID)
+	narrow := model.DevelopmentValidationPlan{
+		Rerun:     []model.DevelopmentValidationItem{{Scenario: "Linux focused test", Reason: "directly affected code"}},
+		Exclude:   []model.DevelopmentValidationItem{{Scenario: "Windows matrix", Reason: "user excluded platform validation"}},
+		FinalGate: []string{"Linux focused test passes", "record excluded coverage"},
+	}
+	if _, err := s.AmendApprovedValidationPlan(ctx, task.ID, ApprovedValidationPlanAmendment{ExpectedVersion: current.Version, Reason: "user limits tests to Linux", ValidationPlan: narrow, IdempotencyKey: "active-scope"}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ = s.GetTask(ctx, task.ID)
+	stillRunning, _ := s.GetRun(ctx, running.ID)
+	var interrupts int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM directive WHERE run_id=?`, running.ID).Scan(&interrupts); err != nil {
+		t.Fatal(err)
+	}
+	d := developmentState(t, s, task.ID)
+	if current.State != model.TaskStateInProgress || stillRunning.State != running.State || interrupts != 0 || d.Phase != before.Phase || d.Version != before.Version || d.PlanHash != before.PlanHash || d.ApprovedReviewID != before.ApprovedReviewID {
+		t.Fatal("active scope update interrupted work or invalidated approval", current, d, stillRunning.State, interrupts)
+	}
+	developmentFinish(t, s, running, 3, workflow.Result{Outcome: "blocked", Message: "current build finished", Artifacts: []workflow.File{}, RecoveryRequest: &workflow.RecoveryRequest{Evidence: "current build output", NextStep: "continue validation"}})
+	next := startWork(t, s, dev, task)
+	instructions := outboxSpec(t, s, next.ID).Instructions
+	if next.SessionID != running.SessionID || !strings.Contains(instructions, "Linux focused test") || !strings.Contains(instructions, "此范围持续生效") || strings.LastIndex(instructions, "本轮生效的持久化") < strings.LastIndex(instructions, "当前待评审/已批准方案") {
+		t.Fatal("new turn did not prioritize the durable scope", instructions)
+	}
+	broad := testValidationPlan()
+	broad.Add = []workflow.ValidationItem{{Scenario: "Windows matrix", Reason: "restore historical tests"}}
+	developmentFinish(t, s, next, 4, workflow.Result{Outcome: "amend_validation", Message: "restore old matrix", Artifacts: []workflow.File{}, ValidationPlan: broad, VerificationAmendment: &workflow.VerificationAmendment{Reason: "test coverage", Paths: []string{"tests/matrix_test.cpp"}}, TaskUpdate: &workflow.TaskUpdate{Kind: "feature", Reason: "coverage", Approach: "restore matrix"}})
+	d = developmentState(t, s, task.ID)
+	if d.ValidationPlan.Rerun[0].Scenario != "Linux focused test" || len(d.ValidationPlan.FinalGate) != 2 || d.ApprovedReviewID != before.ApprovedReviewID {
+		t.Fatal("Agent overwrote user validation scope", d)
+	}
+	var ignored int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM event_log WHERE aggregate_id=? AND event_type='AgentValidationScopeOverrideIgnored'`, task.ID).Scan(&ignored); err != nil || ignored != 1 {
+		t.Fatal("Agent override was not audited", ignored, err)
 	}
 }
 
